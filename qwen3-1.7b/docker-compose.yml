@@ -1,0 +1,57 @@
+services:
+  qwen3-1.7b-performance:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    ports:
+      - "8001:8001"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./logs:/app/logs
+    command: >
+      --model Qwen/Qwen3-1.7B
+      --port 8001
+      --host 0.0.0.0
+      --served-model-name qwen3-1.7b-performance
+      --trust-remote-code
+      --max-model-len 32768
+      --gpu-memory-utilization 0.95
+      --dtype bfloat16
+      --tensor-parallel-size 1
+      --max-num-seqs 128
+      --max-num-batched-tokens 32768
+      --block-size 32
+      --enable-chunked-prefill
+      --enable-prefix-caching
+      --max-num-partial-prefills 2
+      --disable-log-stats
+      --disable-log-requests
+      --seed 42
+      --swap-space 2
+      --kv-cache-dtype fp8_e5m2
+      --max-logprobs 5
+      --scheduler-delay-factor 0.0
+      --num-scheduler-steps 1
+      --max-seq-len-to-capture 16384
+    environment:
+      - VLLM_DEFAULT_TEMPERATURE=0.15
+      - VLLM_DEFAULT_TOP_P=0.9
+      - VLLM_DEFAULT_MAX_TOKENS=768
+      - VLLM_DEFAULT_STOP="Вопрос:,АНАЛИЗ,Документ:,ЗАДАЧА:"
+      - VLLM_ATTENTION_BACKEND=FLASH_ATTN
+      - VLLM_ENGINE_ITERATION_TIMEOUT_S=60
+      - VLLM_FUSED_MOE_CHUNK_SIZE=32768
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s

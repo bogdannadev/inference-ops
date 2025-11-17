@@ -1,0 +1,32 @@
+services:
+  qwen3-4b-fallback:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    ports:
+      - "8001:8001"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen3-4B
+      --port 8001
+      --host 0.0.0.0
+      --served-model-name qwen3-4b
+      --trust-remote-code
+      --max-model-len 32768
+      --gpu-memory-utilization 0.9
+      --dtype auto
+      --tensor-parallel-size 1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
