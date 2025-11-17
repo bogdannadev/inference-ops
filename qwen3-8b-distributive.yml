@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  qwen3-8b-production:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    container_name: qwen3-8b-prod
+    ipc: host
+    shm_size: "4g"
+    ports:
+      - "8002:8002"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VLLM_LOGGING_LEVEL=INFO
+    command: >
+      --model Qwen/Qwen3-8B
+      --port 8002
+      --host 0.0.0.0
+      --served-model-name qwen3-8b
+      --trust-remote-code
+      --max-model-len 32768
+      --gpu-memory-utilization 0.95
+      --dtype bfloat16
+      --tensor-parallel-size 2
+      --max-num-seqs 64
+      --uvicorn-log-level info
+      --distributed-executor-backend mp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2', '3']
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service,environment"
+        tag: "qwen3-8b-{{.Name}}"
+
+
+networks:
+  default:
+    name: qwen3-network
