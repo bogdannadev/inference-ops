@@ -1,5 +1,4 @@
 version: '3.8'
-
 services:
   qwen3-8b-production:
     image: vllm/vllm-openai:latest
@@ -22,11 +21,12 @@ services:
       --host 0.0.0.0
       --served-model-name qwen3-8b
       --trust-remote-code
-      --max-model-len 32768
-      --gpu-memory-utilization 0.95
+      --rope-scaling '{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":32768}' # enhanced context window
+      --max-model-len 65536
+      --gpu-memory-utilization 0.90
       --dtype bfloat16
       --tensor-parallel-size 2
-      --max-num-seqs 64
+      --max-num-seqs 16
       --uvicorn-log-level info
       --distributed-executor-backend mp
     deploy:
@@ -34,7 +34,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['2', '3']
+              device_ids: ['0', '1']
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
@@ -50,8 +50,6 @@ services:
         max-file: "5"
         labels: "service,environment"
         tag: "qwen3-8b-{{.Name}}"
-
-
 networks:
   default:
     name: qwen3-network
