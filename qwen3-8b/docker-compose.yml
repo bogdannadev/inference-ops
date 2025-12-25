@@ -21,7 +21,7 @@ services:
       --host 0.0.0.0
       --served-model-name qwen3-8b
       --trust-remote-code
-      --rope-scaling '{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":32768}' # enhanced context window
+      --rope-scaling '{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":32768}'
       --max-model-len 65536
       --gpu-memory-utilization 0.90
       --dtype bfloat16
