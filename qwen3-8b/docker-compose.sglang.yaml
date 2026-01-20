@@ -1,0 +1,209 @@
+services:
+    qwen3-8b-sglang:
+        image: lmsysorg/sglang:latest
+        container_name: qwen3-8b-sglang
+
+        # Required for NCCL communication between GPUs in tensor parallelism
+        # Without this, TP will fail or be extremely slow
+        ipc: host
+
+        # Shared memory for inter-process communication
+        # 4g is sufficient for TP=2, increase to 8g+ for larger TP sizes
+        shm_size: "4g"
+
+        # Alternative to shm_size - use host's /dev/shm directly
+        # Uncomment if you have issues with shm_size
+        # volumes:
+        #   - /dev/shm:/dev/shm
+
+        ports:
+            - "8002:8002"
+
+        volumes:
+            - ~/.cache/huggingface:/root/.cache/huggingface
+            - ./logs:/app/logs
+            - /etc/localtime:/etc/localtime:ro
+
+            # Optional: persist torch.compile cache for faster restarts
+            # First start compiles kernels (~2-5 min), cache eliminates this on subsequent starts
+            - ./sglang_cache:/root/.cache/torch
+
+        environment:
+            - HF_TOKEN=${HF_TOKEN}
+            - PYTHONUNBUFFERED=1
+
+            # Fallback: allows context length override if YaRN detection fails
+            # SGLang may reject context > native without this
+            - SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+
+            # Optional: enable for detailed NCCL debugging if TP fails
+            # - NCCL_DEBUG=INFO
+
+            # Optional: force specific NCCL algorithm if you see communication issues
+            # - NCCL_ALGO=Ring
+
+        entrypoint: python3 -m sglang.launch_server
+
+        command: >
+            --model-path Qwen/Qwen3-8B
+            --port 8002
+            --host 0.0.0.0
+            --served-model-name qwen3-8b
+            --trust-remote-code
+
+            --tp 2
+
+            --context-length 65536
+
+            --json-model-override-args '{"rope_scaling":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":32768}}'
+
+            --mem-fraction-static 0.90
+
+            --chunked-prefill-size 4096
+
+            --max-running-requests 8
+
+            --schedule-policy lpm
+
+            --enable-p2p-check
+
+            --dtype bfloat16
+
+            --enable-metrics
+
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          device_ids: ["0", "1"]
+                          capabilities: [gpu]
+
+        restart: unless-stopped
+
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            # SGLang takes longer to start than vLLM due to:
+            # - FlashInfer kernel compilation
+            # - CUDA graph capture
+            # - Model loading with TP sharding
+            # First start: 3-5 min, subsequent: 1-2 min (with cache)
+            start_period: 300s
+
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "50m"
+                max-file: "5"
+
+networks:
+    default:
+        name: qwen3-sglang-network
+
+# =============================================================================
+# TUNING GUIDE
+# =============================================================================
+#
+# MONITOR THESE METRICS IN LOGS:
+# -----------------------------------------------------------------------------
+# - "token usage: X.XX" — KV cache utilisation. Target > 0.9 for good throughput
+#   If < 0.9 with queued requests: decrease --schedule-conservativeness to 0.3
+#   If frequent OOM warnings: increase --schedule-conservativeness to 1.3
+#
+# - "available_gpu_mem: X.XX GB" — shown at startup
+#   Target 5-8 GB free for activations
+#   Too high (>10GB): increase --mem-fraction-static
+#   Too low (<4GB): decrease --mem-fraction-static or reduce context
+#
+# - "decode out of memory happened" — occasional is OK, frequent means:
+#   Reduce --max-running-requests or --mem-fraction-static
+#
+#
+# PERFORMANCE OPTIMISATION:
+# -----------------------------------------------------------------------------
+# 1. If throughput is priority and memory allows:
+#    --schedule-policy fcfs          # if no shared prefixes
+#    --max-running-requests 16       # increase batch size
+#    --mem-fraction-static 0.90      # more KV cache
+#
+# 2. If latency is priority:
+#    --max-running-requests 4        # smaller batches
+#    --chunked-prefill-size 2048     # faster prefill chunks
+#
+# 3. For RAG with shared system prompts (your case):
+#    --schedule-policy lpm           # longest prefix match (default choice)
+#    RadixAttention will cache common prefixes automatically
+#
+# 4. If you see "peer access not supported" errors:
+#    --enable-p2p-check              # already included above
+#
+# 5. For small models on small batches:
+#    --enable-torch-compile          # JIT optimisation
+#    Note: increases startup time significantly
+#
+#
+# CONTEXT LENGTH vs MEMORY TRADE-OFFS:
+# -----------------------------------------------------------------------------
+# RTX A4000 (16GB) x 2 with TP=2 and Qwen3-8B:
+#
+# Context   | YaRN factor | mem-fraction | max-running | Notes
+# ----------|-------------|--------------|-------------|------------------
+# 32768     | N/A (native)| 0.90         | 16          | Comfortable
+# 65536     | 2.0         | 0.85         | 8           | Current config
+# 65536     | 2.0         | 0.88         | 12          | Test after stable
+# 131072    | 4.0         | 0.80         | 4           | Very tight, test carefully
+#
+#
+# ROPE SCALING (extending beyond native context):
+# -----------------------------------------------------------------------------
+# Qwen3-8B native: 32K tokens
+# With YaRN factor=2.0: ~65K tokens
+# With YaRN factor=4.0: ~128K tokens
+#
+# SGLang syntax (already configured above for 65K):
+#    --json-model-override-args '{"rope_scaling":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":32768}}'
+#    --context-length 65536
+#
+# For 128K context (if you have the VRAM):
+#    --json-model-override-args '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
+#    --context-length 131072
+#
+# Note: Higher factors may degrade short-context quality slightly.
+# Factor 2.0 is the sweet spot for 65K without noticeable degradation.
+#
+# If you see: "ValueError: User-specified context_length > derived context_length"
+# Ensure SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 is set (already in env above)
+#
+# Alternative rope_type options:
+#    "linear" — simple interpolation, degrades faster
+#    "dynamic" — adaptive but less consistent
+#    "yarn" — best for 2x+ extension (recommended)
+#
+#
+# QUANTISATION OPTIONS:
+# -----------------------------------------------------------------------------
+# If memory is too tight, consider:
+#    --quantization fp8              # ~50% memory reduction, minimal quality loss
+#    --kv-cache-dtype fp8_e5m2       # compress KV cache specifically
+#
+# For INT4/AWQ (if you have quantised checkpoint):
+#    --quantization awq
+#
+#
+# DEBUGGING:
+# -----------------------------------------------------------------------------
+# 1. Check GPU memory during operation:
+#    docker exec qwen3-8b-sglang nvidia-smi
+#
+# 2. Test endpoint manually:
+#    curl http://localhost:8002/v1/models
+#    curl http://localhost:8002/health
+#
+# 3. Benchmark before production:
+#    docker exec qwen3-8b-sglang python3 -m sglang.bench_serving \
+#      --backend sglang --port 8002 --num-prompt 100
+#
+# =============================================================================
