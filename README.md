@@ -8,8 +8,8 @@ Production Docker Compose configurations for a complete RAG pipeline.
 - **Milvus** (`milvus/`, `milvus-gpu/`) — Vector database, CPU and GPU variants (port 19530)
 - **Qwen3 Models** (`qwen3-*/`) — LLMs (0.6B to 8B), OpenAI-compatible API
   - `qwen3-1.7b/` — Balanced production config
-  - `qwen3-8b/` — vLLM (multi-GPU, extended context window throug YaRN)
-  - `qwen3-8b/docker-compose.sglang.yaml` — SGLang (multi-GPU, RAG-optimised with prefix caching, extended context window throug YaRN)
+  - `qwen3-8b/` — vLLM (multi-GPU, extended context window through YaRN)
+  - `qwen3-8b/docker-compose.sglang.yaml` — SGLang (multi-GPU, RAG-optimised with prefix caching, extended context window through YaRN)
 
 ## Quick Start
 
