@@ -40,4 +40,4 @@ Each service is independent; compose them as needed.
 
 ## License
 
-Milvus (AGPL 3.0), vLLM/SGLang (Apache 2.0), Qwen3 (Apache 2.0), BGE-M3 (MIT).
+Milvus (Apache 2.0), vLLM/SGLang (Apache 2.0), Qwen3 (Apache 2.0), BGE-M3 (MIT).
