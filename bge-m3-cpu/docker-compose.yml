@@ -1,0 +1,18 @@
+# /aio/docker-compose.yml
+services:
+    tei:
+        image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7.2
+        ports:
+            - "80:80"
+        command: >
+            --model-id BAAI/bge-m3
+            --dtype float32
+            --max-concurrent-requests 128
+            --max-batch-tokens 8192
+            --port 80
+        volumes:
+            - hf_cache:/data
+        restart: unless-stopped
+
+volumes:
+    hf_cache:
