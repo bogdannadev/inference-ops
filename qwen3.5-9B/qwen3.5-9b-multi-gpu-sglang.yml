@@ -205,6 +205,8 @@ services:
 
             --reasoning-parser qwen3
 
+            --tool-call-parser qwen3_coder
+
             --mem-fraction-static 0.85
 
             --chunked-prefill-size 8192
