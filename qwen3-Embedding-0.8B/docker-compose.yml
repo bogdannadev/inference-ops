@@ -1,0 +1,51 @@
+services:
+  qwen3-embedding:
+    image: lmsysorg/sglang:latest
+    container_name: qwen3-embedding
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - PYTHONUNBUFFERED=1
+      - SGLANG_DISABLE_FLASHINFER=1
+    entrypoint: python3 -m sglang.launch_server
+    command: >
+      --model-path Qwen/Qwen3-Embedding-0.6B
+      --is-embedding
+      --host 0.0.0.0
+      --port 30000
+      --served-model-name qwen3-embedding-0.6b
+      --dtype auto
+      --context-length 32768
+      --mem-fraction-static 0.90
+      --max-running-requests 128
+      --chunked-prefill-size 8192
+      --enable-metrics
+      --trust-remote-code
+    ports:
+      - "30000:30000"
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia # Nvidia T4 currently
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:30000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
