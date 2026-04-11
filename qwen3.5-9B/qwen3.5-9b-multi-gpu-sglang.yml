@@ -2,120 +2,96 @@
 # QWEN3.5-9B SGLANG DEPLOYMENT — LEGAL RAG + VISION
 # =============================================================================
 #
-# Hardware:   2× RTX A4000 (16GB each, SM 8.6 Ampere) = 32GB total VRAM
-# Model:      Qwen/Qwen3.5-9B (~10B params, ~20GB BF16)
-# Engine:     SGLang nightly with Gated DeltaNet + RadixAttention
+# Hardware:   4× RTX A4000 (16 GB each, SM86 Ampere, PCIe 3.0) = 64 GB total
+# Model:      Qwen/Qwen3.5-9B (~5B params dense, ~10 GB BF16 per shard at TP=4)
+# Engine:     SGLang nightly (CUDA 13, April 2026)
 # Workload:   Legal document RAG with optional document image understanding
 #
 # =============================================================================
-# ARCHITECTURE NOTES — QWEN3.5 HYBRID MODEL
+# ARCHITECTURE — QWEN3.5 HYBRID (GDN + GQA)
 # =============================================================================
 #
-# Qwen3.5-9B uses a HYBRID architecture, fundamentally different from Qwen3-8B:
+#   Layout: 8 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN))
 #
-#   Hidden layout: 8 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN))
+#   - 24 of 32 layers: Gated DeltaNet (linear attention, O(1) per token)
+#   - 8 of 32 layers:  standard GQA (quadratic, maintains KV cache)
+#   - Only 8 GQA layers maintain KV cache → ~75% memory reduction vs Qwen3
 #
-#   This means:
-#   - 24 out of 32 layers use Gated DeltaNet (linear attention, O(1) per token)
-#   - 8 out of 32 layers use standard GQA (quadratic attention with KV cache)
-#   - Only the 8 GQA layers maintain KV cache, reducing memory by ~75% vs Qwen3
+#   KV cache math (8 attention layers):
+#     4 KV heads × 256 head_dim × 2 (K+V) × 2 bytes (BF16) = 4 KB/token/layer
+#     8 layers × 4 KB = 32 KB/token total
+#     With TP=4: 8 KB/token/GPU
 #
-#   KV cache math for the 8 attention layers:
-#   - 4 KV heads × 256 head_dim × 2 (K+V) × 2 bytes (BF16) = 4KB per token per layer
-#   - 8 layers × 4KB = 32KB per token total
-#   - At 128K context: 32KB × 131,072 = ~4GB KV cache total
-#   - With TP=2: ~2GB KV cache per GPU
+#   DeltaNet layers maintain fixed-size recurrent state — does NOT grow
+#   with sequence length. This is the key efficiency advantage.
 #
-#   Gated DeltaNet layers maintain a fixed-size recurrent state that does NOT grow
-#   with sequence length. This is the key efficiency advantage: most of the model
-#   processes long contexts in O(n) rather than O(n²).
-#
-# Native context: 262,144 tokens (no YaRN needed for ≤262K)
-# Multimodal:     Built-in vision encoder (early fusion, not separate ViT)
-# Thinking mode:  Generates <think>...</think> by default, disabled via API
+#   Native context: 262,144 tokens (no YaRN needed for ≤262K)
+#   Multimodal:     Built-in vision encoder (early fusion)
+#   Thinking mode:  <think>...</think> by default, disabled via API
 #
 # =============================================================================
-# DELTANET-SPECIFIC CONSTRAINTS (IMPORTANT)
+# DELTANET-SPECIFIC CONSTRAINTS
 # =============================================================================
 #
-# The Gated DeltaNet layers introduce constraints that pure transformer models
-# don't have. These were discovered in production benchmarks (sgl-project/sglang
-# issue #19603 on Qwen3.5-122B-A10B):
+# 1. ATTENTION BACKEND: FlashInfer may fail on DeltaNet layers.
+#    If startup crashes → add --attention-backend triton.
 #
-# 1. ATTENTION BACKEND: FlashInfer may fail on the 24 DeltaNet layers.
-#    If startup crashes, you MUST switch to --attention-backend triton.
-#    The Triton backend uses fused_recurrent_gated_delta_rule kernels.
+# 2. RADIX CACHE: HiRadixCache blocked ("only supports MHA and MLA").
+#    Standard RadixAttention may work for 8 GQA layers.
+#    Use --enable-cache-report to verify. If 0% hits → use fcfs.
 #
-# 2. RADIX CACHE: HiRadixCache (hierarchical) is blocked — DeltaNet triggers
-#    "HiRadixCache only supports MHA and MLA" error. Standard RadixAttention
-#    MAY still work for the 8 GQA layers. Use --enable-cache-report to verify.
-#    If prefix cache hit rate is 0%, switch --schedule-policy from lpm to fcfs.
-#
-# 3. FP8 KV CACHE: May cause silent corruption with DeltaNet layers.
-#    The 122B benchmark required --kv-cache-dtype bf16 explicitly.
-#    Test FP8 KV carefully before production — quality degradation may be silent.
+# 3. FP8 KV CACHE: May cause silent corruption with DeltaNet.
+#    Test carefully before production.
 #
 # 4. CUDA GRAPHS: May conflict with DeltaNet Triton kernels.
-#    If you see CUDA graph capture errors, add --disable-cuda-graph.
-#    This hurts decode latency but ensures stability.
+#    If graph capture fails → add --disable-cuda-graph.
 #
 # =============================================================================
-# VRAM BUDGET (per GPU with TP=2)
+# VRAM BUDGET PER GPU (TP=4, mem_fraction=0.75, all optimisations active)
 # =============================================================================
 #
-#   Model weights:     ~10 GB  (20GB total / 2 GPUs)
-#   Vision encoder:    ~1 GB   (shared across TP, early fusion components)
-#   Available:         ~5 GB   (for KV cache + activations + runtime)
+#   Usable:                      12,288 MB  (16,384 × 0.75)
+#   Model weights (BF16/TP=4):   ~5,000 MB  (20 GB / 4 GPUs)
+#   Vision encoder:                ~250 MB
+#   CUDA graphs + torch.compile: ~1,200 MB  (compiled graphs are larger)
+#   Mamba state buffers (V2):      ~500 MB  (extra_buffer overhead)
+#   MTP draft buffers:             ~500 MB  (speculative token workspace)
+#   Scheduler + activations:       ~300 MB
+#   ─────────────────────────────────────────────────────────────
+#   Available for KV cache:      ~4,538 MB
 #
-#   KV cache per concurrent request at 128K context:
-#     ~2 GB per request (only 8 attention layers cache, not all 32)
+#   At 8 KB/token/GPU:
+#     4,538 MB / 8 KB ≈ 567K tokens total capacity
+#     At 65K context: ~8 concurrent sessions (theoretical)
+#     max-running-requests=4 at 65K → ~260K tokens → 46% utilisation (safe)
 #
-#   Therefore:
-#   - 2 concurrent requests × 128K = ~4 GB KV → leaves ~1 GB headroom ← tight
-#   - 4 concurrent requests × 65K  = ~4 GB KV → leaves ~1 GB headroom ← similar
-#   - With mem-fraction-static 0.80: SGLang allocates ~12.8 GB for model + cache
-#     Remaining ~3.2 GB for activations, vision processing, and runtime overhead
+# =============================================================================
+# IMAGE COMPATIBILITY WARNING — CUDA 13 ON SM86
+# =============================================================================
 #
-#   Bottom line: 128K context is comfortable. 262K is too tight for concurrency.
+# This image uses CUDA 13. SM86 (A4000) is Ampere and architecturally
+# compatible, but requires NVIDIA driver ≥570. Verify before deploying:
+#   nvidia-smi --query-gpu=driver_version --format=csv,noheader
+#
+# If you see "no kernel image is available for execution on the device",
+# fall back to the cu12 image:
+#   lmsysorg/sglang:nightly-dev-20260302-8a0b7575
+#
+# The cu13 nightly includes:
+#   - Qwen3.5 GDN/KDA Optimization (transposed linear attention state layout)
+#   - Transformers 5.3.0 upgrade
+#   - Flash Attention 4 support (SM86 compatible via sgl-kernel)
+#   - HiSparse sparse attention backend for long-context
 #
 # =============================================================================
 
 services:
     qwen35-9b-sglang:
 
-        # =====================================================================
-        # IMAGE SELECTION
-        # =====================================================================
-        # Qwen3.5 requires SGLang from main branch (Gated DeltaNet kernels,
-        # fused_recurrent_gated_delta_rule Triton kernels, MROPE support).
-        #
-        # The stable :latest tag may NOT include Qwen3.5 support.
-        # Nightly confirmed working with Qwen3.5 DeltaNet architecture.
-        #
-        # Verify compatibility before switching images:
-        #   docker run --rm <image> python3 -c \
-        #     "from sglang.srt.models.qwen3_5 import *; print('Qwen3.5 OK')"
-        #
-        # Build from source if nightly is unavailable:
-        #   docker build -t sglang-qwen35 \
-        #     --build-arg CUDA_VERSION=12.4.1 \
-        #     https://github.com/sgl-project/sglang.git#main
-        # =====================================================================
-        image: lmsysorg/sglang:nightly-dev-20260302-8a0b7575
+        image: lmsysorg/sglang:nightly-dev-cu13-20260407-5cc246e0
 
         container_name: qwen35-9b-sglang
 
-        # =====================================================================
-        # IPC AND SHARED MEMORY
-        # =====================================================================
-        # ipc: host — required for NCCL inter-process communication during
-        # tensor parallelism. Without this, GPU-to-GPU communication either
-        # fails or falls back to slow socket transport.
-        #
-        # shm_size: "4g" — shared memory for NCCL buffers and PyTorch IPC.
-        # 4GB is sufficient for TP=2. If you see NCCL errors about shared
-        # memory allocation, increase to 8g.
-        # =====================================================================
         ipc: host
         shm_size: "8g"
 
@@ -123,300 +99,95 @@ services:
             - "8002:8002"
 
         volumes:
-            # Model weights cache — avoids re-downloading on container restart.
-            # Qwen3.5-9B is ~20GB in BF16 safetensors format.
-            # First pull takes 5-15 min depending on bandwidth.
-            - ~/.cache/huggingface:/root/.cache/huggingface
-
-            # Application logs — persisted outside container for debugging.
+            - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
             - ./logs:/app/logs
-
-            # Timezone sync — ensures log timestamps match host.
             - /etc/localtime:/etc/localtime:ro
-
-            # Torch compile + Triton kernel cache — CRITICAL for restart speed.
-            #
-            # Qwen3.5 first start compiles:
-            #   1. Gated DeltaNet Triton kernels (fused_recurrent_gated_delta_rule)
-            #   2. FlashInfer/Triton kernels for the 8 GQA attention layers
-            #   3. CUDA graph capture for common batch sizes
-            #   4. torch.compile inductor graphs (if --enable-torch-compile is on)
-            #
-            # First start (no cache):            5-10 min
-            # First start (with torch.compile):  10-20 min
-            # Subsequent starts (cached):         2-4 min
+            # Triton + torch kernel caches — critical for restart speed.
+            # First start (all optimisations): 10-20 min
+            # Subsequent starts (cached): 3-5 min
             - ./sglang_cache:/root/.cache/torch
-
-            # Torch inductor cache — separate from torch general cache.
-            # Used by --enable-torch-compile for compiled kernel storage.
-            # Sharing this across machines avoids recompilation on each host.
             - ./inductor_cache:/root/.cache/inductor
 
-            # Alternative: mount host /dev/shm directly if shm_size causes issues
-            # - /dev/shm:/dev/shm
-
         environment:
-            - HF_TOKEN=${HF_TOKEN}
+            - HF_TOKEN=${HF_TOKEN:-}
             - PYTHONUNBUFFERED=1
-
-            # Torch inductor cache directory — must match the volume mount above.
-            # Without this, torch.compile stores caches in /tmp which Docker clears.
             - TORCHINDUCTOR_CACHE_DIR=/root/.cache/inductor
+            # V2 overlap scheduler — required for --mamba-scheduler-strategy extra_buffer.
+            # Without this, SGLang silently falls back to V1 (no_buffer).
+            - SGLANG_ENABLE_SPEC_V2=True
 
-            # Uncomment if you hit CuDNN version issues with vision encoder Conv3d:
+            # Uncomment if CuDNN version issues with vision encoder Conv3d:
             # - SGLANG_DISABLE_CUDNN_CHECK=1
 
-            # Optional: NCCL debugging for tensor parallelism issues.
+            # NCCL debugging for tensor parallelism issues:
             # - NCCL_DEBUG=INFO
             # - NCCL_ALGO=Ring
 
         entrypoint: python3 -m sglang.launch_server
 
-        # =====================================================================
-        # LAUNCH COMMAND — ALL FLAGS WITH DOCUMENTATION
-        # =====================================================================
+        # =================================================================
+        # COMMAND FLAGS REFERENCE
+        # =================================================================
         #
-        # Flags organised into sections:
-        #   [CORE]         — model identity, networking, parallelism
-        #   [CONTEXT]      — context length, reasoning parser
-        #   [MEMORY]       — VRAM allocation, KV cache, prefill
-        #   [SCHEDULING]   — request scheduling, concurrency limits
-        #   [CACHING]      — RadixAttention prefix caching
-        #   [BACKEND]      — attention backend, dtype, DeltaNet workarounds
-        #   [MONITORING]   — metrics, logging, cache reports
-        #   [TORCH COMPILE] — JIT optimisation (Phase 2)
-        #   [MTP]          — Multi-Token Prediction speculative decoding (Phase 2)
-        #   [QUANTISATION] — FP8/INT4 weight and KV cache compression (Phase 3)
+        # --model-path Qwen/Qwen3.5-9B        HF model (~20 GB download)
+        # --served-model-name qwen35-9b        API model name
+        # --trust-remote-code                  Required for GDN + MROPE
+        # --tp 4                               TP across 4 GPUs (~5 GB/GPU)
+        # --context-length 65536               65K native, no YaRN
+        # --reasoning-parser qwen3             Parses <think>...</think>
+        # --tool-call-parser qwen3_coder       Hermes-style tool calls
+        # --mem-fraction-static 0.75           Reduced for compile+MTP+V2
+        # --chunked-prefill-size 8192          8K chunks for legal docs
+        # --max-running-requests 4             Reduced for MTP draft buffers
+        # --schedule-policy lpm                RadixAttention prefix caching
+        # --schedule-conservativeness 1.0      Conservative for legal workloads
+        # --mamba-scheduler-strategy extra_buffer   V2 overlap scheduler
+        # --page-size 64                       FLA_CHUNK_SIZE alignment
+        # --enable-torch-compile               Kernel fusion via inductor
+        # --speculative-algo NEXTN             MTP speculative decoding
+        # --speculative-num-steps 3            MTP lookahead depth
+        # --speculative-eagle-topk 1           MTP top-k candidates
+        # --speculative-num-draft-tokens 4     MTP draft token count
+        # --enable-p2p-check                   GPU P2P topology check
+        # --dtype bfloat16                     Training precision
+        # --enable-metrics                     Prometheus at /metrics
+        # --enable-cache-report                Prefix cache hit rate logging
+        # --log-requests                       Request metadata logging
         #
-        # Commented-out flags are ready to enable. Each has a test instruction.
-        # =====================================================================
+        # TROUBLESHOOTING:
+        #   FlashInfer crash     → add --attention-backend triton
+        #   CUDA graph OOM       → add --cuda-graph-max-bs 8 or 0.70 mem
+        #   torch.compile fail   → remove --enable-torch-compile
+        #   MTP accept_len < 1.5 → remove all 4 speculative flags
+        #   cache_hit_rate = 0   → change --schedule-policy to fcfs
+        # =================================================================
 
         command: >
-
             --model-path Qwen/Qwen3.5-9B
             --port 8002
             --host 0.0.0.0
             --served-model-name qwen35-9b
             --trust-remote-code
-
             --tp 4
-
             --context-length 65536
-
             --reasoning-parser qwen3
-
             --tool-call-parser qwen3_coder
-
-            --mem-fraction-static 0.85
-
+            --mem-fraction-static 0.75
             --chunked-prefill-size 8192
-
-            --max-running-requests 8
-
+            --max-running-requests 4
             --schedule-policy lpm
-
             --schedule-conservativeness 1.0
-
+            --mamba-scheduler-strategy extra_buffer
+            --page-size 64
+            --speculative-algo NEXTN
+            --speculative-num-steps 3
+            --speculative-eagle-topk 1
+            --speculative-num-draft-tokens 4
             --enable-p2p-check
-
             --dtype bfloat16
-
             --enable-metrics
-
             --enable-cache-report
-
             --log-requests
-
-        # =================================================================
-        # [CORE] MODEL IDENTITY, NETWORKING, PARALLELISM
-        # =================================================================
-        #
-        # --model-path Qwen/Qwen3.5-9B
-        #   HF model identifier. Downloads on first run (~20GB).
-        #
-        # --served-model-name qwen35-9b
-        #   Model name in API. Update your client: model="qwen35-9b"
-        #
-        # --trust-remote-code
-        #   Required — Qwen3.5 uses custom Gated DeltaNet + MROPE code.
-        #
-        # --tp 2
-        #   Tensor Parallelism. MANDATORY — 20GB model > 16GB single GPU.
-        #
-        #
-        # =================================================================
-        # [CONTEXT] CONTEXT LENGTH, REASONING PARSER
-        # =================================================================
-        #
-        # --context-length 131072
-        #   128K native context. No YaRN needed (native 262K).
-        #   DeltaNet advantage: only 8/32 layers pay KV cost.
-        #
-        # --reasoning-parser qwen3
-        #   REQUIRED. Parses <think>...</think> output blocks.
-        #   Disable thinking per-request:
-        #     extra_body={"chat_template_kwargs": {"enable_thinking": False}}
-        #
-        #
-        # =================================================================
-        # [MEMORY] VRAM ALLOCATION, KV CACHE, PREFILL
-        # =================================================================
-        #
-        # --mem-fraction-static 0.80
-        #   0.80 × 16GB = 12.8 GB/GPU for weights + KV pool.
-        #   ~3.2 GB free for activations, vision, DeltaNet states.
-        #
-        #   TUNING:
-        #   - "decode out of memory" frequent → 0.75
-        #   - Stable, want more throughput → 0.85
-        #   - With --enable-torch-compile → 0.75 (needs more activation room)
-        #   - With --quantization fp8 → 0.85 (halved weights = more KV room)
-        #
-        # --chunked-prefill-size 4096
-        #   Large prompts split into 4096-token chunks.
-        #   Lower (2048) = less memory spikes. Higher (8192) = faster prefill.
-        #
-        #
-        # =================================================================
-        # [SCHEDULING] REQUEST SCHEDULING, CONCURRENCY
-        # =================================================================
-        #
-        # --max-running-requests 4
-        #   Conservative for Phase 1. Each 128K request = ~2GB KV.
-        #   TUNING:
-        #   - OOM: reduce to 2-3
-        #   - Stable: increase to 6
-        #   - With MTP: reduce by 1
-        #   - With FP8 KV: increase to 6-8
-        #
-        # --schedule-policy lpm
-        #   Longest Prefix Match — for RAG shared system prompts.
-        #   ⚠ If --enable-cache-report shows 0% hits → switch to fcfs
-        #
-        # --schedule-conservativeness 1.0
-        #   How aggressively scheduler accepts new requests.
-        #   TUNING (from logs):
-        #   - "token usage < 0.9" + "#queue-req > 0" → decrease to 0.3
-        #   - "decode out of memory" frequent → increase to 1.3
-        #
-        #
-        # =================================================================
-        # [CACHING] RADIX ATTENTION PREFIX CACHING
-        # =================================================================
-        #
-        # --enable-cache-report
-        #   Shows prefix cache hit rate in logs. CRITICAL for verifying
-        #   RadixAttention works with DeltaNet. Target > 0.3 for RAG.
-        #   If 0.00 consistently → switch to --schedule-policy fcfs
-        #
-        # Disable prefix caching (for benchmarking baselines):
-        # --disable-radix-cache
-        #
-        # Eviction policy (default LRU, good for RAG):
-        # --radix-eviction-policy lru
-        #
-        #
-        # =================================================================
-        # [BACKEND] ATTENTION, DTYPE, DELTANET WORKAROUNDS
-        # =================================================================
-        #
-        # --enable-p2p-check
-        #   Verifies GPU P2P access. Falls back to PCIe gracefully.
-        #
-        # --dtype bfloat16
-        #   Matches training precision. Optimal for Qwen3.5.
-        #
-        # ATTENTION BACKEND — uncomment if FlashInfer crashes on DeltaNet:
-        # --attention-backend triton
-        #
-        # KV CACHE DTYPE — uncomment for explicit BF16 (safe with DeltaNet):
-        # --kv-cache-dtype bf16
-        #
-        # KV CACHE DTYPE — FP8 (risky with DeltaNet, test carefully):
-        # --kv-cache-dtype fp8_e5m2
-        #
-        # CUDA GRAPHS — uncomment if graph capture fails:
-        # --disable-cuda-graph
-        #
-        # CUDA GRAPH MAX BATCH SIZE (only if scaling concurrency):
-        # --cuda-graph-max-bs 32
-        #
-        #
-        # =================================================================
-        # [MONITORING] METRICS, LOGGING, CACHE REPORTS
-        # =================================================================
-        #
-        # --enable-metrics
-        #   Prometheus at /metrics. Scrape with Prometheus, viz with Grafana.
-        #
-        # --log-requests
-        #   Logs all request metadata. Remove for production after profiling.
-        #
-        # Request log verbosity (1=metadata only, 2=metadata+content):
-        # --log-requests-level 1
-        #
-        # Decode log frequency (default 40, lower for more granular):
-        # --decode-log-interval 20
-        #
-        #
-        # =================================================================
-        # [TORCH COMPILE] JIT OPTIMISATION — Phase 2
-        # =================================================================
-        #
-        # Fuses small ops into optimised Triton kernels via inductor.
-        # Best gains on small models + small batches (your case).
-        # First start: +5-15 min compilation. Cached in inductor_cache vol.
-        #
-        # --enable-torch-compile
-        #
-        # If CUDA graph capture fails after enabling:
-        # --disable-cuda-graph
-        #
-        # If DeltaNet kernels fail to compile: remove the flag entirely.
-        #
-        # BENCHMARK: compare tok/s before and after with:
-        #   docker exec qwen35-9b-sglang python3 -m sglang.bench_serving \
-        #     --backend sglang --port 8002 --num-prompt 50 \
-        #     --dataset-name random --random-input-len 4096 \
-        #     --random-output-len 512
-        #
-        #
-        # =================================================================
-        # [MTP] MULTI-TOKEN PREDICTION — Phase 2
-        # =================================================================
-        #
-        # Qwen3.5 trained with multi-step prediction heads.
-        # NEXTN predicts N tokens in parallel, verifies against autoregressive.
-        # Uncomment ALL FOUR flags together:
-        #
-        # --speculative-algo NEXTN
-        # --speculative-num-steps 3
-        # --speculative-eagle-topk 1
-        # --speculative-num-draft-tokens 4
-        #
-        # When enabling MTP, also adjust:
-        #   --max-running-requests 3  (draft buffers use ~0.5-1 GB)
-        #   --mem-fraction-static 0.75  (if OOM)
-        #
-        # Watch "accept len: X.XX" in logs. Target > 2.0.
-        # If < 1.5: workload doesn't benefit, disable MTP.
-        #
-        #
-        # =================================================================
-        # [QUANTISATION] FP8/INT4 — Phase 3
-        # =================================================================
-        #
-        # FP8 weights — halves model to ~5 GB/GPU. Massive KV headroom:
-        # --quantization fp8
-        #
-        # Combined FP8 weights + KV (if DeltaNet allows):
-        # --quantization fp8
-        # --kv-cache-dtype fp8_e5m2
-        #
-        # When enabling FP8 weights, adjust:
-        #   --mem-fraction-static 0.85  (more room for KV)
-        #   --max-running-requests 6-8  (more concurrent capacity)
-        #
 
         deploy:
             resources:
@@ -433,8 +204,6 @@ services:
             interval: 30s
             timeout: 10s
             retries: 3
-            # Without torch.compile:  5-10 min (first), 2-4 min (cached)
-            # With torch.compile:     10-20 min (first), 3-5 min (cached)
             start_period: 600s
 
         logging:
@@ -449,154 +218,27 @@ networks:
 
 
 # =============================================================================
-# TESTING SEQUENCE — STEP BY STEP
+# MIGRATION CHECKLIST — PREVIOUS IMAGE → cu13 NIGHTLY
 # =============================================================================
 #
-# Execute IN ORDER after first deployment. Each step builds on the previous.
+# ✅ Image:     nightly-dev-20260302 → nightly-dev-cu13-20260407-5cc246e0
+# ✅ Requires:  NVIDIA driver ≥570 (verify with nvidia-smi)
+# ✅ Gains:     GDN/KDA state layout optimisation, Transformers 5.3.0,
+#               Flash Attention 4, HiSparse sparse attention
+# ✅ Fixed:     Comments moved outside command scalar (YAML correctness)
+# ✅ Fixed:     Phase 3 quantisation: FP8 → AWQ INT4 (SM86 limitation)
+# ✅ Added:     SGLANG_ENABLE_SPEC_V2 env var (commented out) for V2 scheduler
+# ✅ Unchanged: TP=4, context 65K
+# ✅ Changed:   mem-fraction 0.85 → 0.75 (V2 + torch.compile + MTP headroom)
+# ✅ Changed:   max-requests 8 → 4 (MTP draft buffers + V2 state)
+# ✅ Added:     SGLANG_ENABLE_SPEC_V2=True (enabled)
+# ✅ Added:     --mamba-scheduler-strategy extra_buffer --page-size 64
+# ✅ Added:     --enable-torch-compile
+# ✅ Added:     --speculative-algo NEXTN + 3 MTP companion flags
+# ✅ Removed:   All phase comments (phases documented externally)
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 1: BASELINE STARTUP
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   docker compose -f docker-compose.qwen3.5-9b-sglang.yml up -d
-#   docker compose -f docker-compose.qwen3.5-9b-sglang.yml logs -f
-#
-#   WATCH FOR:
-#   a) "Attention backend not set. Use XXX backend by default."
-#      → Note which backend was auto-selected
-#   b) "available_gpu_mem: X.XX GB"
-#      → Target 3-5 GB/GPU. < 2 GB = lower mem-fraction-static
-#   c) FlashInfer errors on DeltaNet layers
-#      → Add --attention-backend triton, restart
-#   d) CUDA graph capture errors
-#      → Add --disable-cuda-graph, restart
-#
-#   VERIFY:
-#   curl http://localhost:8002/health
-#   curl http://localhost:8002/v1/models
-#   curl http://localhost:8002/v1/chat/completions \
-#     -H "Content-Type: application/json" \
-#     -d '{"model":"qwen35-9b","messages":[{"role":"user","content":"hello"}],"max_tokens":32}'
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 2: VERIFY PREFIX CACHING (RadixAttention + DeltaNet)
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   Send 3 requests with IDENTICAL system prompts, different user queries.
-#   Check logs for "cache_hit_rate" after 2nd and 3rd requests.
-#
-#   cache_hit_rate > 0:  ✅ Keep --schedule-policy lpm
-#   cache_hit_rate = 0:  ❌ Change to --schedule-policy fcfs
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 3: BASELINE BENCHMARK
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   docker exec qwen35-9b-sglang python3 -m sglang.bench_serving \
-#     --backend sglang --port 8002 --num-prompt 50 \
-#     --dataset-name random --random-input-len 4096 --random-output-len 512
-#
-#   Record: throughput (tok/s), median latency, p99 latency.
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 4: TEST ATTENTION BACKEND
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   If auto-selected FlashInfer and stable → test Triton:
-#     Add --attention-backend triton, restart, re-benchmark.
-#   Keep whichever gives better tok/s and stability.
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 5: TUNE SCHEDULE CONSERVATIVENESS
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   Run real workload 30+ min, then check logs:
-#   - "token usage < 0.9" + "#queue-req > 0" → decrease to 0.5, then 0.3
-#   - "decode out of memory" > 1x/min → increase to 1.3
-#   - Neither → leave at 1.0
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 6: TEST FP8 KV CACHE
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   a) Run 20 legal prompts with current config. Save outputs.
-#   b) Add --kv-cache-dtype fp8_e5m2, restart.
-#   c) Run SAME 20 prompts. Diff outputs.
-#   d) Outputs match: ✅ keep, increase --max-running-requests to 6.
-#      Outputs diverge: ❌ revert, optionally add --kv-cache-dtype bf16.
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 7: TEST TORCH.COMPILE
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   a) Add --enable-torch-compile, lower --mem-fraction-static to 0.75
-#   b) Restart (10-20 min first start). Watch for compilation errors.
-#   c) Re-benchmark. If tok/s > 10% improvement: keep.
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 8: TEST MTP SPECULATIVE DECODING
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   a) Add all 4 MTP flags. Lower --max-running-requests to 3.
-#   b) Restart. Watch "accept len:" in logs.
-#   c) Re-benchmark. accept_len > 2.0 = beneficial.
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 9: TEST FP8 WEIGHT QUANTISATION
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   a) Add --quantization fp8
-#   b) Increase --mem-fraction-static to 0.85, --max-running-requests to 6-8
-#   c) Compare legal extraction quality with BF16 baseline.
-#
-#
-# =============================================================================
-# MIGRATION CHECKLIST — QWEN3-8B → QWEN3.5-9B
-# =============================================================================
-#
-# SERVER:
-# ✅ Model:       Qwen/Qwen3-8B → Qwen/Qwen3.5-9B
-# ✅ Image:       latest → nightly-dev-20260302-8a0b7575
-# ✅ Container:   qwen3-8b-sglang → qwen35-9b-sglang
-# ✅ Model name:  qwen3-8b → qwen35-9b
-# ✅ Context:     65536 → 131072 (native, no YaRN)
-# ✅ Removed:     --json-model-override-args (YaRN)
-# ✅ Removed:     SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN
-# ✅ Added:       --reasoning-parser qwen3
-# ✅ Added:       --enable-cache-report, --log-requests
-# ✅ Added:       --schedule-conservativeness 1.0
-# ✅ Added:       TORCHINDUCTOR_CACHE_DIR + inductor_cache volume
-# ✅ mem-frac:    0.90 → 0.80
-# ✅ max-reqs:    8 → 4
-# ✅ start_period: 300s → 600s
-#
-# CLIENT:
-# ⚠️  model="qwen35-9b"
-# ⚠️  extra_body={"chat_template_kwargs": {"enable_thinking": False}}
-# ⚠️  Remove /nothink from system prompts
-# ⚠️  Sampling: temperature=0.7, top_p=0.8, top_k=20, presence_penalty=1.5
-#
-#
-# =============================================================================
-# EXTENDED CONTEXT (262K+) — FOR HARDWARE UPGRADE
-# =============================================================================
-#
-#   --json-model-override-args '{"text_config": {"rope_parameters": {
-#     "mrope_interleaved": true, "mrope_section": [11, 11, 10],
-#     "rope_type": "yarn", "rope_theta": 10000000,
-#     "partial_rotary_factor": 0.25, "factor": 4.0,
-#     "original_max_position_embeddings": 262144
-#   }}}'
-#   --context-length 1010000
-#   + SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 in environment
+# If cu13 fails on SM86 (kernel image errors), revert to:
+#   image: lmsysorg/sglang:nightly-dev-20260302-8a0b7575
 #
 #
 # =============================================================================
