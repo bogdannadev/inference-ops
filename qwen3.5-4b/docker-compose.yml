@@ -1,0 +1,130 @@
+# =============================================================================
+# QWEN3.5 SINGLE INSTANCE — 4B Q&A / TECH SUPPORT
+# Hardware: 1× RTX A4000 (16 GB, SM86 Ampere, PCIe 3.0)
+# Engine:  SGLang nightly (CUDA 13, April 2026)
+# Layout:  Single independent instance on GPU 1
+# =============================================================================
+#
+# INSTANCE B (GPU 1): Qwen3.5-4B BF16 — Q&A / tech support
+#
+# WHY THIS SETUP
+# ─────────────────────────────────────────────────────────────────────────────
+# The 4B model handles short Q&A and tech-support style workloads efficiently
+# while keeping VRAM usage moderate and concurrency comfortable on a 16 GB GPU.
+#
+# =============================================================================
+# VRAM BUDGET — INSTANCE B (Qwen3.5-4B, BF16, GPU 1)
+# =============================================================================
+#
+#   Usable (0.85 × 16,384):     13,926 MB
+#   Model weights (BF16):       ~10,000 MB
+#   CUDA graphs + MTP draft:     ~1,100 MB
+#   Scheduler + activations:       ~300 MB
+#   ─────────────────────────────────────────────────────────────────────────
+#   Available for KV cache:      ~2,526 MB
+#
+#   KV (8 of 36 layers, BF16): 8 KB/token
+#   2,526 MB / 8 KB ≈ 315K tokens → 6 sessions at 32K (comfortable)
+#
+# =============================================================================
+
+services:
+  qwen35-4b-qa:
+    image: lmsysorg/sglang:nightly-dev-cu13-20260407-5cc246e0
+    container_name: qwen35-4b-gpu1
+
+    ipc: host
+    shm_size: "2g"  # no torch.compile, less needed
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+    ports:
+      - "8002:8002"
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs/qa:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      - ./cache/torch_qa:/root/.cache/torch
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - SGLANG_ENABLE_SPEC_V2=True
+
+    entrypoint: python3 -m sglang.launch_server
+
+    command: >
+      --model-path Qwen/Qwen3.5-4B
+      --port 8002
+      --host 0.0.0.0
+      --served-model-name qwen35-4b-qa
+      --trust-remote-code
+      --context-length 32768
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --mem-fraction-static 0.80
+      --chunked-prefill-size 4096
+      --max-running-requests 4
+      --schedule-policy lpm
+      --schedule-conservativeness 0.5
+      --dtype bfloat16
+      --speculative-algo NEXTN
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --mamba-scheduler-strategy extra_buffer
+      --page-size 64
+      --enable-p2p-check
+      --enable-metrics
+      --enable-cache-report
+      --log-requests
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+networks:
+  default:
+    name: qwen35-qa-network
+
+# =============================================================================
+# PARAMETER REFERENCE — INSTANCE B (4B BF16)
+# =============================================================================
+#
+# --dtype bfloat16             Native precision. 4B fits comfortably.
+# --mem-fraction-static 0.80   Conservative setting as configured.
+# --max-running-requests 4     Balanced concurrency for Q&A workloads.
+# --schedule-conservativeness 0.5   Aggressive — short predictable outputs.
+#
+# =============================================================================
+# VALIDATION
+# =============================================================================
+#
+#   curl http://localhost:8002/health
+#   curl http://localhost:8002/v1/models
+#
+#   # 4B benchmark
+#   docker exec qwen35-4b-gpu1 python3 -m sglang.bench_serving \
+#     --backend sglang --port 8002 --num-prompt 60 \
+#     --dataset-name random --random-input-len 1000 --random-output-len 100 \
+#     --max-concurrency 6 --request-rate 4
+#
+# =============================================================================
