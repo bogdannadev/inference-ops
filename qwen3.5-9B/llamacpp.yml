@@ -1,0 +1,152 @@
+# =============================================================================
+# Qwen3.5-9B Q8_0 — Coding Agent Deployment
+# Hardware target: RTX A4000 16GB VRAM, SM86, CUDA 12, PCIe 4.0
+# Image: ghcr.io/ggml-org/llama.cpp:server-cuda (CUDA 12 prebuilt)
+#
+# VRAM budget at 32K context:
+#   Weights (Q8_0):          ~9.5 GB
+#   KV cache (q8_0, 32K):    ~0.5 GB  ← only 8/32 layers are full-attention
+#   CUDA context overhead:   ~0.3 GB
+#   Total:                  ~10.3 GB  → comfortable headroom on 16 GB
+#
+# Before running:
+#   1. Place Qwen3.5-9B-Q8_0.gguf inside ./models/
+#      Download: huggingface-cli download unsloth/Qwen3.5-9B-GGUF \
+#                  Qwen3.5-9B-Q8_0.gguf --local-dir ./models
+#   2. Ensure nvidia-container-toolkit is installed on the host
+# =============================================================================
+
+services:
+  qwen-coding-agent:
+
+    # Use the server-only image variant — smallest footprint, CUDA 12 support.
+    # The :server-cuda tag tracks the latest stable build from ggml-org/llama.cpp.
+    # Pin to a specific build tag (e.g. server-cuda-b5000) for reproducibility
+    # once you confirm this version works.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+
+    container_name: qwen-coding-agent
+
+    # Always restart unless you explicitly stop it.
+    # Covers OOM kills, driver hiccups, host reboots.
+    restart: unless-stopped
+
+    ports:
+      # llama-server's OpenAI-compatible endpoint.
+      # External:Internal — change the left side if 8080 is taken on the host.
+      # Prometheus metrics are served on the same port at /metrics.
+      # No separate port needed — your scraper just hits :8080/metrics.
+      - "8001:8001"
+
+    volumes:
+      # Mount your local models directory read-only into the container.
+      # The :ro flag prevents the container from accidentally modifying weights.
+      - /home/danila/models:/models:ro
+
+    # Pin to GPU device 0 explicitly.
+    # device_ids and count: all are mutually exclusive — use one or the other.
+    # "0" maps to CUDA_VISIBLE_DEVICES=0 inside the container.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+    # llama-server arguments passed as the container command.
+    #
+    # Why command: instead of LLAMA_ARG_* env vars?
+    # Several flags (--jinja, --flash-attn, --chat-template-kwargs) have no
+    # clean LLAMA_ARG_* equivalent for boolean or JSON values. Using command
+    # keeps everything in one place and is easier to read when typed manually.
+    #
+    # --n-gpu-layers 999
+    #   999 means "offload every layer" — llama.cpp clips this to actual layer
+    #   count. For Qwen3.5-9B that is 32 transformer blocks. Full GPU offload
+    #   eliminates all CPU↔GPU transfer stalls during decode.
+    #
+    # --ctx-size 32768
+    #   32K tokens. Comfortable for multi-file coding context.
+    #   At Q8_0 KV quantisation the KV cache costs ~0.5 GB on this model
+    #   because only 8/32 layers have full KV (the GDN/DeltaNet layers do not).
+    #   You can push to 65536 and still be under 11 GB total.
+    #
+    # --flash-attn
+    #   FlashAttention-2 kernel for the 8 attention layers.
+    #   SM86 (A4000) supports FA2 — mandatory for long-context efficiency.
+    #   Reduces peak VRAM during prefill; also speeds up prompt processing.
+    #
+    # --cache-type-k q8_0 / --cache-type-v q8_0
+    #   Quantise the KV cache from fp16 to q8_0.
+    #   Halves KV VRAM footprint with negligible quality loss at q8_0 precision.
+    #   More aggressive option: q4_0 (saves more, slight quality drop).
+    #
+    # --cont-batching
+    #   The server does not wait for a request to finish before starting the next.
+    #   Essential for tool-call-loop workloads where the agent fires sequential requests.
+    #
+    # --parallel 4
+    #   Number of concurrent decode slots. Each slot shares the KV cache space.
+    #   4 is appropriate for a single interactive agent with tool-call bursts.
+    #   Increase to 8 if you run multiple agents simultaneously.
+    #
+    # --batch-size 512
+    #   Prompt processing (prefill) batch size in tokens.
+    #   512 is a good default for A4000. Higher values speed up long-prompt
+    #   ingestion but use more VRAM during prefill spikes.
+    #
+    # --ubatch-size 512
+    #   Micro-batch size for token generation (decode phase).
+    #   Keeps decode batches aligned to 512 — matches batch-size above.
+    #
+    # --jinja
+    #   Enables Jinja2 chat template processing, required for tool calling support.
+    #   Without this flag the server uses a simplified template that does not
+    #   render tool schemas correctly.
+    #   Qwen3.5 has a native handler in llama.cpp (Qwen 2.5 family is supported).
+    #
+    # --chat-template-kwargs '{"enable_thinking":true}'
+    #   Qwen3.5 small models (0.8B–9B) disable thinking by default.
+    #   For a coding agent you explicitly want the <think>...</think> chain —
+    #   it significantly improves code planning, refactor reasoning, and
+    #   tool-call sequencing. This flag re-enables it via the Jinja template.
+    #
+    # --temp 0.6 / --top-p 0.95 / --top-k 20 / --min-p 0.0
+    #   Qwen3.5 official sampling parameters from the model card.
+    #   For more deterministic code output lower temp to 0.3–0.4.
+    #
+    # --metrics
+    #   Exposes Prometheus-compatible metrics at GET /metrics.
+    #   Tracks: tokens/s, KV cache usage, queue depth, slot utilisation.
+    #   Useful for tuning --parallel and --batch-size under real load.
+    command: >
+      -m /models/Qwen3.5-9B-Q8_0.gguf
+      --host 0.0.0.0
+      --port 8001
+      --n-gpu-layers 999
+      --ctx-size 32768
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --cont-batching
+      --parallel 4
+      --batch-size 512
+      --ubatch-size 512
+      --jinja
+      --reasoning on
+      --temp 0.6
+      --top-p 0.95
+      --top-k 20
+      --min-p 0.0
+      --metrics
+
+    # Healthcheck — Docker will mark the container unhealthy if the /health
+    # endpoint stops responding. Triggers restart: unless-stopped logic.
+    # start_period: grace period on startup (model load takes ~10-15s for Q8_0).
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
