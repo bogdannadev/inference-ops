@@ -1,0 +1,183 @@
+# =============================================================================
+# Qwen3.5-35B-A3B UD-Q4_K_XL — Coding Agent Deployment
+# Hardware target: RTX A4000 16GB VRAM + 80GB RAM + 16 vCPU
+# Image: ghcr.io/ggml-org/llama.cpp:server-cuda (CUDA 12 prebuilt)
+#
+# Quantisation: UD-Q4_K_XL (Unsloth Dynamic 2.0)
+#   Standard Q4_K_M quantises all layers uniformly.
+#   UD-Q4_K_XL detects sensitive tensors (GDN/DeltaNet layers, ssm_out,
+#   attention gates) and upscasts them to 8 or 16-bit automatically.
+#   This is the recommended quant for Qwen3.5 per unsloth benchmarks.
+#
+# Architecture: MoE — 35B total, 3B active per token.
+#   8 routed experts + 1 shared expert activate per forward pass (out of 256).
+#   FFN expert weights dominate the weight budget; attention is small.
+#
+# VRAM / RAM budget at 65K context:
+#   Total weights (UD-Q4_K_XL):  ~22 GB  ← split GPU/CPU via --override-tensor
+#   Attention layers on GPU:       ~6 GB  ← resident, no transfer cost
+#   Expert weights in RAM:        ~16 GB  ← streamed on demand via PCIe 4.0
+#   KV cache (q8_0, 65K):         ~2  GB  ← attention layers only
+#   CUDA context overhead:        ~0.5 GB
+#   GPU total:                    ~8.5 GB → comfortable on 16 GB
+#   RAM total:                    ~18  GB → comfortable on 80 GB
+#
+# Sampling (unsloth — thinking mode, precise coding tasks):
+#   temperature=0.6, top_p=0.95, top_k=20, min_p=0.0,
+#   presence_penalty=0.0, repeat_penalty=1.0
+#   Source: https://unsloth.ai/docs/models/qwen3.5
+#
+# Note: if you observe gibberish output, switch KV cache types to bf16:
+#   --cache-type-k bf16 --cache-type-v bf16
+#   This trades VRAM (~4GB extra) for numerical stability at long contexts.
+#
+# Download the model before running:
+#   uvx --from huggingface_hub huggingface-cli download \
+#     unsloth/Qwen3.5-35B-A3B-GGUF \
+#     "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf" \
+#     --local-dir /home/danila/models
+# =============================================================================
+
+services:
+  qwen-35b-coding-agent:
+
+    # Use the server-only image variant — smallest footprint, CUDA 12 support.
+    # The :server-cuda tag tracks the latest stable build from ggml-org/llama.cpp.
+    # Pin to a specific build tag (e.g. server-cuda-b5000) for reproducibility
+    # once you confirm this version works.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+
+    container_name: qwen-35b-coding-agent
+
+    # Always restart unless you explicitly stop it.
+    # Covers OOM kills, driver hiccups, host reboots.
+    restart: unless-stopped
+
+    ports:
+      # Separate port from the 9B instance — both can run simultaneously.
+      # External:Internal — container binds to 8002 internally.
+      - "8001:8001"
+
+    volumes:
+      # Mount your local models directory read-only into the container.
+      # The :ro flag prevents the container from accidentally modifying weights.
+      - /home/danila/models:/models:ro
+
+    # Pin to GPU device 0 explicitly.
+    # device_ids and count: all are mutually exclusive — use one or the other.
+    # "0" maps to CUDA_VISIBLE_DEVICES=0 inside the container.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+    # llama-server arguments passed as the container command.
+    #
+    # --n-gpu-layers 999
+    #   Offload all layers to GPU as the default. The --override-tensor flag
+    #   below selectively pulls expert tensors back to CPU RAM. Correct order:
+    #   set GPU as default first, then override specific tensors to CPU.
+    #
+    # --override-tensor blk\..*\.ffn_.*exps.*=CPU
+    #   Regex matching all routed expert FFN weight tensors across all 40 blocks.
+    #   Pins them to CPU RAM; attention + shared experts remain on GPU.
+    #   Tensor names pattern: blk.N.ffn_gate_exps.weight, blk.N.ffn_down_exps.weight etc.
+    #   If OOM occurs: verify tensor names with --verbose and adjust the regex.
+    #
+    # --ctx-size 65536
+    #   65K context. Fits comfortably: KV at q8_0 costs ~2GB for attention-only
+    #   layers, total GPU stays under 8.5GB. Good for multi-file coding context.
+    #
+    # --flash-attn on
+    #   FlashAttention-2 for the attention layers resident on GPU.
+    #   SM86 (A4000) supports FA2. Required for KV cache quantisation.
+    #
+    # --cache-type-k q8_0 / --cache-type-v q8_0
+    #   Quantise KV cache. Only attention layers contribute here.
+    #   If you see gibberish at long contexts, switch both to bf16.
+    #
+    # --cont-batching
+    #   Server does not wait for a request to finish before starting the next.
+    #   Essential for tool-call-loop workloads with sequential agent requests.
+    #
+    # --parallel 2
+    #   Reduced from 4 — partial offload increases per-slot memory cost.
+    #   2 slots is appropriate for a single agent with tool-call bursts.
+    #
+    # --batch-size 512
+    #   Prompt processing (prefill) batch size in tokens.
+    #   512 is safe for partial offload. Higher risks RAM pressure spikes.
+    #
+    # --ubatch-size 512
+    #   Micro-batch for decode phase. Increased to 512 to match batch-size
+    #   and reduce PCIe round-trips per decode step at 65K context.
+    #
+    # --threads 14
+    #   CPU threads for expert computation. Leave 2 for OS/Docker overhead.
+    #   Expert FFN runs on CPU — thread count directly gates decode speed.
+    #
+    # --jinja
+    #   Enables Jinja2 chat template processing required for tool calling.
+    #   Without this flag tool schemas are not rendered correctly.
+    #
+    # --reasoning on
+    #   Qwen3.5-35B-A3B (medium series) has thinking enabled by default.
+    #   Explicit flag survives future llama.cpp default changes.
+    #   Replaces the deprecated --chat-template-kwargs '{"enable_thinking":true}'.
+    #
+    # --temp 0.6
+    #   Unsloth recommended for thinking mode + precise coding tasks.
+    #
+    # --top-p 0.95 / --top-k 20 / --min-p 0.0
+    #   Unsloth recommended sampling parameters for Qwen3.5 thinking mode.
+    #
+    # --presence-penalty 0.0
+    #   Unsloth recommendation for precise coding: keep at 0.0.
+    #   For general tasks raise to 1.5 to reduce repetition.
+    #
+    # --repeat-penalty 1.0
+    #   1.0 = disabled effectively. Unsloth recommendation for thinking mode.
+    #
+    # --metrics
+    #   Exposes Prometheus-compatible metrics at GET /metrics.
+    #   Tracks: tokens/s, KV cache usage, queue depth, slot utilisation.
+    #   Critical for observing PCIe saturation via decode throughput drops.
+    command: >
+      -m /models/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf
+      --host 0.0.0.0
+      --port 8001
+      --n-gpu-layers 999
+      --n-cpu-moe 16
+      --fit off
+      --ctx-size 65536
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --cont-batching
+      --parallel 2
+      --batch-size 512
+      --ubatch-size 512
+      --threads 14
+      --jinja
+      --reasoning off
+      --temp 0.6
+      --top-p 0.95
+      --top-k 20
+      --min-p 0.0
+      --presence-penalty 0.0
+      --repeat-penalty 1.0
+      --metrics
+
+    # Healthcheck — Docker will mark the container unhealthy if the /health
+    # endpoint stops responding. Triggers restart: unless-stopped logic.
+    # start_period: 120s — 35B UD-Q4_K_XL with tensor routing takes ~60-90s
+    # to load and allocate the 65K KV cache on startup.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
