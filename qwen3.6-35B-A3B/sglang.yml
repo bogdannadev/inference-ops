@@ -17,7 +17,7 @@
 services:
   qwen36-35b-awq-sglang-tp4:
     # Use the newest nightly available after 19 April 2026; bump if needed.
-    image: lmsysorg/sglang:nightly-dev-cu13-20260416-a4cf2ea1
+    image: lmsysorg/sglang:nightly-dev-cu13-20260422-1408d974
     container_name: qwen36-35b-awq-sglang-tp4
     ipc: host
     shm_size: "8g"
@@ -151,7 +151,6 @@ services:
       --speculative-num-draft-tokens 4
       --attention-backend triton
       --mamba-backend triton
-      --disable-piecewise-cuda-graph
       --cuda-graph-max-bs 4
       --enable-metrics
       --enable-cache-report
@@ -169,7 +168,7 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
