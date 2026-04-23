@@ -1,0 +1,66 @@
+services:
+  qwen3-embedding-8b:
+    image: lmsysorg/sglang:nightly-dev-cu13-20260422-de962f32
+    container_name: qwen3-embedding-8b
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+    ports:
+      - "8005:8005"
+
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - HF_HUB_DISABLE_TELEMETRY=1
+
+    shm_size: 8gb
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+    # ✅ IMPORTANT FIX: specify the executable explicitly
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+
+      - --model-path
+      - boboliu/Qwen3-Embedding-8B-W4A16-G128
+
+      - --is-embedding
+
+      - --served-model-name
+      - qwen3-embedding-8b
+
+      - --host
+      - 0.0.0.0
+
+      - --port
+      - "8005"
+
+      - --quantization
+      - compressed-tensors
+
+      - --dtype
+      - bfloat16
+
+      - --context-length
+      - "32768"
+
+      - --mem-fraction-static
+      - "0.85"
+
+      - --enable-metrics
