@@ -1,0 +1,461 @@
+# ==============================================================================
+# Qwen3.6-35B-A3B-FP8 — agentic RAG production deployment
+# ==============================================================================
+# Hardware target : 4× RTX A4000 (Ampere sm_86, 16 GB GDDR6 per card, PCIe 4.0)
+# Total VRAM      : 64 GB across the node
+# Serving engine  : vLLM nightly (qwen3_5_moe architecture not in stable yet)
+# Model container : FP8 block-wise weights (35 GB on disk, ~17 GB activated)
+# Quant kernel    : Marlin W8A16 — auto-selected on Ampere (sm_86 has no native
+#                   FP8 tensor cores; weights stay FP8 in HBM, dequantise to
+#                   BF16 per-layer at compute time)
+# Replaces        : Qwen3.5-9B SGLang service — that container MUST be stopped
+#                   before `docker compose up` here, or NCCL will race for GPU
+#                   handles on ranks 0–3 and init will hang
+# Primary use     : Agentic RAG with tool calling, MCP agents, long-context
+#                   document QA with vision for scanned legal materials
+# ==============================================================================
+# Validation history for maintainers:
+#   - FlashInfer backend DISABLED on first boot (GitHub flashinfer-ai#2252
+#     reports crashes on DeltaNet+MoE hybrid architectures; Qwen3.6 shares
+#     this topology). Re-evaluate after stable baseline.
+#   - --enable-chunked-prefill REMOVED (redundant, on by default in V1 engine).
+#   - --distributed-executor-backend KEPT for explicitness (auto-selected
+#     otherwise when TP ≤ #GPUs on single host).
+#   - --calculate-kv-scales INCLUDED in commented form — enable only if the
+#     downloaded checkpoint lacks kv-scale fields in config.json.
+# ==============================================================================
+
+services:
+  qwen36-agentic-prod:
+
+    # --------------------------------------------------------------------------
+    # IMAGE: vLLM nightly container
+    # --------------------------------------------------------------------------
+    # The `qwen3_5_moe` architecture (shared by Qwen3.5 and Qwen3.6) is not
+    # yet in stable vLLM releases at the time of writing. The `:nightly` tag
+    # is rolled daily by the vllmbot CI; a date-stamped sibling tag is
+    # published alongside it, e.g. `:nightly-<git-sha>`.
+    #
+    # FIRST BOOT WORKFLOW:
+    #   1. Run `docker pull vllm/vllm-openai:nightly` ONCE.
+    #   2. Inspect with `docker inspect vllm/vllm-openai:nightly | grep -i cuda`
+    #      to confirm the CUDA runtime matches your host driver.
+    #   3. If your host reports CUDA 13.x (via `nvidia-smi`), switch this tag
+    #      to `:cu130-nightly` for freshest Blackwell-adjacent kernels —
+    #      though those bring you nothing on Ampere, so `:nightly` is fine.
+    #   4. Once the container boots successfully, REPLACE `:nightly` with the
+    #      exact dated tag `:nightly-<sha>` so a future `docker compose up`
+    #      doesn't silently pull a broken nightly.
+    #
+    # Anti-pattern: pinning `:latest` for production. `:latest` drifts with
+    # stable releases and may lack qwen3_5_moe support for weeks at a time.
+    # --------------------------------------------------------------------------
+    image: vllm/vllm-openai:v0.19.0
+
+    # NVIDIA container toolkit runtime — mounts /dev/nvidia* devices and the
+    # CUDA driver libraries from the host into the container.
+    runtime: nvidia
+
+    container_name: qwen36-agentic-prod
+
+    # --------------------------------------------------------------------------
+    # IPC + shared memory
+    # --------------------------------------------------------------------------
+    # `ipc: host` lets the container share the host's IPC namespace. This is
+    # MANDATORY for tensor parallelism > 1: PyTorch and NCCL use POSIX shared
+    # memory (/dev/shm) for cross-process tensor handoff between TP workers.
+    # Without it, TP init hangs at the first allreduce.
+    ipc: host
+
+    # Shared memory size. Default Docker /dev/shm is 64 MB — far too small.
+    # 16g is generous for TP=4 + 131K context; 8g is usually sufficient in
+    # steady state. Raise if you see "No space left on device" on /dev/shm
+    # during warmup.
+    shm_size: "16g"
+
+    # --------------------------------------------------------------------------
+    # Port mapping
+    # --------------------------------------------------------------------------
+    # 8010 chosen to avoid collision with the retired Qwen3-8B service on
+    # 8002. Update AnythingLLM's base URL to http://<host>:8010/v1
+    # accordingly.
+    ports:
+      - "8002:8002"
+
+    # --------------------------------------------------------------------------
+    # Volume mounts
+    # --------------------------------------------------------------------------
+    # - HuggingFace model cache: critical to persist across container recreates.
+    #   The FP8 checkpoint is ~35 GB and re-downloading on every restart is
+    #   unacceptable operationally.
+    # - vLLM kernel cache: Marlin W8A16 weight repacking produces intermediate
+    #   artefacts that are expensive to recompute. Caching saves minutes on
+    #   restart.
+    # - Application logs: structured bind mount lets you `tail -f` and ship
+    #   logs to external systems without `docker exec`.
+    # - Localtime: bind-mounted read-only so container log timestamps match
+    #   the host's wall clock — important for correlating vLLM traces with
+    #   upstream agent activity.
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.cache/vllm:/root/.cache/vllm
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+
+    # --------------------------------------------------------------------------
+    # Environment variables
+    # --------------------------------------------------------------------------
+    environment:
+
+      # Python stdout/stderr unbuffered — guarantees container logs contain
+      # real-time output, not 4-KB buffered chunks. Without this, `docker
+      # logs -f` appears frozen until the buffer flushes.
+      - PYTHONUNBUFFERED=1
+
+      # vLLM log verbosity. INFO is correct for bring-up and for the first
+      # week of production. Drop to WARNING once stable to reduce log volume.
+      # DEBUG is only useful when reproducing a specific crash.
+      - VLLM_LOGGING_LEVEL=INFO
+
+      # Enable the HuggingFace parallel-chunk downloader for model fetches.
+      # On a gigabit link, this takes the 35 GB pull from ~45 minutes to
+      # ~10 minutes. Must be set before the HF hub client initialises.
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+
+      # Silences a harmless warning from the HF tokenizers library when it
+      # detects a multi-worker parent process. Cosmetic; keeps logs clean.
+      - TOKENIZERS_PARALLELISM=false
+
+      # Permits --max-model-len to exceed the model's default max position
+      # embeddings. Harmless at 131072 (we're under the 262144 native cap),
+      # but preserves the escape hatch for future YaRN experiments beyond
+      # the native context.
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+
+      # DO NOT set VLLM_ATTENTION_BACKEND here — deprecated per vllm#30240
+      # and will be removed in v0.14/v1.0. Use CLI flag when needed.
+
+      # DO NOT set VLLM_WORKER_MULTIPROC_METHOD — 'spawn' is the V1 default.
+
+      # DO NOT set NCCL_P2P_DISABLE=1 — that's a Blackwell NVL workaround.
+      # PCIe 4.0 A4000 benefits from P2P remaining enabled.
+
+      # EXPERIMENTAL!!!
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+
+      # FOR THE LOGS
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
+
+    # --------------------------------------------------------------------------
+    # Launch command (list form)
+    # --------------------------------------------------------------------------
+    # List form avoids YAML quoting hazards for the JSON payload passed to
+    # --default-chat-template-kwargs. Each flag sits on its own line with
+    # an adjacent argument line where applicable.
+    # --------------------------------------------------------------------------
+    command:
+
+      # ------ Model identity --------------------------------------------------
+      # Canonical HuggingFace model ID. vLLM will read config.json from this
+      # repo and auto-detect the FP8 block-wise quantisation_config.
+      - --model
+      - Qwen/Qwen3.6-35B-A3B-FP8
+
+      # Name exposed to OpenAI-compatible clients. Keep it stable across
+      # deployments so downstream agents don't need reconfiguration on model
+      # upgrades (set this to a role name, not a model version).
+      - --served-model-name
+      - qwen3.6-35b-a3b
+
+      # Bind to all container interfaces. Docker network isolation gives us
+      # the actual security boundary.
+      - --host
+      - 0.0.0.0
+      # Must match the `ports:` mapping above.
+      - --port
+      - "8002"
+
+      # Required — Qwen ships custom modeling code (DeltaNet layers, Gated
+      # Attention variants, fused-expert MoE) that lives in the repo's
+      # modeling_qwen3_5_moe.py rather than in the transformers library.
+      - --trust-remote-code
+
+      # ------ Parallelism -----------------------------------------------------
+      # TP=4 shards weights across all four A4000s. MoE expert count (256
+      # routed + 1 shared) is cleanly divisible by 4, so no expert-padding
+      # memory overhead. Qwen's official deployment guide recommends TP=8
+      # for this model; we're halving that because Marlin W8A16 keeps
+      # per-rank weight memory low enough on FP8.
+      - --tensor-parallel-size
+      - "4"
+
+      # Multi-process distributed executor (NCCL over local IPC), not Ray.
+      # Automatic for TP ≤ #GPUs on single host, but setting explicitly
+      # makes the topology decision readable from the compose alone.
+      - --distributed-executor-backend
+      - mp
+
+      # ------ Precision & quantisation ---------------------------------------
+      # BF16 is MANDATORY. The FP8 checkpoint contains mixed BF16 (for
+      # vision encoder and shared experts) and FP8 (for routed expert
+      # weights). Forcing --dtype float16 crashes at the first mixed-dtype
+      # tensor op. Confirmed in community testing on RTX 5090.
+      - --dtype
+      - bfloat16
+
+      # NOTE: NO --quantization flag. vLLM reads `quantization_config` from
+      # config.json and auto-routes to the Marlin W8A16 kernel path on
+      # Ampere GPUs (sm_80/86/89). Setting --quantization fp8 explicitly
+      # can mis-configure kernel selection and forces native FP8 compute —
+      # which Ampere lacks, causing a hard failure at load time.
+
+      # KV cache in FP8 — halves cache memory footprint versus BF16. On
+      # Ampere this is software conversion (no native FP8 tensor cores),
+      # but the memory saving is still real and crucial for fitting 131K
+      # context × 8 concurrent sequences in the remaining VRAM budget after
+      # the 35 GB of FP8 weights.
+      - --kv-cache-dtype
+      - fp8
+
+      # Uncomment ONLY if the downloaded checkpoint's config.json lacks
+      # pre-computed kv_scale fields. To check:
+      #   cat ~/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B-FP8/\
+      #       snapshots/*/config.json | grep -i "kv_scale\|k_scale\|v_scale"
+      # If grep returns nothing, uncomment the two lines below.
+      # - --calculate-kv-scales
+      # - "true"
+
+      # ------ Context window & scheduler --------------------------------------
+      # 131,072 tokens. Qwen3.6 native is 262,144, but halving it preserves
+      # concurrency headroom.
+      #
+      # KV cache math (relevant for budgeting):
+      #   - Hybrid architecture: only 8 of 40 layers use full attention
+      #     (Gated Attention with 16 Q heads, 2 KV heads, head_dim 256).
+      #     The other 32 layers use Gated DeltaNet with constant-size
+      #     recurrent state (doesn't scale with context length).
+      #   - KV per token per full-attention layer: 2 (K+V) × 2 KV heads ×
+      #     256 head_dim × 1 byte (FP8 KV) = 1024 bytes.
+      #   - Over 8 layers: 8 KB per token per sequence.
+      #   - At 131072 tokens × 8 layers = ~1 GB KV per sequence.
+      #   - With 8 concurrent sequences: ~8 GB total KV pressure.
+      # Headroom: fits comfortably in post-weight VRAM budget.
+      - --max-model-len
+      - "131072"
+
+      # Concurrent sequence cap. Agentic workloads are long-context, low-
+      # concurrency — the inverse of batch RAG. Start at 8; raise to 12
+      # only after measuring real KV cache headroom under production load.
+      # Too-high values cause KV preemption cycles that tank throughput.
+      - --max-num-seqs
+      - "4"
+
+      # Prefill chunk size. Larger values improve throughput on long
+      # prefills (tool responses, document chunks); smaller values reduce
+      # TTFT for interactive turns. 4096 is a safe balance for mixed
+      # agentic traffic.
+      - --max-num-batched-tokens
+      - "4096"
+
+      # Reuse cached KV blocks for repeated prefixes. Critical for agentic
+      # workloads: system prompts, tool schemas, MCP tool definitions, and
+      # few-shot exemplars repeat across every turn. vLLM's prefix cache is
+      # less aggressive than SGLang's RadixAttention for deep prefix trees,
+      # but still delivers significant hit rates (>0.6) for typical agent
+      # traffic after warmup.
+      - --enable-prefix-caching
+
+      # NOTE: --enable-chunked-prefill DELIBERATELY OMITTED.
+      # Chunked prefill is ON by default in V1 engine. The flag was
+      # retained in earlier configs out of an abundance of caution; in
+      # recent nightlies it's redundant.
+
+      # ------ Memory budget ---------------------------------------------------
+      # Fraction of GPU memory vLLM may claim. 0.85 leaves ~2.4 GB
+      # headroom per 16 GB A4000 for:
+      #   - NCCL communication buffers
+      #   - CUDA graph capture allocations
+      #   - Activation memory spikes during prefill
+      #   - Vision encoder inference memory (ViT forward pass)
+      # Raise to 0.88–0.90 only after steady-state observation via
+      # `nvidia-smi dmon -s mu` shows >1 GB consistently free per card.
+      - --gpu-memory-utilization
+      - "0.8861"
+
+      # ------ Attention backend ----------------------------------------------
+      # DELIBERATELY DEFAULT (FLASH_ATTN auto-selected).
+      #
+      # Previously considered: --attention-backend FLASHINFER
+      # Rationale for exclusion: flashinfer-ai#2252 reports FlashInfer
+      # crashing at attention-metadata build time on DeltaNet+MoE hybrid
+      # architectures (specifically Nemotron-3-Nano). Qwen3.6 uses the same
+      # architectural family (DeltaNet recurrence + Gated Attention + MoE).
+      #
+      # To re-enable after validation proves compatibility on your build:
+      #   - Check the current flag form: `docker run ... --help | grep -i
+      #     "attention-config\.backend\|attention-backend"`
+      #   - Newer nightlies use `--attention-config.backend FLASHINFER`
+      #   - Older nightlies use `--attention-backend FLASHINFER`
+      # Benchmark with and without before committing either way.
+
+      # ------ Reasoning & tool calling (agentic core) ------------------------
+      # Parses <think>...</think> blocks into `reasoning_content` on the
+      # OpenAI chat response envelope. Without this, thinking content gets
+      # mixed into the main `content` field and breaks downstream agents
+      # that expect clean final answers.
+      - --reasoning-parser
+      - qwen3
+
+      # Turns the model's structured tool-call output into proper
+      # `tool_calls[]` array entries in the OpenAI response format.
+      # Without this, tool calls arrive as embedded JSON strings inside
+      # the content field and agent frameworks fail to route them.
+      - --enable-auto-tool-choice
+
+      # Qwen3.6 uses the qwen3_coder tool-call schema (same as Qwen3.5).
+      # Using a mismatched parser (e.g. hermes, deepseek_r1) causes
+      # tool_calls[] to come back empty even when the model emits valid
+      # tool invocations.
+      - --tool-call-parser
+      - qwen3_coder
+
+      # ------ Default chat template kwargs ------------------------------------
+      # Thinking ON at server level (agentic workloads benefit from chain-
+      # of-thought as confirmed on the model card). `preserve_thinking` is
+      # a NEW Qwen3.6-specific capability — retains reasoning blocks from
+      # earlier conversation turns across multi-turn agent sessions,
+      # improving decision consistency in long tool-use loops AND boosting
+      # prefix cache hit rate by keeping the conversation history stable.
+      #
+      # Clients can override per-request by passing chat_template_kwargs
+      # in the request body (e.g. `{"enable_thinking": false}` for fast,
+      # low-latency summarisation endpoints).
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": true, "preserve_thinking": true}'
+
+      # ------ Logging -------------------------------------------------------
+      # uvicorn (the ASGI server vLLM uses for the OpenAI API) log level.
+      # Keep at info during bring-up to see request/response summaries;
+      # drop to warning in steady state.
+      - --uvicorn-log-level
+      - info
+
+      # Dynamicllay computing k_scale/v_scale at warmup. Small startup
+      # cost, real accuracy restoration.
+      - --calculate-kv-scales
+
+      # Becasue we're using 4 x gpus
+      - --disable-custom-all-reduce
+
+    # --------------------------------------------------------------------------
+    # GPU allocation
+    # --------------------------------------------------------------------------
+    # All four A4000s reserved for this service. TP=4 requires exactly four
+    # contiguous device IDs with visible NCCL peer access.
+    # Pre-flight: `nvidia-smi topo -m` to confirm PCIe topology is
+    # symmetric (no GPU isolated on a different NUMA node or PCIe root).
+    # --------------------------------------------------------------------------
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+
+    # --------------------------------------------------------------------------
+    # Restart policy
+    # --------------------------------------------------------------------------
+    # `unless-stopped` restarts on crash but respects manual `docker stop`.
+    # Correct for production. Do NOT use `always` — it fights with
+    # intentional operator shutdowns.
+    restart: unless-stopped
+
+    # --------------------------------------------------------------------------
+    # Health check
+    # --------------------------------------------------------------------------
+    # `start_period: 900s` (15 minutes) accommodates first-boot scenario:
+    #   - 35 GB FP8 checkpoint download (~10 min on gigabit)
+    #   - Marlin W8A16 weight repacking (~2–3 min)
+    #   - CUDA graph capture (~1 min)
+    #   - Vision encoder profiling (~30 s)
+    # On warm boots (cache populated), health goes green in ~2 min.
+    # After confirming stable warm-boot behaviour, drop start_period to
+    # 300s to reduce MTTR on crash restarts.
+    # --------------------------------------------------------------------------
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
+
+    # --------------------------------------------------------------------------
+    # Logging driver
+    # --------------------------------------------------------------------------
+    # json-file with rotation: 5 files × 50 MB = 250 MB cap per container.
+    # Add a service/environment label for downstream log aggregation
+    # (Loki, Elastic, etc.) to filter on.
+    # --------------------------------------------------------------------------
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service,environment"
+        tag: "qwen36-agentic-{{.Name}}"
+
+# ==============================================================================
+# Network
+# ==============================================================================
+# Dedicated bridge network. Rename to whatever is consistent with the rest
+# of your stack (e.g. if AnythingLLM runs in another compose project, you
+# may want to use an external network here instead).
+# ==============================================================================
+networks:
+  default:
+    name: qwen36-network
+
+# ==============================================================================
+# Bring-up checklist (operator, not Compose)
+# ==============================================================================
+#
+# 1. Stop the previous Qwen3.5-9B SGLang container:
+#      docker compose -f <path-to-old-compose>.yml down
+#    Confirm GPUs are released: `nvidia-smi` should show 0 MiB used on
+#    devices 0–3.
+#
+# 2. Verify host CUDA version matches image expectation:
+#      nvidia-smi | grep "CUDA Version"
+#    If CUDA 13.x, change image tag to `:cu130-nightly`.
+#
+# 3. First boot — watch for the three critical log signals:
+#      a. Weight download progress (hf_transfer parallel chunks)
+#      b. "Repacking FP8 weights for Marlin W8A16" — CONFIRMS Ampere
+#         fallback engaged correctly. If you see `fp8e4nv not supported`,
+#         the Marlin path did NOT engage — file a bug immediately.
+#      c. "Warming up XXX attention backend" — tells you which attention
+#         kernel actually got selected. Should be FLASH_ATTN or equivalent.
+#
+# 4. After successful boot:
+#      a. Replace image tag with exact dated `nightly-<sha>` for
+#         reproducibility.
+#      b. Check FP8 KV scales in config.json — if absent, uncomment
+#         `--calculate-kv-scales true` in command block and restart.
+#
+# 5. Smoke test ordering:
+#      a. curl http://<host>:8010/v1/models — expects `qwen3.6-35b-a3b`.
+#      b. Single-token completion (temperature=0, max_tokens=1).
+#      c. Multi-turn with `chat_template_kwargs: {"preserve_thinking":
+#         true}` in request body — confirms thinking feature active.
+#      d. Tool-calling request — confirms reasoning_content populated AND
+#         tool_calls array parsed correctly.
+#
+# 6. Observability checks (first hour under real load):
+#      a. curl http://<host>:8010/metrics | grep vllm_prefix_cache_hit_rate
+#         — should climb above 0.6 within a few dozen agent turns.
+#      b. nvidia-smi dmon -s pmucv — watch per-GPU memory, utilisation,
+#         and power. Imbalanced utilisation indicates NCCL or expert
+#         routing pathology.
+#
+# ==============================================================================

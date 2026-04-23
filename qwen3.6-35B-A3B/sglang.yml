@@ -1,0 +1,188 @@
+# =============================================================================
+# QWEN3.6-35B-A3B-AWQ — SGLANG TP=4 (Int4 weights, text-only, no offload)
+# =============================================================================
+# Hardware:    4× RTX A4000 (16 GB, SM86, PHB-symmetric PCIe topology)
+# Host RAM:    157 GB
+# Model:       QuantTrio/Qwen3.6-35B-A3B-AWQ  (~25 GB Int4 weights)
+# Workload:    Coding agent exploration, agentic tasks
+# Architecture: Hybrid Gated Delta Networks + sparse MoE (35B total / 3B active)
+#
+# IMAGE NOTE: Qwen3.6 was released ~17–19 April 2026. Your current nightly
+# image tag (cu13-20260416) predates the Qwen3.6 weight release by ~3 days,
+# so it likely lacks the model-loading glue for Qwen3.6's config. Pull a
+# post-20-April nightly before first boot. If the image below 404s on pull,
+# replace with the latest tag from https://hub.docker.com/r/lmsysorg/sglang/tags
+# =============================================================================
+
+services:
+  qwen36-35b-awq-sglang-tp4:
+    # Use the newest nightly available after 19 April 2026; bump if needed.
+    image: lmsysorg/sglang:nightly-dev-cu13-20260422-1408d974
+    container_name: qwen36-35b-awq-sglang-tp4
+    ipc: host
+    shm_size: "8g"
+
+    ports:
+      - "8002:8002"
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      # Separate cache namespaces so kernel signatures from other deployments
+      # (Qwen3.5-9B TP=4, Qwen3.5-35B-GPTQ TP=4, etc.) don't collide.
+      - ./sglang_cache_qwen36_awq:/root/.cache/torch
+      - ./inductor_cache_qwen36_awq:/root/.cache/inductor
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/inductor
+      - SGLANG_ENABLE_SPEC_V2=True
+      # SGLANG_ENABLE_SPEC_V2 deliberately NOT set: we're using V1 Mamba
+      # scheduler for first-boot stability. Flip to True only after you've
+      # confirmed the V1 path works end-to-end.
+
+    entrypoint: python3 -m sglang.launch_server
+
+    # =========================================================================
+    # LAUNCH FLAG REFERENCE — comments outside the command scalar for YAML
+    # correctness. One block per logical group.
+    # =========================================================================
+    #
+    # --- MODEL & SERVING ---
+    # --model-path QuantTrio/Qwen3.6-35B-A3B-AWQ: community AWQ Int4
+    #   quantisation of the April 2026 Qwen3.6-35B-A3B release
+    # --port / --host: HTTP listener; 8003 avoids collision with your 9B
+    #   TP=4 (8002) and GLM-4.7-Flash (whichever port that was on)
+    # --served-model-name: friendly name returned by /v1/models
+    # --trust-remote-code: required for Qwen3.6's custom modelling classes
+    # --reasoning-parser qwen3: splits <think>...</think> blocks
+    # --tool-call-parser qwen3_coder: Hermes-style tool-call extraction
+    # --dtype bfloat16: non-quantised layers (attention, router, embeddings,
+    #   MTP draft head) stay in BF16; only expert MLPs are Int4
+    #
+    # --- QUANTISATION ---
+    # --quantization moe_wna16: the MoE-aware weight-nibble (4-bit) Marlin
+    #   path. Works for both GPTQ-Int4 and AWQ-Int4 MoE formats in recent
+    #   SGLang. If the server refuses to auto-select the AWQ Marlin kernel,
+    #   try --quantization awq_marlin instead.
+    #
+    # --- PARALLELISM ---
+    # --tp 4: tensor-parallel across all 4 GPUs
+    # --enable-p2p-check: probe peer access; will log failure on PHB topology
+    #   and correctly fall back to host-bounce — expected, not an error
+    # --disable-custom-all-reduce: required for 4×PCIe-only NVIDIA GPUs
+    #   (SGLang logs this automatically but being explicit silences the warning)
+    #
+    # --- MEMORY & KV BUDGET ---
+    # --context-length 65536: conservative start. Qwen3.6 nominally supports
+    #   262K, but KV pool at 256K context across 4× A4000 is not feasible
+    #   at this quantisation. Raise to 131072 once you've measured real KV
+    #   consumption under load.
+    # --mem-fraction-static 0.85: target 13.6 GB of each 16 GB A4000 for
+    #   SGLang's static pool. Budget: 6 GB weights, 3 GB Mamba state cache,
+    #   ~1 GB activations/CUDA-graph pads → ~3–4 GB left for paged KV.
+    # --chunked-prefill-size 8192: TTFT/throughput balance
+    # --max-prefill-tokens 16384: upper bound on a single prefill step
+    # --max-running-requests 4: conservative — start here, raise after
+    #   measuring decode throughput and watching for retractions
+    # --page-size 64: required granularity for the hybrid Mamba radix cache
+    #   in Qwen3.6
+    #
+    # --- SCHEDULING ---
+    # --schedule-policy lpm: longest-prefix-match — improves cache hit rate
+    #   for agentic workloads where system prompts are shared
+    # --mamba-scheduler-strategy no_buffer: V1 scheduler. Lower Mamba
+    #   memory cost than V2 extra_buffer. Safer for first boot. Upgrade to
+    #   extra_buffer (V2) and set SGLANG_ENABLE_SPEC_V2=True env var only
+    #   after you've confirmed the base path works.
+    #
+    # --- SPECULATIVE DECODING (MTP) ---
+    # --speculative-algo NEXTN: matches Qwen3.6's MTP-1 draft head
+    # --speculative-num-steps 3: lookahead depth
+    # --speculative-eagle-topk 1: single candidate per step
+    # --speculative-num-draft-tokens 4: draft buffer
+    # Disable all four of these if you see accept_len < 1.5 in /metrics.
+    #
+    # --- KERNEL BACKEND ---
+    # --attention-backend triton: Flashinfer on SM86 is fine for most cases,
+    #   but the hybrid GDN dispatcher explicitly uses Triton for linear
+    #   attention kernels. Forcing triton attention everywhere reduces
+    #   kernel-mix surface area during debugging.
+    # --mamba-backend triton: same reasoning — the GDN layers dispatch to
+    #   TritonGDNKernel in your previous log, keep it uniform.
+    #
+    # --- CUDA GRAPHS ---
+    # --disable-piecewise-cuda-graph: established SM86 constraint from your
+    #   previous deploys; piecewise graphs segfault at TP>1 on Ampere PCIe
+    # --cuda-graph-max-bs 4: matches --max-running-requests
+    #
+    # --- OBSERVABILITY ---
+    # --enable-metrics: Prometheus scrape at /metrics
+    # --enable-cache-report: cache_hit token counts in usage field per request
+    # --log-requests --log-requests-level 2: request-level logging
+    # =========================================================================
+
+    command: >
+      --model-path QuantTrio/Qwen3.6-35B-A3B-AWQ
+      --port 8002
+      --host 0.0.0.0
+      --served-model-name qwen36-35b-awq
+      --trust-remote-code
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --dtype bfloat16
+      --quantization moe_wna16
+      --tp 4
+      --enable-p2p-check
+      --disable-custom-all-reduce
+      --context-length 65536
+      --mem-fraction-static 0.85
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 16384
+      --max-running-requests 4
+      --page-size 64
+      --schedule-policy fcfs
+      --mamba-scheduler-strategy extra_buffer
+      --speculative-algo NEXTN
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --attention-backend triton
+      --mamba-backend triton
+      --cuda-graph-max-bs 4
+      --enable-metrics
+      --enable-cache-report
+      --log-requests
+      --log-requests-level 2
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Long start_period: Qwen3.6 first-run download is ~25 GB from HF,
+      # plus TP=4 init + CUDA graph capture + MTP draft capture.
+      # Subsequent warm starts ~5 min.
+      start_period: 1800s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  default:
+    name: qwen36-awq-tp4-network
