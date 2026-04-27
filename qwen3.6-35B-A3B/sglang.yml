@@ -16,7 +16,7 @@
 
 services:
   qwen36-35b-awq-sglang-tp4:
-    image: lmsysorg/sglang:hy3-preview
+    image: lmsysorg/sglang:nightly-dev-cu13-20260427-977830e9
     container_name: qwen36-35b-awq-sglang-tp4
     ipc: host
     shm_size: "8g"
@@ -37,7 +37,7 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - PYTHONUNBUFFERED=1
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/inductor
-      - SGLANG_ENABLE_SPEC_V2=True
+      - SGLANG_ENABLE_SPEC_V2=1
 
     entrypoint: python3 -m sglang.launch_server
 
@@ -141,10 +141,14 @@ services:
       --schedule-policy lpm
       --mamba-scheduler-strategy extra_buffer
       --mamba-full-memory-ratio 0.9
+      --mamba-ssm-dtype bfloat16
       --speculative-algo NEXTN
       --speculative-num-steps 3
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens 4
+      --enable-hierarchical-cache
+      --hicache-ratio 4
+      --hicache-write-policy write_through_selective
       --attention-backend triton
       --mamba-backend triton
       --cuda-graph-max-bs 2
@@ -154,6 +158,7 @@ services:
       --enable-cache-report
       --log-requests
       --log-requests-level 2
+      --watchdog-timeout 1200
 
     deploy:
       resources:
