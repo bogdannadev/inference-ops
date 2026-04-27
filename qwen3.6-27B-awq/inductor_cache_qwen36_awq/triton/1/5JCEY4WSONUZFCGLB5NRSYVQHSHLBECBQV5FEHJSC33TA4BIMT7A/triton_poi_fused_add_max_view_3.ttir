@@ -1,0 +1,14 @@
+#loc = loc("/root/.cache/inductor/mq/cmq2spusntebmmcwagvtwdjnbutxfif37bew7orbyqozpjve6qhx.py":18:0)
+#loc4 = loc("out_ptr0"(#loc))
+#loc5 = loc("ks0"(#loc))
+module {
+  tt.func public @triton_poi_fused_add_max_view_3(%out_ptr0: !tt.ptr<i64> {tt.divisibility = 16 : i32} loc("out_ptr0"(#loc)), %ks0: i64 loc("ks0"(#loc))) attributes {noinline = false} {
+    %0 = tt.splat %out_ptr0 : !tt.ptr<i64> -> tensor<1x!tt.ptr<i64>> loc(#loc1)
+    %1 = tt.splat %ks0 : i64 -> tensor<1xi64> loc(#loc2)
+    tt.store %0, %1 : tensor<1x!tt.ptr<i64>> loc(#loc2)
+    tt.return loc(#loc3)
+  } loc(#loc)
+} loc(#loc)
+#loc1 = loc("/root/.cache/inductor/mq/cmq2spusntebmmcwagvtwdjnbutxfif37bew7orbyqozpjve6qhx.py":24:25)
+#loc2 = loc("/root/.cache/inductor/mq/cmq2spusntebmmcwagvtwdjnbutxfif37bew7orbyqozpjve6qhx.py":24:64)
+#loc3 = loc("/root/.cache/inductor/mq/cmq2spusntebmmcwagvtwdjnbutxfif37bew7orbyqozpjve6qhx.py":24:4)
