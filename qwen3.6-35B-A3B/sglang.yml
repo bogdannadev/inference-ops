@@ -16,7 +16,7 @@
 
 services:
   qwen36-35b-awq-sglang-tp4:
-    image: lmsysorg/sglang:nightly-dev-cu13-20260427-977830e9
+    image: lmsysorg/sglang:nightly-dev-cu13-20260429-14b4e6fa
     container_name: qwen36-35b-awq-sglang-tp4
     ipc: host
     shm_size: "8g"
@@ -28,8 +28,6 @@ services:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
       - ./logs:/app/logs
       - /etc/localtime:/etc/localtime:ro
-      # Separate cache namespaces so kernel signatures from other deployments
-      # (Qwen3.5-9B TP=4, Qwen3.5-35B-GPTQ TP=4, etc.) don't collide.
       - ./sglang_cache_qwen36_awq:/root/.cache/torch
       - ./inductor_cache_qwen36_awq:/root/.cache/inductor
 
@@ -136,7 +134,7 @@ services:
       --mem-fraction-static 0.83
       --chunked-prefill-size 8192
       --max-prefill-tokens 32768
-      --max-running-requests 2
+      --max-running-requests 4
       --page-size 64
       --schedule-policy lpm
       --mamba-scheduler-strategy extra_buffer
@@ -151,7 +149,10 @@ services:
       --hicache-write-policy write_through_selective
       --attention-backend triton
       --mamba-backend triton
-      --cuda-graph-max-bs 2
+      --grammar-backend xgrammar
+      --tokenizer-worker-num 4
+      --allow-auto-truncate
+      --cuda-graph-max-bs 4
       --disable-piecewise-cuda-graph
       --disable-custom-all-reduce
       --enable-metrics
