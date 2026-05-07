@@ -16,7 +16,7 @@
 
 services:
   qwen36-35b-awq-sglang-tp4:
-    image: lmsysorg/sglang:nightly-dev-cu13-20260430-e60c60ef
+    image: lmsysorg/sglang:nightly-dev-cu13-20260507-a9a8b20a
     container_name: qwen36-35b-awq-sglang-tp4
     ipc: host
     shm_size: "8g"
