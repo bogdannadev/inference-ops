@@ -16,7 +16,7 @@
 
 services:
   qwen36-35b-awq-sglang-tp4:
-    image: lmsysorg/sglang:nightly-dev-cu13-20260429-14b4e6fa
+    image: lmsysorg/sglang:nightly-dev-cu13-20260430-e60c60ef
     container_name: qwen36-35b-awq-sglang-tp4
     ipc: host
     shm_size: "8g"
@@ -36,6 +36,7 @@ services:
       - PYTHONUNBUFFERED=1
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/inductor
       - SGLANG_ENABLE_SPEC_V2=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
     entrypoint: python3 -m sglang.launch_server
 
@@ -130,12 +131,11 @@ services:
       --quantization moe_wna16
       --tp 4
       --enable-p2p-check
-      --context-length 196608
+      --context-length 131072
       --mem-fraction-static 0.83
-      --chunked-prefill-size 8192
-      --max-prefill-tokens 32768
+      --chunked-prefill-size 4096
+      --max-prefill-tokens 8192
       --max-running-requests 4
-      --page-size 64
       --schedule-policy lpm
       --mamba-scheduler-strategy extra_buffer
       --mamba-full-memory-ratio 0.9
@@ -147,7 +147,10 @@ services:
       --enable-hierarchical-cache
       --hicache-ratio 4
       --hicache-write-policy write_through_selective
-      --attention-backend triton
+      --hicache-mem-layout page_first
+      --page-size 64
+      --hicache-io-backend kernel
+      --attention-backend flashinfer
       --mamba-backend triton
       --grammar-backend xgrammar
       --tokenizer-worker-num 4
