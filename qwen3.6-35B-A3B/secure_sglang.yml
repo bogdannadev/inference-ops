@@ -37,6 +37,7 @@ services:
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/inductor
       - SGLANG_ENABLE_SPEC_V2=1
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - SGLANG_API_KEY=${SGLANG_API_KEY:-}
 
     entrypoint: python3 -m sglang.launch_server
 
@@ -153,7 +154,6 @@ services:
       --attention-backend flashinfer
       --mamba-backend triton
       --grammar-backend xgrammar
-      --tokenizer-worker-num 4
       --allow-auto-truncate
       --cuda-graph-max-bs 4
       --disable-piecewise-cuda-graph
@@ -163,6 +163,7 @@ services:
       --log-requests
       --log-requests-level 2
       --watchdog-timeout 1200
+      --api-key ${SGLANG_API_KEY}
 
     deploy:
       resources:
