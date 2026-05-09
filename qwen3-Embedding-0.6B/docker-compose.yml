@@ -1,6 +1,6 @@
 services:
   qwen3-embedding:
-    image: lmsysorg/sglang:latest
+    image: lmsysorg/sglang:nightly-dev-cu13-20260429-14b4e6fa
     container_name: qwen3-embedding
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
@@ -9,23 +9,28 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - PYTHONUNBUFFERED=1
-      - SGLANG_DISABLE_FLASHINFER=1
     entrypoint: python3 -m sglang.launch_server
     command: >
       --model-path Qwen/Qwen3-Embedding-0.6B
       --is-embedding
       --host 0.0.0.0
-      --port 30000
+      --port 8000
       --served-model-name qwen3-embedding-0.6b
-      --dtype auto
+      --dtype bfloat16
+      --attention-backend flashinfer
+      --disable-cuda-graph
       --context-length 32768
-      --mem-fraction-static 0.90
-      --max-running-requests 128
-      --chunked-prefill-size 8192
+      --mem-fraction-static 0.80
+      --max-running-requests 64
+      --schedule-policy lpm
+      --chunked-prefill-size 16384
       --enable-metrics
+      --enable-cache-report
+      --show-time-cost
+      --watchdog-timeout 600
       --trust-remote-code
     ports:
-      - "30000:30000"
+      - "8000:8000"
     ipc: host
     ulimits:
       memlock: -1
@@ -34,12 +39,12 @@ services:
       resources:
         reservations:
           devices:
-            - driver: nvidia # Nvidia T4 currently
+            - driver: nvidia
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:30000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
