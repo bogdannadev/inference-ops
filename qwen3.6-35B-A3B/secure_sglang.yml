@@ -66,8 +66,8 @@ services:
       --speculative-num-draft-tokens 4
       --enable-hierarchical-cache
       --hicache-ratio 4
-      --hicache-write-policy write_through_selective
-      --hicache-mem-layout page_first
+      --hicache-write-policy write_through
+      --hicache-mem-layout page_first_direct
       --page-size 64
       --hicache-io-backend kernel
       --attention-backend flashinfer
@@ -84,6 +84,7 @@ services:
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
       --enable-torch-compile
+      --pre-warm-nccl
 
     deploy:
       resources:
