@@ -16,7 +16,7 @@
 
 services:
   qwen36-35b-awq-sglang-tp4:
-    image: lmsysorg/sglang:nightly-dev-cu13-20260518-c67b2870
+    image: lmsysorg/sglang:nightly-dev-cu13-20260524-af8f6694
     container_name: qwen36-35b-awq-sglang-tp4
     ipc: host
     shm_size: "8g"
@@ -37,6 +37,8 @@ services:
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/inductor
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+      - SGLANG_HICACHE_MAX_PINNED_RATIO=0.15
+      - PYTHON_EXECUTION_BACKEND=UV
 
     entrypoint: python3 -m sglang.launch_server
     command: >
@@ -85,6 +87,7 @@ services:
       --api-key ${SGLANG_API_KEY}
       --enable-torch-compile
       --pre-warm-nccl
+      --enable-tokenizer-batch-encode
 
     deploy:
       resources:
