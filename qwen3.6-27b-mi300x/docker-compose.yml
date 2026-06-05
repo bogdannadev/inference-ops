@@ -1,0 +1,122 @@
+# =============================================================================
+# QWEN3.6-27B — SGLANG TP=1 on a single MI300X (AMD sgl-dev image, ROCm 7.2)
+# =============================================================================
+# Image:    rocm/sgl-dev — AMD's own day-0 build channel (Verified Publisher).
+#           This is a DATED DEV build, not a stable release tag. FREEZE it:
+#           pin the digest and do not float the tag. Best used as the
+#           benchmark/eval lane (freshest AITER + GDN Triton kernels, FP8 path).
+#           For an always-on base, lmsysorg/sglang:vX-rocm720-mi30x is steadier.
+#
+#           Verify before pinning:
+#             docker buildx imagetools inspect \
+#               rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260529
+#           Digest at time of writing:
+#             sha256:edd63ee0c179d69736a0e3f3ad8d96b63af370f8b866fd5664d3291d2a93f614
+#
+# Hardware: 1x AMD Instinct MI300X (192 GB HBM3, CDNA3 / gfx942), DO droplet.
+#           Cloud MI300X is usually virtualised (SR-IOV) -> confirm the
+#           MI300X_VF tuning configs are present/active in the image.
+# Model:    Qwen/Qwen3.6-27B (~54 GB BF16). DENSE but HYBRID: 48 Gated-DeltaNet
+#           (linear, fixed state) + 16 Gated-Attention layers; only 16 of 64
+#           carry a growing KV cache. Also a VLM -> served text-only for coding.
+# Workload: opencode coding agents, 4 users. Latency-first. Memory is NOT the
+#           constraint here (~130 GB spare); tune TTFT + NEXTN acceptance.
+#
+# AMD-MANDATORY (these differ from a CUDA config):
+#   --attention-backend triton            (flashinfer is CUDA-only; GDN=Triton)
+#   --mamba-scheduler-strategy no_buffer   (REQUIRED on MI; extra_buffer=CUDA)
+#   SGLANG_USE_AITER=1                     (AITER GEMM kernels)
+#   PYTORCH_HIP_ALLOC_CONF                 (the HIP var, not the CUDA one)
+#   no NCCL / all-reduce / p2p flags       (single GPU)
+#   HiCache OFF                            (broken for hybrid GDN; #12826/#12867)
+#
+# Verify every flag against `--help` inside THIS 0.5.12 image before boot;
+# flag names drift across versions (least certain: --max-prefill-tokens).
+# =============================================================================
+
+services:
+  qwen36-27b-sgldev-mi300x:
+    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260529
+    container_name: qwen36-27b-sgldev-mi300x
+    ipc: host
+    shm_size: "32g"
+
+    ports:
+      - "8002:8002"
+
+    devices:
+      - /dev/kfd
+      - /dev/dri
+
+    group_add:
+      - video
+      - render
+
+    security_opt:
+      - seccomp:unconfined
+
+    cap_add:
+      - SYS_PTRACE
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - SGLANG_USE_AITER=1
+      - PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
+      - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+
+    entrypoint: python3 -m sglang.launch_server
+    command: >
+      --model-path Qwen/Qwen3.6-27B
+      --served-model-name qwen36-27b
+      --host 0.0.0.0
+      --port 8002
+      --trust-remote-code
+      --dtype bfloat16
+      --tp 1
+      --context-length 262144
+      --attention-backend triton
+      --mamba-scheduler-strategy no_buffer
+      --mamba-ssm-dtype bfloat16
+      --page-size 64
+      --mem-fraction-static 0.88
+      --chunked-prefill-size 16384
+      --max-prefill-tokens 32768
+      --max-running-requests 8
+      --cuda-graph-max-bs 8
+      --schedule-policy lpm
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --grammar-backend xgrammar
+      --speculative-algo NEXTN
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --allow-auto-truncate
+      --enable-metrics
+      --watchdog-timeout 1200
+      --api-key ${SGLANG_API_KEY}
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2400s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  default:
+    name: qwen36-27b-mi300x-network
