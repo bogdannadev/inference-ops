@@ -1,0 +1,182 @@
+# =============================================================================
+# QWEN3.6-27B-FP8 — SGLANG ROCm TP=1 (MI350X / CDNA4, full observability stack)
+# =============================================================================
+# Hardware:    1× AMD Instinct MI350X (288 GB HBM3E, CDNA4 / gfx950)
+# Model:       Qwen/Qwen3.6-27B-FP8  (~31 GB, block-FP8 g128, dense hybrid GDN)
+# Workload:    Agentic coding / RAG, text serving, NEXTN speculative decoding
+# Stack:       SGLang (rocm700-mi35x) + AMD Device Metrics Exporter
+#              + Prometheus + Grafana
+#
+# ASSUMPTIONS (flip if wrong):
+#   - Single GPU, TP=1   model fits with ~250 GB free; no all-reduce path
+#   - ROCm 7.0 host      rocm700 image; swap to the rocm720 tag if host is 7.2
+#   - Text-only serving  vision tower loads but is never exercised
+#   - FP8 KV cache OFF   288 GB makes it pointless; bf16 KV preserves quality
+#   - torch.compile OFF  stabilise first, then test it as a single variable
+#
+# IMAGE: rocm-specific SGLang lives under lmsysorg/sglang-rocm. Verify the tag
+# against https://hub.docker.com/r/lmsysorg/sglang-rocm/tags before first boot.
+# rocm/sgl-dev (AMD verified publisher) is the conservative alternative.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Inference server.
+  # SYS_PTRACE + unconfined seccomp are deliberate, not boilerplate: they let
+  # you attach rocprofv3 / rocprof-compute inside the running container for
+  # kernel-level profiling without recreating the service.
+  # ---------------------------------------------------------------------------
+  qwen36-27b-fp8-sglang:
+    image: lmsysorg/sglang-rocm:v0.5.12.post1-rocm700-mi35x-20260603
+    container_name: qwen36-27b-fp8-sglang
+    ipc: host
+    shm_size: "16g"
+
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp=unconfined
+    cap_add:
+      - SYS_PTRACE
+
+    ports:
+      - "8002:8002"
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      - ./sglang_cache_qwen36_27b:/root/.cache/torch
+      - ./triton_cache_qwen36_27b:/root/.triton
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+      # Pin to the single MI350X; extend/drop for multi-GPU TP.
+      - HIP_VISIBLE_DEVICES=0
+      # AMD-optimised GEMM/attention kernels.
+      - SGLANG_USE_AITER=1
+      # Specv2 draft/verify overlap — what makes NEXTN MTP pay off on ROCm.
+      # - SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
+      # - PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
+      # - SGLANG_ENABLE_SPEC_V2=1
+      # - USE_ROCM_AITER_ROPE_BACKEND=1
+
+    entrypoint: python3 -m sglang.launch_server
+    command: >
+      --model-path Qwen/Qwen3.6-27B-FP8
+      --port 8002
+      --host 0.0.0.0
+      --served-model-name qwen36-27b-fp8
+      --trust-remote-code
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --tp 1
+      --context-length 262144
+      --mem-fraction-static 0.85
+      --chunked-prefill-size 8192
+      --max-running-requests 256
+      --page-size 64
+      --attention-backend aiter
+      --mamba-backend triton
+      --mamba-ssm-dtype bfloat16
+      --mamba-scheduler-strategy auto
+      --speculative-algo NEXTN
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --schedule-policy lpm
+      --grammar-backend xgrammar
+      --allow-auto-truncate
+      --enable-metrics
+      --enable-cache-report
+      --log-requests
+      --log-requests-level 2
+      --watchdog-timeout 1200
+      --api-key ${SGLANG_API_KEY}
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # AMD GPU telemetry → Prometheus format. The DCGM-exporter analogue.
+  # Exposes edge/junction/HBM temps, util, power, clocks, PCIe, RAS/AFID errors.
+  # privileged may be needed for full RAS/CPER depth — start with SYS_ADMIN.
+  # ---------------------------------------------------------------------------
+  device-metrics-exporter:
+    image: rocm/device-metrics-exporter:v1.5.0
+    container_name: amd-device-metrics-exporter
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - "127.0.0.1:5050:5000"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Scrapes the inference plane and the hardware plane onto one timeline.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest    # pin to a release tag for production
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    depends_on:
+      - qwen36-27b-fp8-sglang
+      - device-metrics-exporter
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Visualisation. Provision the AMD dashboards (exporter repo /grafana dir)
+  # and a SGLang dashboard against the Prometheus datasource.
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest    # pin for production
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: qwen36-27b-mi350x-network

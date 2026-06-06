@@ -1,0 +1,2692 @@
+	.amdgcn_target "amdgcn-amd-amdhsa--gfx950"
+	.amdhsa_code_object_version 5
+	.text
+	.globl	fused_sigmoid_gating_delta_rule_update_kernel ; -- Begin function fused_sigmoid_gating_delta_rule_update_kernel
+	.p2align	8
+	.type	fused_sigmoid_gating_delta_rule_update_kernel,@function
+fused_sigmoid_gating_delta_rule_update_kernel: ; @fused_sigmoid_gating_delta_rule_update_kernel
+.Lfunc_begin0:
+	.cfi_sections .debug_frame
+	.cfi_startproc
+; %bb.9:
+	.file	1 "/sgl-workspace/sglang/python/sglang/srt/layers/attention/fla" "fused_sigmoid_gating_recurrent.py"
+	.loc	1 9 0 prologue_end              ; fused_sigmoid_gating_recurrent.py:9:0
+	s_load_dwordx2 s[2:3], s[0:1], 0x0
+	s_load_dwordx8 s[4:11], s[0:1], 0x8
+	s_load_dwordx4 s[12:15], s[0:1], 0x28
+	s_waitcnt lgkmcnt(0)
+	s_branch .LBB0_0
+	.loc	1 0 0 is_stmt 0                 ; :0:0
+.Ltmp0:
+	.p2align	8
+; %bb.10:
+.LBB0_0:
+	s_load_dwordx4 s[52:55], s[0:1], 0x50
+.Ltmp1:
+	.loc	1 59 24 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:59:24
+	s_mul_hi_i32 s19, s18, 0x2aaaaaab
+	s_lshr_b32 s20, s19, 31
+	s_ashr_i32 s19, s19, 3
+	s_add_i32 s20, s19, s20
+	.loc	1 59 35 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:59:35
+	s_mul_i32 s19, s20, 48
+	.loc	1 64 33 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:64:33
+	s_ashr_i32 s21, s20, 31
+	.loc	1 59 35                         ; fused_sigmoid_gating_recurrent.py:59:35
+	s_sub_i32 s70, s18, s19
+	.loc	1 64 33                         ; fused_sigmoid_gating_recurrent.py:64:33
+	s_lshl_b64 s[76:77], s[20:21], 2
+	s_waitcnt lgkmcnt(0)
+	s_add_u32 s54, s54, s76
+	.loc	1 74 34                         ; fused_sigmoid_gating_recurrent.py:74:34
+	v_lshrrev_b32_e32 v6, 4, v0
+	.loc	1 64 33                         ; fused_sigmoid_gating_recurrent.py:64:33
+	s_addc_u32 s55, s55, s77
+	.loc	1 73 16                         ; fused_sigmoid_gating_recurrent.py:73:16
+	s_lshl_b32 s74, s16, 7
+	.loc	1 73 34 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:73:34
+	v_and_b32_e32 v4, 15, v0
+	.loc	1 74 16 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:74:16
+	s_lshl_b32 s72, s17, 5
+	.loc	1 74 34 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:74:34
+	v_or_b32_e32 v71, 4, v6
+	v_or_b32_e32 v70, 8, v6
+	v_or_b32_e32 v69, 12, v6
+	v_or_b32_e32 v68, 16, v6
+	v_or_b32_e32 v3, 20, v6
+	v_or_b32_e32 v2, 24, v6
+	v_or_b32_e32 v1, 28, v6
+	.loc	1 73 21 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:73:21
+	v_lshl_or_b32 v5, v4, 3, s74
+	.loc	1 74 21                         ; fused_sigmoid_gating_recurrent.py:74:21
+	v_or_b32_e32 v6, s72, v6
+	v_or_b32_e32 v7, s72, v71
+	v_or_b32_e32 v8, s72, v70
+	v_or_b32_e32 v9, s72, v69
+	v_or_b32_e32 v10, s72, v68
+	v_or_b32_e32 v11, s72, v3
+	v_or_b32_e32 v12, s72, v2
+	v_or_b32_e32 v13, s72, v1
+	s_movk_i32 s18, 0x80
+	.loc	1 91 19                         ; fused_sigmoid_gating_recurrent.py:91:19
+	v_cmp_gt_i32_e32 vcc, s18, v5
+	.loc	1 92 19                         ; fused_sigmoid_gating_recurrent.py:92:19
+	v_cmp_gt_i32_e64 s[38:39], s18, v6
+	v_cmp_gt_i32_e64 s[36:37], s18, v7
+	v_cmp_gt_i32_e64 s[34:35], s18, v8
+	v_cmp_gt_i32_e64 s[30:31], s18, v9
+	v_cmp_gt_i32_e64 s[28:29], s18, v10
+	v_cmp_gt_i32_e64 s[26:27], s18, v11
+	v_cmp_gt_i32_e64 s[24:25], s18, v12
+	v_cmp_gt_i32_e64 s[22:23], s18, v13
+	.loc	1 76 41                         ; fused_sigmoid_gating_recurrent.py:76:41
+	s_ashr_i32 s75, s74, 31
+	.loc	1 93 31                         ; fused_sigmoid_gating_recurrent.py:93:31
+	s_and_b64 s[50:51], vcc, s[38:39]
+	s_and_b64 s[40:41], vcc, s[36:37]
+	s_and_b64 s[44:45], vcc, s[34:35]
+	s_and_b64 s[48:49], vcc, s[30:31]
+	s_and_b64 s[42:43], vcc, s[28:29]
+	s_and_b64 s[18:19], vcc, s[26:27]
+	s_and_b64 s[20:21], vcc, s[24:25]
+	s_and_b64 s[46:47], vcc, s[22:23]
+	.loc	1 97 35                         ; fused_sigmoid_gating_recurrent.py:97:35
+	s_add_u32 s52, s52, s76
+	s_addc_u32 s53, s53, s77
+	.loc	1 97 22 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:97:22
+	s_load_dword s33, s[52:53], 0x0
+	.loc	1 64 20 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:64:20
+	s_nop 0
+	s_load_dwordx2 s[52:53], s[54:55], 0x0
+	v_lshlrev_b32_e32 v72, 4, v0
+	v_lshlrev_b32_e32 v75, 4, v4
+	.loc	1 98 18                         ; fused_sigmoid_gating_recurrent.py:98:18
+	s_waitcnt lgkmcnt(0)
+	s_cmp_lt_i32 s33, 0
+	.loc	1 98 11 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:98:11
+	s_cbranch_scc1 .LBB0_2
+; %bb.1:
+	.loc	1 0 11                          ; fused_sigmoid_gating_recurrent.py:0:11
+	s_load_dwordx2 s[54:55], s[0:1], 0x48
+	.loc	1 101 0 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:101
+	s_mul_i32 s56, s33, 0xc0000
+	.loc	1 101 18 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:101:18
+	s_ashr_i32 s57, s56, 31
+	s_lshl_b64 s[56:57], s[56:57], 1
+	.loc	1 106 27 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:106:27
+	v_bfrev_b32_e32 v32, 1
+	.loc	1 101 18                        ; fused_sigmoid_gating_recurrent.py:101:18
+	s_waitcnt lgkmcnt(0)
+	s_add_u32 s33, s54, s56
+	s_addc_u32 s56, s55, s57
+	.loc	1 102 29                        ; fused_sigmoid_gating_recurrent.py:102:29
+	s_lshl_b32 s54, s70, 14
+	.loc	1 102 18 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:102:18
+	s_ashr_i32 s55, s54, 31
+	s_lshl_b64 s[54:55], s[54:55], 1
+	s_add_u32 s33, s33, s54
+	s_addc_u32 s56, s56, s55
+	.loc	1 103 18 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:103:18
+	s_lshl_b32 s54, s17, 12
+	s_ashr_i32 s55, s54, 31
+	s_lshl_b64 s[54:55], s[54:55], 1
+	s_add_u32 s33, s33, s54
+	s_addc_u32 s57, s56, s55
+	.loc	1 104 18                        ; fused_sigmoid_gating_recurrent.py:104:18
+	s_lshl_b64 s[54:55], s[74:75], 1
+	s_add_u32 s56, s33, s54
+	s_addc_u32 s33, s57, s55
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	v_lshl_or_b32 v8, v71, 8, v75
+	v_lshl_or_b32 v12, v70, 8, v75
+	v_lshl_or_b32 v16, v69, 8, v75
+	v_lshl_or_b32 v20, v68, 8, v75
+	v_lshl_or_b32 v24, v3, 8, v75
+	v_lshl_or_b32 v28, v2, 8, v75
+	v_lshl_or_b32 v33, v1, 8, v75
+	s_and_b32 s57, s33, 0xffff
+	s_mov_b32 s59, 0x27000
+	s_mov_b32 s58, 0x7ffffffe
+	v_cndmask_b32_e64 v4, v32, v72, s[50:51]
+	v_cndmask_b32_e64 v8, v32, v8, s[40:41]
+	v_cndmask_b32_e64 v12, v32, v12, s[44:45]
+	v_cndmask_b32_e64 v16, v32, v16, s[48:49]
+	v_cndmask_b32_e64 v20, v32, v20, s[42:43]
+	v_cndmask_b32_e64 v24, v32, v24, s[18:19]
+	v_cndmask_b32_e64 v28, v32, v28, s[20:21]
+	v_cndmask_b32_e64 v32, v32, v33, s[46:47]
+	buffer_load_dwordx4 v[4:7], v4, s[56:59], 0 offen
+	s_nop 0
+	buffer_load_dwordx4 v[8:11], v8, s[56:59], 0 offen
+	.loc	1 106 58 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:106:58
+	s_waitcnt vmcnt(1)
+	v_and_b32_e32 v37, 0xffff0000, v4
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	buffer_load_dwordx4 v[12:15], v12, s[56:59], 0 offen
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	v_lshlrev_b32_e32 v36, 16, v4
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	buffer_load_dwordx4 v[16:19], v16, s[56:59], 0 offen
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	v_and_b32_e32 v39, 0xffff0000, v5
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	buffer_load_dwordx4 v[20:23], v20, s[56:59], 0 offen
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	v_lshlrev_b32_e32 v38, 16, v5
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	buffer_load_dwordx4 v[24:27], v24, s[56:59], 0 offen
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	v_and_b32_e32 v5, 0xffff0000, v6
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	buffer_load_dwordx4 v[28:31], v28, s[56:59], 0 offen
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	v_lshlrev_b32_e32 v4, 16, v6
+	.loc	1 106 27                        ; fused_sigmoid_gating_recurrent.py:106:27
+	buffer_load_dwordx4 v[32:35], v32, s[56:59], 0 offen
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	v_and_b32_e32 v41, 0xffff0000, v7
+	v_lshlrev_b32_e32 v40, 16, v7
+	s_waitcnt vmcnt(6)
+	v_and_b32_e32 v7, 0xffff0000, v8
+	v_lshlrev_b32_e32 v6, 16, v8
+	v_and_b32_e32 v43, 0xffff0000, v9
+	v_lshlrev_b32_e32 v42, 16, v9
+	v_and_b32_e32 v9, 0xffff0000, v10
+	v_lshlrev_b32_e32 v8, 16, v10
+	v_and_b32_e32 v45, 0xffff0000, v11
+	v_lshlrev_b32_e32 v44, 16, v11
+	.loc	1 106 19                        ; fused_sigmoid_gating_recurrent.py:106:19
+	v_pk_add_f32 v[58:59], v[36:37], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[56:57], v[38:39], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[54:55], v[4:5], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[52:53], v[40:41], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[46:47], v[6:7], 0 op_sel_hi:[1,0]
+	.loc	1 106 58                        ; fused_sigmoid_gating_recurrent.py:106:58
+	s_waitcnt vmcnt(5)
+	v_and_b32_e32 v11, 0xffff0000, v12
+	v_lshlrev_b32_e32 v10, 16, v12
+	v_and_b32_e32 v49, 0xffff0000, v13
+	v_lshlrev_b32_e32 v48, 16, v13
+	v_and_b32_e32 v51, 0xffff0000, v14
+	v_lshlrev_b32_e32 v50, 16, v14
+	v_and_b32_e32 v61, 0xffff0000, v15
+	v_lshlrev_b32_e32 v60, 16, v15
+	s_waitcnt vmcnt(4)
+	v_and_b32_e32 v15, 0xffff0000, v16
+	v_lshlrev_b32_e32 v14, 16, v16
+	v_and_b32_e32 v63, 0xffff0000, v17
+	v_lshlrev_b32_e32 v62, 16, v17
+	v_and_b32_e32 v17, 0xffff0000, v18
+	v_lshlrev_b32_e32 v16, 16, v18
+	v_and_b32_e32 v65, 0xffff0000, v19
+	v_lshlrev_b32_e32 v64, 16, v19
+	s_waitcnt vmcnt(3)
+	v_and_b32_e32 v67, 0xffff0000, v20
+	v_lshlrev_b32_e32 v66, 16, v20
+	v_and_b32_e32 v77, 0xffff0000, v21
+	v_lshlrev_b32_e32 v76, 16, v21
+	v_and_b32_e32 v79, 0xffff0000, v22
+	v_lshlrev_b32_e32 v78, 16, v22
+	v_and_b32_e32 v81, 0xffff0000, v23
+	v_lshlrev_b32_e32 v80, 16, v23
+	s_waitcnt vmcnt(2)
+	v_and_b32_e32 v83, 0xffff0000, v24
+	v_lshlrev_b32_e32 v82, 16, v24
+	v_and_b32_e32 v85, 0xffff0000, v25
+	v_lshlrev_b32_e32 v84, 16, v25
+	v_and_b32_e32 v25, 0xffff0000, v26
+	v_lshlrev_b32_e32 v24, 16, v26
+	v_and_b32_e32 v87, 0xffff0000, v27
+	v_lshlrev_b32_e32 v86, 16, v27
+	s_waitcnt vmcnt(1)
+	v_and_b32_e32 v89, 0xffff0000, v28
+	v_lshlrev_b32_e32 v88, 16, v28
+	v_and_b32_e32 v91, 0xffff0000, v29
+	v_lshlrev_b32_e32 v90, 16, v29
+	v_and_b32_e32 v93, 0xffff0000, v30
+	v_lshlrev_b32_e32 v92, 16, v30
+	v_and_b32_e32 v95, 0xffff0000, v31
+	v_lshlrev_b32_e32 v94, 16, v31
+	s_waitcnt vmcnt(0)
+	v_and_b32_e32 v97, 0xffff0000, v32
+	v_lshlrev_b32_e32 v96, 16, v32
+	v_and_b32_e32 v99, 0xffff0000, v33
+	v_lshlrev_b32_e32 v98, 16, v33
+	v_and_b32_e32 v101, 0xffff0000, v34
+	v_lshlrev_b32_e32 v100, 16, v34
+	v_and_b32_e32 v103, 0xffff0000, v35
+	v_lshlrev_b32_e32 v102, 16, v35
+	.loc	1 106 19                        ; fused_sigmoid_gating_recurrent.py:106:19
+	v_pk_add_f32 v[34:35], v[42:43], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[22:23], v[8:9], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[12:13], v[44:45], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[44:45], v[10:11], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[32:33], v[48:49], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[20:21], v[50:51], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[10:11], v[60:61], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[42:43], v[14:15], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[30:31], v[62:63], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[18:19], v[16:17], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[8:9], v[64:65], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[40:41], v[66:67], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[28:29], v[76:77], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[16:17], v[78:79], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[6:7], v[80:81], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[38:39], v[82:83], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[26:27], v[84:85], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[14:15], v[24:25], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[4:5], v[86:87], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[24:25], v[88:89], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[36:37], v[90:91], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[48:49], v[92:93], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[50:51], v[94:95], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[66:67], v[96:97], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[64:65], v[98:99], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[62:63], v[100:101], 0 op_sel_hi:[1,0]
+	v_pk_add_f32 v[60:61], v[102:103], 0 op_sel_hi:[1,0]
+	s_branch .LBB0_3
+.LBB0_2:
+	.loc	1 0 19                          ; fused_sigmoid_gating_recurrent.py:0:19
+	v_mov_b32_e32 v60, 0
+	v_mov_b32_e32 v61, v60
+	v_mov_b64_e32 v[62:63], v[60:61]
+	v_mov_b64_e32 v[64:65], v[60:61]
+	v_mov_b64_e32 v[66:67], v[60:61]
+	v_mov_b64_e32 v[50:51], v[60:61]
+	v_mov_b64_e32 v[48:49], v[60:61]
+	v_mov_b64_e32 v[36:37], v[60:61]
+	v_mov_b64_e32 v[24:25], v[60:61]
+	v_mov_b64_e32 v[4:5], v[60:61]
+	v_mov_b64_e32 v[14:15], v[60:61]
+	v_mov_b64_e32 v[26:27], v[60:61]
+	v_mov_b64_e32 v[38:39], v[60:61]
+	v_mov_b64_e32 v[6:7], v[60:61]
+	v_mov_b64_e32 v[16:17], v[60:61]
+	v_mov_b64_e32 v[28:29], v[60:61]
+	v_mov_b64_e32 v[40:41], v[60:61]
+	v_mov_b64_e32 v[8:9], v[60:61]
+	v_mov_b64_e32 v[18:19], v[60:61]
+	v_mov_b64_e32 v[30:31], v[60:61]
+	v_mov_b64_e32 v[42:43], v[60:61]
+	v_mov_b64_e32 v[10:11], v[60:61]
+	v_mov_b64_e32 v[20:21], v[60:61]
+	v_mov_b64_e32 v[32:33], v[60:61]
+	v_mov_b64_e32 v[44:45], v[60:61]
+	v_mov_b64_e32 v[12:13], v[60:61]
+	v_mov_b64_e32 v[22:23], v[60:61]
+	v_mov_b64_e32 v[34:35], v[60:61]
+	v_mov_b64_e32 v[46:47], v[60:61]
+	v_mov_b64_e32 v[52:53], v[60:61]
+	v_mov_b64_e32 v[54:55], v[60:61]
+	v_mov_b64_e32 v[56:57], v[60:61]
+	v_mov_b64_e32 v[58:59], v[60:61]
+.LBB0_3:
+	.loc	1 64 41 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:64:41
+	s_ashr_i32 s85, s52, 31
+	.loc	1 65 45                         ; fused_sigmoid_gating_recurrent.py:65:45
+	s_ashr_i32 s33, s53, 31
+	.loc	1 68 18                         ; fused_sigmoid_gating_recurrent.py:68:18
+	s_sub_u32 s68, s53, s52
+	s_subb_u32 s69, s33, s85
+	.loc	1 64 41                         ; fused_sigmoid_gating_recurrent.py:64:41
+	s_mov_b32 s84, s52
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	v_cmp_lt_i64_e64 s[52:53], s[68:69], 1
+	s_and_b64 vcc, exec, s[52:53]
+	s_cbranch_vccnz .LBB0_8
+; %bb.4:                                ; %.lr.ph
+	.loc	1 0 22 is_stmt 0                ; fused_sigmoid_gating_recurrent.py:0:22
+	s_load_dwordx4 s[60:63], s[0:1], 0x38
+	s_load_dwordx8 s[52:59], s[0:1], 0x60
+	s_load_dwordx4 s[64:67], s[0:1], 0x80
+	.loc	1 168 19 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:168:19
+	v_div_scale_f32 v74, s[0:1], s8, s8, 1.0
+	v_rcp_f32_e32 v76, v74
+	.loc	1 124 57                        ; fused_sigmoid_gating_recurrent.py:124:57
+	s_waitcnt lgkmcnt(0)
+	s_add_u32 s0, s54, s76
+	s_addc_u32 s1, s55, s77
+	.loc	1 124 28 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:124:28
+	s_load_dword s88, s[0:1], 0x0
+	.loc	1 60 19 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:60:19
+	s_mul_i32 s0, s70, 0x56
+	.loc	1 168 19                        ; fused_sigmoid_gating_recurrent.py:168:19
+	v_fma_f32 v77, -v74, v76, 1.0
+	v_fmac_f32_e32 v76, v77, v76
+	v_div_scale_f32 v77, vcc, 1.0, s8, 1.0
+	.loc	1 204 28                        ; fused_sigmoid_gating_recurrent.py:204:28
+	s_waitcnt lgkmcnt(0)
+	s_cmp_gt_i32 s88, -1
+	s_cselect_b64 s[54:55], -1, 0
+	.loc	1 60 19                         ; fused_sigmoid_gating_recurrent.py:60:19
+	s_bfe_u32 s1, s0, 0x1000f
+	s_bfe_u32 s0, s0, 0x80008
+	s_add_i32 s0, s0, s1
+	s_sext_i32_i8 s33, s0
+	.loc	1 76 20                         ; fused_sigmoid_gating_recurrent.py:76:20
+	s_mul_hi_i32 s1, s84, s64
+	s_mul_i32 s0, s84, s64
+	s_ashr_i32 s77, s64, 31
+	.loc	1 76 14 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:76:14
+	s_lshl_b64 s[0:1], s[0:1], 1
+	s_add_u32 s10, s10, s0
+	s_addc_u32 s11, s11, s1
+	.loc	1 76 37                         ; fused_sigmoid_gating_recurrent.py:76:37
+	s_lshl_b32 s0, s33, 7
+	.loc	1 76 31                         ; fused_sigmoid_gating_recurrent.py:76:31
+	s_ashr_i32 s1, s0, 31
+	s_lshl_b64 s[0:1], s[0:1], 1
+	s_add_u32 s10, s10, s0
+	s_addc_u32 s11, s11, s1
+	.loc	1 76 41                         ; fused_sigmoid_gating_recurrent.py:76:41
+	s_lshl_b64 s[78:79], s[74:75], 1
+	s_add_u32 s33, s10, s78
+	s_addc_u32 s80, s11, s79
+	.loc	1 77 20 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:77:20
+	s_mul_hi_i32 s11, s84, s65
+	s_mul_i32 s10, s84, s65
+	s_ashr_i32 s75, s65, 31
+	.loc	1 77 14 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:77:14
+	s_lshl_b64 s[10:11], s[10:11], 1
+	s_add_u32 s10, s12, s10
+	.loc	1 168 19 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:168:19
+	v_mul_f32_e32 v78, v77, v76
+	.loc	1 77 14                         ; fused_sigmoid_gating_recurrent.py:77:14
+	s_addc_u32 s11, s13, s11
+	.loc	1 168 19                        ; fused_sigmoid_gating_recurrent.py:168:19
+	v_fma_f32 v79, -v74, v78, v77
+	.loc	1 77 31                         ; fused_sigmoid_gating_recurrent.py:77:31
+	s_add_u32 s0, s10, s0
+	.loc	1 168 19                        ; fused_sigmoid_gating_recurrent.py:168:19
+	v_fmac_f32_e32 v78, v79, v76
+	.loc	1 77 31                         ; fused_sigmoid_gating_recurrent.py:77:31
+	s_addc_u32 s1, s11, s1
+	.loc	1 168 19                        ; fused_sigmoid_gating_recurrent.py:168:19
+	v_fma_f32 v74, -v74, v78, v77
+	.loc	1 77 41                         ; fused_sigmoid_gating_recurrent.py:77:41
+	s_add_u32 s81, s0, s78
+	.loc	1 168 19                        ; fused_sigmoid_gating_recurrent.py:168:19
+	v_div_fmas_f32 v74, v74, v76, v78
+	.loc	1 77 41                         ; fused_sigmoid_gating_recurrent.py:77:41
+	s_addc_u32 s82, s1, s79
+	.loc	1 78 20                         ; fused_sigmoid_gating_recurrent.py:78:20
+	s_mul_hi_i32 s1, s84, s66
+	s_mul_i32 s0, s84, s66
+	.loc	1 168 19                        ; fused_sigmoid_gating_recurrent.py:168:19
+	v_div_fixup_f32 v76, v74, s8, 1.0
+	.loc	1 73 21                         ; fused_sigmoid_gating_recurrent.py:73:21
+	v_lshl_or_b32 v74, v0, 1, s74
+	.loc	1 77 20                         ; fused_sigmoid_gating_recurrent.py:77:20
+	s_mov_b32 s74, s65
+	.loc	1 78 20                         ; fused_sigmoid_gating_recurrent.py:78:20
+	s_ashr_i32 s65, s66, 31
+	.loc	1 78 14 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:78:14
+	s_lshl_b64 s[0:1], s[0:1], 1
+	s_add_u32 s10, s14, s0
+	s_addc_u32 s11, s15, s1
+	.loc	1 78 38                         ; fused_sigmoid_gating_recurrent.py:78:38
+	s_lshl_b32 s0, s70, 7
+	.loc	1 78 31                         ; fused_sigmoid_gating_recurrent.py:78:31
+	s_ashr_i32 s1, s0, 31
+	s_lshl_b64 s[0:1], s[0:1], 1
+	s_add_u32 s10, s10, s0
+	s_addc_u32 s11, s11, s1
+	.loc	1 78 42                         ; fused_sigmoid_gating_recurrent.py:78:42
+	s_ashr_i32 s73, s72, 31
+	s_lshl_b64 s[0:1], s[72:73], 1
+	.loc	1 76 20 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:76:20
+	s_mov_b32 s76, s64
+	.loc	1 78 20                         ; fused_sigmoid_gating_recurrent.py:78:20
+	s_mov_b32 s64, s66
+	.loc	1 78 42 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:78:42
+	s_add_u32 s66, s10, s0
+	s_addc_u32 s83, s11, s1
+	.loc	1 79 20 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:79:20
+	s_mul_hi_i32 s11, s84, s67
+	s_mul_i32 s10, s84, s67
+	s_ashr_i32 s73, s67, 31
+	.loc	1 79 14 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:79:14
+	s_lshl_b64 s[10:11], s[10:11], 1
+	s_add_u32 s10, s60, s10
+	s_addc_u32 s11, s61, s11
+	.loc	1 79 31                         ; fused_sigmoid_gating_recurrent.py:79:31
+	s_ashr_i32 s71, s70, 31
+	s_lshl_b64 s[86:87], s[70:71], 1
+	s_add_u32 s10, s10, s86
+	.loc	1 80 22 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:80:22
+	s_mul_i32 s12, s58, s16
+	.loc	1 79 31                         ; fused_sigmoid_gating_recurrent.py:79:31
+	s_addc_u32 s11, s11, s87
+	.loc	1 80 28                         ; fused_sigmoid_gating_recurrent.py:80:28
+	s_ashr_i32 s13, s12, 31
+	s_add_u32 s12, s84, s12
+	s_addc_u32 s13, s85, s13
+	.loc	1 80 35 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:80:35
+	s_mul_i32 s13, s13, 48
+	s_mul_hi_u32 s14, s12, 48
+	s_add_i32 s14, s14, s13
+	s_mul_i32 s12, s12, 48
+	.loc	1 80 40                         ; fused_sigmoid_gating_recurrent.py:80:40
+	s_add_u32 s12, s12, s70
+	s_addc_u32 s13, s14, s71
+	.loc	1 80 14                         ; fused_sigmoid_gating_recurrent.py:80:14
+	s_lshl_b64 s[12:13], s[12:13], 8
+	s_add_u32 s12, s62, s12
+	s_addc_u32 s13, s63, s13
+	.loc	1 80 52                         ; fused_sigmoid_gating_recurrent.py:80:52
+	s_add_u32 s60, s12, s0
+	s_addc_u32 s61, s13, s1
+	.loc	1 83 22 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:83:22
+	s_lshl_b64 s[0:1], s[70:71], 2
+	s_add_u32 s12, s2, s0
+	s_addc_u32 s13, s3, s1
+	.loc	1 88 24                         ; fused_sigmoid_gating_recurrent.py:88:24
+	s_mul_hi_i32 s1, s84, s59
+	s_mul_i32 s0, s84, s59
+	s_ashr_i32 s3, s59, 31
+	.loc	1 88 18 is_stmt 0               ; fused_sigmoid_gating_recurrent.py:88:18
+	s_lshl_b64 s[0:1], s[0:1], 1
+	s_add_u32 s0, s4, s0
+	.loc	1 74 34 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:74:34
+	v_and_b32_e32 v88, 31, v0
+	.loc	1 88 18                         ; fused_sigmoid_gating_recurrent.py:88:18
+	s_addc_u32 s1, s5, s1
+	.loc	1 74 21                         ; fused_sigmoid_gating_recurrent.py:74:21
+	v_or_b32_e32 v77, s72, v88
+	.loc	1 88 35                         ; fused_sigmoid_gating_recurrent.py:88:35
+	s_add_u32 s14, s0, s86
+	s_movk_i32 s0, 0x80
+	v_and_b32_e32 v73, 48, v0
+	s_addc_u32 s15, s1, s87
+	.loc	1 92 19                         ; fused_sigmoid_gating_recurrent.py:92:19
+	v_cmp_gt_i32_e32 vcc, s0, v77
+	v_lshlrev_b32_e32 v77, 2, v0
+	v_bfrev_b32_e32 v97, 1
+	.loc	1 91 19                         ; fused_sigmoid_gating_recurrent.py:91:19
+	v_cmp_gt_i32_e64 s[0:1], s0, v74
+	v_and_b32_e32 v0, 32, v0
+	.loc	1 89 30                         ; fused_sigmoid_gating_recurrent.py:89:30
+	s_add_u32 s58, s6, s86
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	s_mul_i32 s4, s56, s88
+	v_cndmask_b32_e64 v78, v97, v77, s[0:1]
+	v_cmp_eq_u32_e64 s[0:1], 0, v0
+	.loc	1 88 24                         ; fused_sigmoid_gating_recurrent.py:88:24
+	s_mov_b32 s2, s59
+	.loc	1 89 30                         ; fused_sigmoid_gating_recurrent.py:89:30
+	s_addc_u32 s59, s7, s87
+	s_and_b64 vcc, s[0:1], vcc
+	s_mul_i32 s0, s4, 0xc0000
+	s_ashr_i32 s1, s0, 31
+	s_lshl_b64 s[0:1], s[0:1], 1
+	s_add_u32 s4, s52, s0
+	s_addc_u32 s5, s53, s1
+	s_lshl_b32 s0, s70, 14
+	s_ashr_i32 s1, s0, 31
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	s_lshl_b64 s[0:1], s[0:1], 1
+	v_lshrrev_b32_e32 v79, 3, v73
+	v_lshlrev_b32_e32 v73, 1, v71
+	s_add_u32 s4, s4, s0
+	v_lshl_or_b32 v0, v71, 8, v75
+	v_cndmask_b32_e64 v81, v97, v73, s[36:37]
+	v_lshlrev_b32_e32 v73, 1, v70
+	s_addc_u32 s5, s5, s1
+	s_lshl_b32 s0, s17, 12
+	v_cndmask_b32_e64 v91, v97, v0, s[40:41]
+	v_lshl_or_b32 v0, v70, 8, v75
+	v_cndmask_b32_e64 v82, v97, v73, s[34:35]
+	v_lshlrev_b32_e32 v73, 1, v69
+	s_ashr_i32 s1, s0, 31
+	v_cndmask_b32_e64 v92, v97, v0, s[44:45]
+	v_lshl_or_b32 v0, v69, 8, v75
+	v_cndmask_b32_e64 v83, v97, v73, s[30:31]
+	v_lshlrev_b32_e32 v73, 1, v68
+	s_lshl_b64 s[0:1], s[0:1], 1
+	v_cndmask_b32_e64 v93, v97, v0, s[48:49]
+	v_lshl_or_b32 v0, v68, 8, v75
+	v_cndmask_b32_e64 v84, v97, v73, s[28:29]
+	v_lshlrev_b32_e32 v73, 1, v3
+	s_add_u32 s0, s4, s0
+	v_cndmask_b32_e64 v94, v97, v0, s[42:43]
+	v_lshl_or_b32 v0, v3, 8, v75
+	v_cndmask_b32_e64 v85, v97, v73, s[26:27]
+	v_lshlrev_b32_e32 v73, 1, v2
+	s_addc_u32 s1, s5, s1
+	v_cndmask_b32_e64 v95, v97, v0, s[18:19]
+	v_lshl_or_b32 v0, v2, 8, v75
+	.loc	1 79 20                         ; fused_sigmoid_gating_recurrent.py:79:20
+	s_mov_b32 s72, s67
+	v_cndmask_b32_e64 v86, v97, v73, s[24:25]
+	v_lshlrev_b32_e32 v73, 1, v1
+	v_lshlrev_b32_e32 v88, 1, v88
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	s_add_u32 s30, s0, s78
+	v_cndmask_b32_e64 v96, v97, v0, s[20:21]
+	v_lshl_or_b32 v0, v1, 8, v75
+	v_cndmask_b32_e64 v80, v97, v79, s[38:39]
+	v_cndmask_b32_e64 v87, v97, v73, s[22:23]
+	v_cndmask_b32_e32 v89, v97, v88, vcc
+	s_addc_u32 s31, s1, s79
+	v_cndmask_b32_e64 v90, v97, v72, s[50:51]
+	v_cndmask_b32_e64 v97, v97, v0, s[46:47]
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	s_mov_b32 s56, s57
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	s_lshl_b64 s[16:17], s[64:65], 1
+	s_lshl_b64 s[18:19], s[74:75], 1
+	s_lshl_b64 s[20:21], s[76:77], 1
+	s_lshl_b64 s[22:23], s[2:3], 1
+	s_lshl_b64 s[24:25], s[72:73], 1
+	s_mov_b64 s[26:27], 0
+	s_mov_b32 s7, 0x27000
+	s_mov_b32 s6, 0x7ffffffe
+	v_mov_b32_e32 v98, 0
+	s_mov_b32 s34, 0x3fb8aa3b
+	s_mov_b32 s35, 0xc2fc0000
+	s_mov_b32 s36, 0x800000
+	s_mov_b32 s37, 0x3f317217
+	s_mov_b32 s38, 0x7f800000
+	v_mov_b32_e32 v99, 0x42800000
+	v_mov_b32_e32 v100, 0x41b17218
+	v_mov_b32_e32 v101, 0x358637bd
+	s_mov_b64 s[28:29], 0
+	s_branch .LBB0_6
+.LBB0_5:                                ;   in Loop: Header=BB0_6 Depth=1
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	s_add_u32 s28, s28, 1
+	s_addc_u32 s29, s29, 0
+	.loc	1 223 15                        ; fused_sigmoid_gating_recurrent.py:223:15
+	s_add_u32 s60, s60, 0x3000
+	s_addc_u32 s61, s61, 0
+	.loc	1 127 22                        ; fused_sigmoid_gating_recurrent.py:127:22
+	s_add_u32 s66, s66, s16
+	s_addc_u32 s83, s83, s17
+	s_add_u32 s81, s81, s18
+	s_addc_u32 s82, s82, s19
+	s_add_u32 s33, s33, s20
+	s_addc_u32 s80, s80, s21
+	s_add_u32 s14, s14, s22
+	s_addc_u32 s15, s15, s23
+	v_mov_b64_e32 v[0:1], s[68:69]
+	s_add_u32 s10, s10, s24
+	v_cmp_lt_i64_e32 vcc, s[28:29], v[0:1]
+	s_addc_u32 s11, s11, s25
+	s_add_i32 s27, s27, 0xc0000
+	s_cbranch_vccz .LBB0_8
+.LBB0_6:                                ; =>This Inner Loop Header: Depth=1
+	.loc	1 147 22                        ; fused_sigmoid_gating_recurrent.py:147:22
+	s_and_b32 s5, s80, 0xffff
+	s_mov_b32 s4, s33
+	buffer_load_dword v106, v78, s[4:7], 0 offen
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_add_u32_e32 v68, 0, v77
+	.loc	1 148 22                        ; fused_sigmoid_gating_recurrent.py:148:22
+	s_and_b32 s5, s82, 0xffff
+	s_mov_b32 s4, s81
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	s_waitcnt lgkmcnt(0)
+	; wave barrier
+	v_add_u32_e32 v69, 0, v75
+	s_waitcnt vmcnt(0)
+	ds_write_b32 v68, v106
+	s_waitcnt lgkmcnt(0)
+	; wave barrier
+	s_waitcnt lgkmcnt(0)
+	.loc	1 148 22                        ; fused_sigmoid_gating_recurrent.py:148:22
+	buffer_load_dword v115, v78, s[4:7], 0 offen
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	ds_read_b128 v[0:3], v69
+	.loc	1 179 25                        ; fused_sigmoid_gating_recurrent.py:179:25
+	s_waitcnt lgkmcnt(0)
+	; wave barrier
+	s_waitcnt lgkmcnt(0)
+	.loc	1 149 22                        ; fused_sigmoid_gating_recurrent.py:149:22
+	s_and_b32 s5, s83, 0xffff
+	s_mov_b32 s4, s66
+	.loc	1 179 25                        ; fused_sigmoid_gating_recurrent.py:179:25
+	s_waitcnt vmcnt(0)
+	ds_write_b32 v68, v115
+	s_waitcnt lgkmcnt(0)
+	; wave barrier
+	s_waitcnt lgkmcnt(0)
+	ds_read_b128 v[102:105], v69
+	.loc	1 148 52                        ; fused_sigmoid_gating_recurrent.py:148:52
+	s_waitcnt lgkmcnt(0)
+	v_lshlrev_b32_e32 v70, 16, v103
+	v_and_b32_e32 v71, 0xffff0000, v103
+	v_lshlrev_b32_e32 v72, 16, v102
+	v_and_b32_e32 v73, 0xffff0000, v102
+	.loc	1 159 34                        ; fused_sigmoid_gating_recurrent.py:159:34
+	global_load_ushort v102, v98, s[14:15]
+	.loc	1 160 46                        ; fused_sigmoid_gating_recurrent.py:160:46
+	global_load_ushort v103, v98, s[58:59]
+	.loc	1 154 26                        ; fused_sigmoid_gating_recurrent.py:154:26
+	global_load_dword v116, v98, s[12:13]
+	.loc	1 148 52                        ; fused_sigmoid_gating_recurrent.py:148:52
+	v_lshlrev_b32_e32 v68, 16, v104
+	v_and_b32_e32 v69, 0xffff0000, v104
+	v_lshlrev_b32_e32 v74, 16, v105
+	v_and_b32_e32 v114, 0xffff0000, v105
+	.loc	1 159 34                        ; fused_sigmoid_gating_recurrent.py:159:34
+	s_waitcnt vmcnt(2)
+	v_lshlrev_b32_e32 v102, 16, v102
+	.loc	1 160 46                        ; fused_sigmoid_gating_recurrent.py:160:46
+	s_waitcnt vmcnt(1)
+	v_lshlrev_b32_e32 v103, 16, v103
+	.loc	1 163 18                        ; fused_sigmoid_gating_recurrent.py:163:18
+	v_add_f32_e32 v117, v102, v103
+	.loc	1 171 22                        ; fused_sigmoid_gating_recurrent.py:171:22
+	s_waitcnt vmcnt(0)
+	v_mul_f32_e32 v102, 0x3fb8aa3b, v116
+	v_cmp_gt_f32_e32 vcc, s35, v102
+	.loc	1 150 30                        ; fused_sigmoid_gating_recurrent.py:150:30
+	global_load_ushort v102, v98, s[10:11]
+	.loc	1 164 33                        ; fused_sigmoid_gating_recurrent.py:164:33
+	v_mul_f32_e32 v120, s8, v117
+	.loc	1 171 22                        ; fused_sigmoid_gating_recurrent.py:171:22
+	v_cndmask_b32_e32 v121, 0, v99, vcc
+	v_fmac_f32_e32 v121, 0x3fb8aa3b, v116
+	.loc	1 150 30                        ; fused_sigmoid_gating_recurrent.py:150:30
+	s_waitcnt vmcnt(0)
+	v_lshlrev_b32_e32 v102, 16, v102
+	.loc	1 174 37                        ; fused_sigmoid_gating_recurrent.py:174:37
+	v_mul_f32_e64 v103, -v102, s34
+	v_cmp_gt_f32_e64 s[0:1], s35, v103
+	.loc	1 174 38 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:174:38
+	v_sub_f32_e32 v102, 0, v102
+	.loc	1 174 37                        ; fused_sigmoid_gating_recurrent.py:174:37
+	s_nop 0
+	v_cndmask_b32_e64 v103, 0, v99, s[0:1]
+	v_fmac_f32_e32 v103, 0x3fb8aa3b, v102
+	.loc	1 168 56 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:168:56
+	v_mul_f32_e32 v102, 0x3fb8aa3b, v120
+	v_cmp_gt_f32_e64 s[2:3], s35, v102
+	.loc	1 174 37                        ; fused_sigmoid_gating_recurrent.py:174:37
+	v_exp_f32_e32 v103, v103
+	.loc	1 168 56                        ; fused_sigmoid_gating_recurrent.py:168:56
+	s_nop 0
+	v_cndmask_b32_e64 v102, 0, v99, s[2:3]
+	v_fmac_f32_e32 v102, 0x3fb8aa3b, v120
+	v_exp_f32_e32 v102, v102
+	s_and_b64 s[2:3], s[2:3], exec
+	s_cselect_b32 s2, 0xffffffc0, 0
+	v_ldexp_f32 v102, v102, s2
+	.loc	1 168 49 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:168:49
+	v_add_f32_e32 v123, 1.0, v102
+	.loc	1 168 43                        ; fused_sigmoid_gating_recurrent.py:168:43
+	v_cmp_gt_f32_e64 s[2:3], s36, v123
+	s_nop 1
+	v_cndmask_b32_e64 v122, 0, v100, s[2:3]
+	s_and_b64 s[2:3], s[2:3], exec
+	s_cselect_b32 s3, 32, 0
+	.loc	1 171 22 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:171:22
+	s_and_b64 s[40:41], vcc, exec
+	s_cselect_b32 s2, 0xffffffc0, 0
+	.loc	1 174 37                        ; fused_sigmoid_gating_recurrent.py:174:37
+	s_and_b64 s[0:1], s[0:1], exec
+	s_cselect_b32 s0, 0xffffffc0, 0
+	v_ldexp_f32 v102, v103, s0
+	.loc	1 174 30 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:174:30
+	v_add_f32_e32 v118, 1.0, v102
+	.loc	1 174 24                        ; fused_sigmoid_gating_recurrent.py:174:24
+	v_div_scale_f32 v102, s[0:1], v118, v118, 1.0
+	v_rcp_f32_e32 v103, v102
+	s_nop 0
+	v_fma_f32 v104, -v102, v103, 1.0
+	v_fmac_f32_e32 v103, v104, v103
+	v_div_scale_f32 v104, vcc, 1.0, v118, 1.0
+	v_mul_f32_e32 v105, v104, v103
+	v_fma_f32 v107, -v102, v105, v104
+	v_fmac_f32_e32 v105, v107, v103
+	v_fma_f32 v102, -v102, v105, v104
+	v_div_fmas_f32 v119, v102, v103, v105
+	.loc	1 147 52 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:147:52
+	v_lshlrev_b32_e32 v102, 16, v106
+	v_and_b32_e32 v103, 0xffff0000, v106
+	.loc	1 178 46                        ; fused_sigmoid_gating_recurrent.py:178:46
+	v_pk_mul_f32 v[102:103], v[102:103], v[102:103]
+.Ltmp2:
+	.file	2 "/opt/venv/lib/python3.10/site-packages/triton/language" "standard.py"
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:178:40 ]
+	s_nop 0
+	v_add_f32_e32 v102, v102, v103
+	s_nop 1
+	v_add_f32_dpp v102, v102, v102 row_shr:8 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	s_nop 1
+	v_add_f32_dpp v102, v102, v102 row_shr:4 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	s_nop 1
+	v_add_f32_dpp v102, v102, v102 row_shr:2 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	s_nop 1
+	v_add_f32_dpp v102, v102, v102 row_shr:1 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:178:40 ]
+	v_mov_b32_e32 v103, v102
+	s_nop 1
+	v_mov_b32_dpp v103, v103 row_bcast:15 row_mask:0xa bank_mask:0xf bound_ctrl:1
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:178:40 ]
+	v_add_f32_e32 v102, v102, v103
+.Ltmp3:
+	.loc	1 147 52                        ; fused_sigmoid_gating_recurrent.py:147:52
+	v_lshlrev_b32_e32 v103, 16, v1
+	v_and_b32_e32 v1, 0xffff0000, v1
+.Ltmp4:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:178:40 ]
+	v_add_f32_dpp v102, v102, v102 row_bcast:31 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:178:40 ]
+	s_nop 0
+	v_readlane_b32 s0, v102, 63
+.Ltmp5:
+	.loc	1 178 53                        ; fused_sigmoid_gating_recurrent.py:178:53
+	s_nop 1
+	v_add_f32_e32 v102, s0, v101
+	.loc	1 178 33 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:178:33
+	v_sqrt_f32_e32 v102, v102
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	s_nop 0
+	v_div_scale_f32 v104, s[0:1], v102, v102, v103
+	v_rcp_f32_e32 v105, v104
+	s_nop 0
+	v_fma_f32 v106, -v104, v105, 1.0
+	v_fmac_f32_e32 v105, v106, v105
+	v_div_scale_f32 v106, vcc, v103, v102, v103
+	v_mul_f32_e32 v107, v106, v105
+	v_fma_f32 v108, -v104, v107, v106
+	v_fmac_f32_e32 v107, v108, v105
+	v_fma_f32 v104, -v104, v107, v106
+	v_div_fmas_f32 v104, v104, v105, v107
+	v_div_scale_f32 v105, s[0:1], v102, v102, v1
+	v_rcp_f32_e32 v106, v105
+	s_nop 0
+	v_fma_f32 v107, -v105, v106, 1.0
+	v_fmac_f32_e32 v106, v107, v106
+	v_div_scale_f32 v107, vcc, v1, v102, v1
+	v_mul_f32_e32 v108, v107, v106
+	v_fma_f32 v109, -v105, v108, v107
+	v_fmac_f32_e32 v108, v109, v106
+	v_fma_f32 v105, -v105, v108, v107
+	v_div_fmas_f32 v106, v105, v106, v108
+	.loc	1 147 52 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:147:52
+	v_lshlrev_b32_e32 v105, 16, v2
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_scale_f32 v107, s[0:1], v102, v102, v105
+	v_rcp_f32_e32 v108, v107
+	s_nop 0
+	v_fma_f32 v109, -v107, v108, 1.0
+	v_fmac_f32_e32 v108, v109, v108
+	v_div_scale_f32 v109, vcc, v105, v102, v105
+	v_mul_f32_e32 v110, v109, v108
+	v_fma_f32 v111, -v107, v110, v109
+	v_fmac_f32_e32 v110, v111, v108
+	v_fma_f32 v107, -v107, v110, v109
+	v_div_fmas_f32 v108, v107, v108, v110
+	.loc	1 147 52                        ; fused_sigmoid_gating_recurrent.py:147:52
+	v_and_b32_e32 v107, 0xffff0000, v2
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_scale_f32 v2, s[0:1], v102, v102, v107
+	v_rcp_f32_e32 v109, v2
+	s_nop 0
+	v_fma_f32 v110, -v2, v109, 1.0
+	v_fmac_f32_e32 v109, v110, v109
+	v_div_scale_f32 v110, vcc, v107, v102, v107
+	v_mul_f32_e32 v111, v110, v109
+	v_fma_f32 v112, -v2, v111, v110
+	v_fmac_f32_e32 v111, v112, v109
+	v_fma_f32 v2, -v2, v111, v110
+	.loc	1 147 52                        ; fused_sigmoid_gating_recurrent.py:147:52
+	v_lshlrev_b32_e32 v110, 16, v3
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fmas_f32 v109, v2, v109, v111
+	v_div_scale_f32 v2, s[0:1], v102, v102, v110
+	v_rcp_f32_e32 v111, v2
+	s_nop 0
+	v_fma_f32 v112, -v2, v111, 1.0
+	v_fmac_f32_e32 v111, v112, v111
+	v_div_scale_f32 v112, vcc, v110, v102, v110
+	v_mul_f32_e32 v113, v112, v111
+	v_fma_f32 v124, -v2, v113, v112
+	v_fmac_f32_e32 v113, v124, v111
+	v_fma_f32 v2, -v2, v113, v112
+	v_div_fmas_f32 v112, v2, v111, v113
+	.loc	1 147 52                        ; fused_sigmoid_gating_recurrent.py:147:52
+	v_and_b32_e32 v111, 0xffff0000, v3
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_scale_f32 v2, s[0:1], v102, v102, v111
+	v_rcp_f32_e32 v3, v2
+	s_nop 0
+	v_fma_f32 v113, -v2, v3, 1.0
+	v_fmac_f32_e32 v3, v113, v3
+	v_div_scale_f32 v113, vcc, v111, v102, v111
+	v_mul_f32_e32 v124, v113, v3
+	v_fma_f32 v125, -v2, v124, v113
+	v_fmac_f32_e32 v124, v125, v3
+	v_fma_f32 v2, -v2, v124, v113
+	v_div_fmas_f32 v113, v2, v3, v124
+	.loc	1 148 52                        ; fused_sigmoid_gating_recurrent.py:148:52
+	v_lshlrev_b32_e32 v2, 16, v115
+	v_and_b32_e32 v3, 0xffff0000, v115
+	.loc	1 179 46                        ; fused_sigmoid_gating_recurrent.py:179:46
+	v_pk_mul_f32 v[2:3], v[2:3], v[2:3]
+.Ltmp6:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:179:40 ]
+	s_nop 0
+	v_add_f32_e32 v2, v2, v3
+	s_nop 1
+	v_add_f32_dpp v2, v2, v2 row_shr:8 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	s_nop 1
+	v_add_f32_dpp v2, v2, v2 row_shr:4 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	s_nop 1
+	v_add_f32_dpp v2, v2, v2 row_shr:2 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	s_nop 1
+	v_add_f32_dpp v2, v2, v2 row_shr:1 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:179:40 ]
+	v_mov_b32_e32 v3, v2
+	s_nop 1
+	v_mov_b32_dpp v3, v3 row_bcast:15 row_mask:0xa bank_mask:0xf bound_ctrl:1
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:179:40 ]
+	v_add_f32_e32 v2, v2, v3
+	s_nop 1
+	v_add_f32_dpp v2, v2, v2 row_bcast:31 row_mask:0xf bank_mask:0xf bound_ctrl:1
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:179:40 ]
+	s_nop 0
+	v_readlane_b32 s0, v2, 63
+.Ltmp7:
+	.loc	1 179 53                        ; fused_sigmoid_gating_recurrent.py:179:53
+	s_nop 1
+	v_add_f32_e32 v2, s0, v101
+	.loc	1 179 33 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:179:33
+	v_sqrt_f32_e32 v115, v2
+	.loc	1 179 25                        ; fused_sigmoid_gating_recurrent.py:179:25
+	s_nop 0
+	v_div_scale_f32 v2, s[0:1], v115, v115, v114
+	v_rcp_f32_e32 v3, v2
+	s_nop 0
+	v_fma_f32 v124, -v2, v3, 1.0
+	v_fmac_f32_e32 v3, v124, v3
+	v_div_scale_f32 v124, vcc, v114, v115, v114
+	v_mul_f32_e32 v125, v124, v3
+	v_fma_f32 v126, -v2, v125, v124
+	v_fmac_f32_e32 v125, v126, v3
+	v_fma_f32 v2, -v2, v125, v124
+	v_div_fmas_f32 v2, v2, v3, v125
+	v_div_scale_f32 v3, s[0:1], v115, v115, v74
+	v_rcp_f32_e32 v124, v3
+	s_nop 0
+	v_fma_f32 v125, -v3, v124, 1.0
+	v_fmac_f32_e32 v124, v125, v124
+	v_div_scale_f32 v125, vcc, v74, v115, v74
+	v_mul_f32_e32 v126, v125, v124
+	v_fma_f32 v127, -v3, v126, v125
+	v_fmac_f32_e32 v126, v127, v124
+	v_fma_f32 v3, -v3, v126, v125
+	v_div_fmas_f32 v124, v3, v124, v126
+	v_div_fixup_f32 v3, v2, v115, v114
+	v_div_fixup_f32 v2, v124, v115, v74
+	v_div_scale_f32 v74, s[0:1], v115, v115, v69
+	v_rcp_f32_e32 v114, v74
+	s_nop 0
+	v_fma_f32 v124, -v74, v114, 1.0
+	v_fmac_f32_e32 v114, v124, v114
+	v_div_scale_f32 v124, vcc, v69, v115, v69
+	v_mul_f32_e32 v125, v124, v114
+	v_fma_f32 v126, -v74, v125, v124
+	v_fmac_f32_e32 v125, v126, v114
+	v_fma_f32 v74, -v74, v125, v124
+	v_div_fmas_f32 v74, v74, v114, v125
+	v_div_scale_f32 v114, s[0:1], v115, v115, v68
+	v_rcp_f32_e32 v124, v114
+	v_div_fixup_f32 v69, v74, v115, v69
+	v_div_scale_f32 v74, s[0:1], v115, v115, v71
+	v_fma_f32 v125, -v114, v124, 1.0
+	v_fmac_f32_e32 v124, v125, v124
+	v_div_scale_f32 v125, vcc, v68, v115, v68
+	v_mul_f32_e32 v126, v125, v124
+	v_fma_f32 v127, -v114, v126, v125
+	v_fmac_f32_e32 v126, v127, v124
+	v_fma_f32 v114, -v114, v126, v125
+	v_div_fmas_f32 v114, v114, v124, v126
+	v_div_fixup_f32 v68, v114, v115, v68
+	v_rcp_f32_e32 v114, v74
+	s_nop 0
+	v_fma_f32 v124, -v74, v114, 1.0
+	v_fmac_f32_e32 v114, v124, v114
+	v_div_scale_f32 v124, vcc, v71, v115, v71
+	v_mul_f32_e32 v125, v124, v114
+	v_fma_f32 v126, -v74, v125, v124
+	v_fmac_f32_e32 v125, v126, v114
+	v_fma_f32 v74, -v74, v125, v124
+	v_div_fmas_f32 v74, v74, v114, v125
+	v_div_scale_f32 v114, s[0:1], v115, v115, v70
+	v_rcp_f32_e32 v124, v114
+	v_div_fixup_f32 v71, v74, v115, v71
+	v_div_scale_f32 v74, s[0:1], v115, v115, v73
+	v_fma_f32 v125, -v114, v124, 1.0
+	v_fmac_f32_e32 v124, v125, v124
+	v_div_scale_f32 v125, vcc, v70, v115, v70
+	v_mul_f32_e32 v126, v125, v124
+	v_fma_f32 v127, -v114, v126, v125
+	v_fmac_f32_e32 v126, v127, v124
+	v_fma_f32 v114, -v114, v126, v125
+	v_div_fmas_f32 v114, v114, v124, v126
+	v_div_fixup_f32 v70, v114, v115, v70
+	v_rcp_f32_e32 v114, v74
+	s_nop 0
+	v_fma_f32 v124, -v74, v114, 1.0
+	v_fmac_f32_e32 v114, v124, v114
+	v_div_scale_f32 v124, vcc, v73, v115, v73
+	v_mul_f32_e32 v125, v124, v114
+	v_fma_f32 v126, -v74, v125, v124
+	v_fmac_f32_e32 v125, v126, v114
+	v_fma_f32 v74, -v74, v125, v124
+	v_div_fmas_f32 v74, v74, v114, v125
+	v_div_scale_f32 v114, s[0:1], v115, v115, v72
+	v_rcp_f32_e32 v124, v114
+	v_div_fixup_f32 v73, v74, v115, v73
+	.loc	1 168 43 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:168:43
+	v_ldexp_f32 v74, v123, s3
+	v_log_f32_e32 v74, v74
+	.loc	1 179 25                        ; fused_sigmoid_gating_recurrent.py:179:25
+	v_fma_f32 v125, -v114, v124, 1.0
+	v_fmac_f32_e32 v124, v125, v124
+	v_div_scale_f32 v125, vcc, v72, v115, v72
+	v_mul_f32_e32 v126, v125, v124
+	v_fma_f32 v127, -v114, v126, v125
+	v_fmac_f32_e32 v126, v127, v124
+	v_fma_f32 v114, -v114, v126, v125
+	v_div_fmas_f32 v114, v114, v124, v126
+	v_div_fixup_f32 v72, v114, v115, v72
+	.loc	1 168 43                        ; fused_sigmoid_gating_recurrent.py:168:43
+	v_mul_f32_e32 v114, 0x3f317217, v74
+	v_fma_f32 v114, v74, s37, -v114
+	v_fmac_f32_e32 v114, 0x3377d1cf, v74
+	v_fmac_f32_e32 v114, 0x3f317217, v74
+	v_cmp_lt_f32_e64 vcc, |v74|, s38
+	s_nop 1
+	v_cndmask_b32_e32 v74, v74, v114, vcc
+	.loc	1 171 22                        ; fused_sigmoid_gating_recurrent.py:171:22
+	v_exp_f32_e32 v114, v121
+	.loc	1 168 43                        ; fused_sigmoid_gating_recurrent.py:168:43
+	v_sub_f32_e32 v74, v74, v122
+	.loc	1 168 36 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:168:36
+	v_mul_f32_e32 v74, v76, v74
+	.loc	1 167 22 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:167:22
+	v_cmp_ge_f32_e32 vcc, s9, v120
+	.loc	1 171 22                        ; fused_sigmoid_gating_recurrent.py:171:22
+	v_ldexp_f32 v114, v114, s2
+	.loc	1 169 12                        ; fused_sigmoid_gating_recurrent.py:169:12
+	s_nop 0
+	v_cndmask_b32_e32 v74, v117, v74, vcc
+	.loc	1 171 33                        ; fused_sigmoid_gating_recurrent.py:171:33
+	v_mul_f32_e64 v74, -v114, v74
+	.loc	1 187 26                        ; fused_sigmoid_gating_recurrent.py:187:26
+	v_mul_f32_e32 v114, 0x3fb8aa3b, v74
+	v_cmp_gt_f32_e32 vcc, s35, v114
+	s_and_b64 s[0:1], vcc, exec
+	s_cselect_b32 s0, 0xffffffc0, 0
+	v_cndmask_b32_e32 v114, 0, v99, vcc
+	v_fmac_f32_e32 v114, 0x3fb8aa3b, v74
+	v_exp_f32_e32 v74, v114
+	s_nop 0
+	v_ldexp_f32 v74, v74, s0
+	.loc	1 187 19 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[66:67], v[66:67], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[64:65], v[64:65], v[74:75] op_sel_hi:[1,0]
+	.loc	1 190 28 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[66:67], v[72:73]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[62:63], v[62:63], v[74:75] op_sel_hi:[1,0]
+.Ltmp8:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v116, v114, v115
+.Ltmp9:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[64:65], v[70:71]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[60:61], v[60:61], v[74:75] op_sel_hi:[1,0]
+.Ltmp10:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v116
+	v_add_f32_e32 v116, v115, v114
+.Ltmp11:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[62:63], v[68:69]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[58:59], v[58:59], v[74:75] op_sel_hi:[1,0]
+.Ltmp12:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v116
+	v_add_f32_e32 v116, v115, v114
+.Ltmp13:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[60:61], v[2:3]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[56:57], v[56:57], v[74:75] op_sel_hi:[1,0]
+.Ltmp14:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v116
+	v_add_f32_e32 v116, v115, v114
+.Ltmp15:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[58:59], v[72:73]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[54:55], v[54:55], v[74:75] op_sel_hi:[1,0]
+.Ltmp16:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v117, v114, v115
+.Ltmp17:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[56:57], v[70:71]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[52:53], v[52:53], v[74:75] op_sel_hi:[1,0]
+.Ltmp18:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v117
+	v_add_f32_e32 v117, v115, v114
+.Ltmp19:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[54:55], v[68:69]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[46:47], v[46:47], v[74:75] op_sel_hi:[1,0]
+.Ltmp20:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v117
+	v_add_f32_e32 v117, v115, v114
+.Ltmp21:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[52:53], v[2:3]
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[34:35], v[34:35], v[74:75] op_sel_hi:[1,0]
+.Ltmp22:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v117
+	v_add_f32_e32 v114, v115, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+.Ltmp23:
+	.loc	1 174 24                        ; fused_sigmoid_gating_recurrent.py:174:24
+	v_div_fixup_f32 v117, v119, v118, 1.0
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[22:23], v[22:23], v[74:75] op_sel_hi:[1,0]
+.Ltmp24:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_dpp v115, v115 row_shr:8 row_mask:0xf bank_mask:0xc
+.Ltmp25:
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[12:13], v[12:13], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[44:45], v[44:45], v[74:75] op_sel_hi:[1,0]
+.Ltmp26:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_dpp v115, v114 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+.Ltmp27:
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[32:33], v[32:33], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[20:21], v[20:21], v[74:75] op_sel_hi:[1,0]
+.Ltmp28:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_dpp v115, v115 row_shr:4 row_mask:0xf bank_mask:0xa
+.Ltmp29:
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[10:11], v[10:11], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[42:43], v[42:43], v[74:75] op_sel_hi:[1,0]
+.Ltmp30:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_dpp v115, v114 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+.Ltmp31:
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[30:31], v[30:31], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[18:19], v[18:19], v[74:75] op_sel_hi:[1,0]
+.Ltmp32:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_dpp v115, v115 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+.Ltmp33:
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[8:9], v[8:9], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[40:41], v[40:41], v[74:75] op_sel_hi:[1,0]
+.Ltmp34:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_dpp v115, v115 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+.Ltmp35:
+	.loc	1 149 22                        ; fused_sigmoid_gating_recurrent.py:149:22
+	buffer_load_ushort v115, v80, s[4:7], 0 offen
+	buffer_load_ushort v118, v81, s[4:7], 0 offen
+	buffer_load_ushort v119, v82, s[4:7], 0 offen
+	buffer_load_ushort v120, v83, s[4:7], 0 offen
+	buffer_load_ushort v121, v84, s[4:7], 0 offen
+	buffer_load_ushort v122, v85, s[4:7], 0 offen
+	buffer_load_ushort v123, v86, s[4:7], 0 offen
+	buffer_load_ushort v124, v87, s[4:7], 0 offen
+	.loc	1 187 19                        ; fused_sigmoid_gating_recurrent.py:187:19
+	v_pk_mul_f32 v[28:29], v[28:29], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[16:17], v[16:17], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[6:7], v[6:7], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[38:39], v[38:39], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[26:27], v[26:27], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[14:15], v[14:15], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[4:5], v[4:5], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[24:25], v[24:25], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[36:37], v[36:37], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[50:51], v[50:51], v[74:75] op_sel_hi:[1,0]
+	v_pk_mul_f32 v[48:49], v[48:49], v[74:75] op_sel_hi:[1,0]
+	.loc	1 200 22                        ; fused_sigmoid_gating_recurrent.py:200:22
+	s_waitcnt lgkmcnt(0)
+	; wave barrier
+	s_and_b32 s5, s61, 0xffff
+	s_mov_b32 s4, s60
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(7)
+	v_lshlrev_b32_e32 v115, 16, v115
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v114, v115, v114
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v114, v117, v114
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[58:59], v[72:73], v[114:115], v[58:59] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[56:57], v[70:71], v[114:115], v[56:57] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[54:55], v[68:69], v[114:115], v[54:55] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[52:53], v[2:3], v[114:115], v[52:53] op_sel_hi:[1,0,1]
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[46:47], v[72:73]
+.Ltmp36:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v125, v114, v115
+.Ltmp37:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[34:35], v[70:71]
+.Ltmp38:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v125
+	v_add_f32_e32 v125, v115, v114
+.Ltmp39:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[22:23], v[68:69]
+.Ltmp40:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v125
+	v_add_f32_e32 v125, v115, v114
+.Ltmp41:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[12:13], v[2:3]
+.Ltmp42:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v125
+	v_add_f32_e32 v114, v115, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+.Ltmp43:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(6)
+	v_lshlrev_b32_e32 v115, 16, v118
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v114, v115, v114
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v114, v117, v114
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[46:47], v[72:73], v[114:115], v[46:47] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[34:35], v[70:71], v[114:115], v[34:35] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[22:23], v[68:69], v[114:115], v[22:23] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[12:13], v[2:3], v[114:115], v[12:13] op_sel_hi:[1,0,1]
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[44:45], v[72:73]
+.Ltmp44:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v118, v114, v115
+.Ltmp45:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[32:33], v[70:71]
+.Ltmp46:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp47:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[20:21], v[68:69]
+.Ltmp48:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp49:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[10:11], v[2:3]
+.Ltmp50:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v114, v115, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+.Ltmp51:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(5)
+	v_lshlrev_b32_e32 v115, 16, v119
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v114, v115, v114
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v114, v117, v114
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[44:45], v[72:73], v[114:115], v[44:45] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[32:33], v[70:71], v[114:115], v[32:33] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[20:21], v[68:69], v[114:115], v[20:21] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[10:11], v[2:3], v[114:115], v[10:11] op_sel_hi:[1,0,1]
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[42:43], v[72:73]
+.Ltmp52:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v118, v114, v115
+.Ltmp53:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[30:31], v[70:71]
+.Ltmp54:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp55:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[18:19], v[68:69]
+.Ltmp56:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp57:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[8:9], v[2:3]
+.Ltmp58:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v114, v115, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+.Ltmp59:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(4)
+	v_lshlrev_b32_e32 v115, 16, v120
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v114, v115, v114
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v114, v117, v114
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[42:43], v[72:73], v[114:115], v[42:43] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[30:31], v[70:71], v[114:115], v[30:31] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[18:19], v[68:69], v[114:115], v[18:19] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[8:9], v[2:3], v[114:115], v[8:9] op_sel_hi:[1,0,1]
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[40:41], v[72:73]
+.Ltmp60:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v118, v114, v115
+.Ltmp61:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[28:29], v[70:71]
+.Ltmp62:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp63:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[16:17], v[68:69]
+.Ltmp64:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp65:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[6:7], v[2:3]
+.Ltmp66:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v114, v115, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+.Ltmp67:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(3)
+	v_lshlrev_b32_e32 v115, 16, v121
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v114, v115, v114
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v114, v117, v114
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[40:41], v[72:73], v[114:115], v[40:41] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[28:29], v[70:71], v[114:115], v[28:29] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[16:17], v[68:69], v[114:115], v[16:17] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[6:7], v[2:3], v[114:115], v[6:7] op_sel_hi:[1,0,1]
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[38:39], v[72:73]
+.Ltmp68:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v118, v114, v115
+.Ltmp69:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[26:27], v[70:71]
+.Ltmp70:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp71:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[14:15], v[68:69]
+.Ltmp72:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v118, v115, v114
+.Ltmp73:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[4:5], v[2:3]
+.Ltmp74:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v114, v114, v118
+	v_add_f32_e32 v114, v115, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v115, v114 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v115, v114
+	s_nop 1
+	v_mov_b32_dpp v115, v115 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v114, v114, v115
+.Ltmp75:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(2)
+	v_lshlrev_b32_e32 v115, 16, v122
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v114, v115, v114
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v114, v117, v114
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[38:39], v[72:73], v[114:115], v[38:39] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[26:27], v[70:71], v[114:115], v[26:27] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[14:15], v[68:69], v[114:115], v[14:15] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[4:5], v[2:3], v[114:115], v[4:5] op_sel_hi:[1,0,1]
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[24:25], v[72:73]
+.Ltmp76:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v74, v114, v115
+.Ltmp77:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[36:37], v[70:71]
+.Ltmp78:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v74, v114, v74
+	v_add_f32_e32 v74, v115, v74
+.Ltmp79:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[48:49], v[68:69]
+.Ltmp80:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v74, v114, v74
+	v_add_f32_e32 v74, v115, v74
+.Ltmp81:
+	.loc	1 190 28                        ; fused_sigmoid_gating_recurrent.py:190:28
+	v_pk_mul_f32 v[114:115], v[50:51], v[2:3]
+.Ltmp82:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	s_nop 0
+	v_add_f32_e32 v74, v114, v74
+	v_add_f32_e32 v74, v115, v74
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v114, v74 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v114, v74 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+.Ltmp83:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(1)
+	v_lshlrev_b32_e32 v114, 16, v123
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v74, v114, v74
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v74, v117, v74
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[24:25], v[72:73], v[74:75], v[24:25] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[36:37], v[70:71], v[74:75], v[36:37] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[48:49], v[68:69], v[74:75], v[48:49] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[50:51], v[2:3], v[74:75], v[50:51] op_sel_hi:[1,0,1]
+.Ltmp84:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v74, v116
+	s_nop 1
+	v_mov_b32_dpp v74, v74 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 1
+	v_mov_b32_dpp v74, v116 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v116, v74
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 1
+	v_mov_b32_dpp v114, v74 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_mov_b32_e32 v114, v74
+	s_nop 1
+	v_mov_b32_dpp v114, v114 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:190:42 ]
+	v_add_f32_e32 v74, v74, v114
+.Ltmp85:
+	.loc	1 149 52                        ; fused_sigmoid_gating_recurrent.py:149:52
+	s_waitcnt vmcnt(0)
+	v_lshlrev_b32_e32 v114, 16, v124
+	.loc	1 190 15                        ; fused_sigmoid_gating_recurrent.py:190:15
+	v_sub_f32_e32 v74, v114, v74
+	.loc	1 193 15                        ; fused_sigmoid_gating_recurrent.py:193:15
+	v_mul_f32_e32 v74, v117, v74
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[60:61], v[2:3], v[74:75], v[60:61] op_sel_hi:[1,0,1]
+	.loc	1 147 52                        ; fused_sigmoid_gating_recurrent.py:147:52
+	v_lshlrev_b32_e32 v2, 16, v0
+	v_and_b32_e32 v0, 0xffff0000, v0
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_scale_f32 v3, s[0:1], v102, v102, v0
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[62:63], v[68:69], v[74:75], v[62:63] op_sel_hi:[1,0,1]
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_rcp_f32_e32 v68, v3
+	.loc	1 196 15                        ; fused_sigmoid_gating_recurrent.py:196:15
+	v_pk_fma_f32 v[64:65], v[70:71], v[74:75], v[64:65] op_sel_hi:[1,0,1]
+	v_pk_fma_f32 v[66:67], v[72:73], v[74:75], v[66:67] op_sel_hi:[1,0,1]
+.Ltmp86:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_mov_b32 v[114:115], v[40:41], v[38:39] op_sel:[1,0]
+.Ltmp87:
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_fma_f32 v69, -v3, v68, 1.0
+	v_fmac_f32_e32 v68, v69, v68
+	v_div_scale_f32 v69, vcc, v0, v102, v0
+	v_mul_f32_e32 v70, v69, v68
+	v_fma_f32 v71, -v3, v70, v69
+	v_fmac_f32_e32 v70, v71, v68
+	v_fma_f32 v3, -v3, v70, v69
+	v_div_fmas_f32 v3, v3, v68, v70
+	v_div_scale_f32 v68, s[0:1], v102, v102, v2
+	v_rcp_f32_e32 v69, v68
+	v_div_fixup_f32 v3, v3, v102, v0
+.Ltmp88:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_mov_b32 v[116:117], v[24:25], v[66:67] op_sel:[1,0]
+.Ltmp89:
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fixup_f32 v0, v104, v102, v103
+	v_fma_f32 v70, -v68, v69, 1.0
+	v_fmac_f32_e32 v69, v70, v69
+	v_div_scale_f32 v70, vcc, v2, v102, v2
+	v_mul_f32_e32 v71, v70, v69
+	v_fma_f32 v72, -v68, v71, v70
+	v_fmac_f32_e32 v71, v72, v69
+	v_fma_f32 v68, -v68, v71, v70
+	v_div_fmas_f32 v68, v68, v69, v71
+	v_div_fixup_f32 v2, v68, v102, v2
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_pk_mul_f32 v[2:3], s[56:57], v[2:3]
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v68, v58
+	v_mov_b32_e32 v69, v47
+	v_pk_mul_f32 v[68:69], v[2:3], v[68:69]
+.Ltmp90:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_mov_b32 v[70:71], v[58:59], v[46:47] op_sel:[1,0]
+	v_pk_mov_b32 v[72:73], v[44:45], v[42:43] op_sel:[1,0]
+	v_pk_fma_f32 v[68:69], v[2:3], v[70:71], v[68:69] op_sel:[1,0,0] op_sel_hi:[0,1,1]
+.Ltmp91:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v70, v44
+	v_mov_b32_e32 v71, v43
+	v_pk_mul_f32 v[70:71], v[2:3], v[70:71]
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_mul_f32_e32 v0, s57, v0
+.Ltmp92:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[2:3], v[72:73], v[70:71] op_sel:[1,0,0] op_sel_hi:[0,1,1]
+.Ltmp93:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v40
+	v_mov_b32_e32 v73, v39
+	v_pk_mul_f32 v[72:73], v[2:3], v[72:73]
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fixup_f32 v74, v106, v102, v1
+.Ltmp94:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[72:73], v[2:3], v[114:115], v[72:73] op_sel:[1,0,0] op_sel_hi:[0,1,1]
+.Ltmp95:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v114, v24
+	v_mov_b32_e32 v115, v67
+	v_pk_mul_f32 v[114:115], v[2:3], v[114:115]
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_mul_f32_e32 v74, s57, v74
+.Ltmp96:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[2:3], v[116:117], v[114:115] op_sel:[1,0,0] op_sel_hi:[0,1,1]
+.Ltmp97:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v114, v56
+	v_mov_b32_e32 v115, v34
+.Ltmp98:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[68:69], v[0:1], v[114:115], v[68:69] op_sel_hi:[0,1,1]
+.Ltmp99:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v114, v32
+	v_mov_b32_e32 v115, v30
+.Ltmp100:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[0:1], v[114:115], v[70:71] op_sel_hi:[0,1,1]
+.Ltmp101:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v114, v28
+	v_mov_b32_e32 v115, v26
+.Ltmp102:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[72:73], v[0:1], v[114:115], v[72:73] op_sel_hi:[0,1,1]
+.Ltmp103:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v114, v36
+	v_mov_b32_e32 v115, v64
+.Ltmp104:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[0:1], v[114:115], v[2:3] op_sel_hi:[0,1,1]
+.Ltmp105:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v0, v57
+	v_mov_b32_e32 v1, v35
+.Ltmp106:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[0:1], v[74:75], v[0:1], v[68:69] op_sel_hi:[0,1,1]
+.Ltmp107:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v68, v33
+	v_mov_b32_e32 v69, v31
+.Ltmp108:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[68:69], v[74:75], v[68:69], v[70:71] op_sel_hi:[0,1,1]
+.Ltmp109:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v70, v29
+	v_mov_b32_e32 v71, v27
+.Ltmp110:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[74:75], v[70:71], v[72:73] op_sel_hi:[0,1,1]
+.Ltmp111:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v37
+	v_mov_b32_e32 v73, v65
+.Ltmp112:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[74:75], v[72:73], v[2:3] op_sel_hi:[0,1,1]
+.Ltmp113:
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fixup_f32 v74, v108, v102, v105
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v54
+	v_mov_b32_e32 v73, v22
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_mul_f32_e32 v74, s57, v74
+.Ltmp114:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[0:1], v[74:75], v[72:73], v[0:1] op_sel_hi:[0,1,1]
+.Ltmp115:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v20
+	v_mov_b32_e32 v73, v18
+.Ltmp116:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[68:69], v[74:75], v[72:73], v[68:69] op_sel_hi:[0,1,1]
+.Ltmp117:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v16
+	v_mov_b32_e32 v73, v14
+.Ltmp118:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[74:75], v[72:73], v[70:71] op_sel_hi:[0,1,1]
+.Ltmp119:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v48
+	v_mov_b32_e32 v73, v62
+.Ltmp120:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[74:75], v[72:73], v[2:3] op_sel_hi:[0,1,1]
+.Ltmp121:
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fixup_f32 v74, v109, v102, v107
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v55
+	v_mov_b32_e32 v73, v23
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_mul_f32_e32 v74, s57, v74
+.Ltmp122:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[0:1], v[74:75], v[72:73], v[0:1] op_sel_hi:[0,1,1]
+.Ltmp123:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v21
+	v_mov_b32_e32 v73, v19
+.Ltmp124:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[68:69], v[74:75], v[72:73], v[68:69] op_sel_hi:[0,1,1]
+.Ltmp125:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v17
+	v_mov_b32_e32 v73, v15
+.Ltmp126:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[74:75], v[72:73], v[70:71] op_sel_hi:[0,1,1]
+.Ltmp127:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v49
+	v_mov_b32_e32 v73, v63
+.Ltmp128:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[74:75], v[72:73], v[2:3] op_sel_hi:[0,1,1]
+.Ltmp129:
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fixup_f32 v74, v112, v102, v110
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v52
+	v_mov_b32_e32 v73, v12
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_mul_f32_e32 v74, s57, v74
+.Ltmp130:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[0:1], v[74:75], v[72:73], v[0:1] op_sel_hi:[0,1,1]
+.Ltmp131:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v10
+	v_mov_b32_e32 v73, v8
+.Ltmp132:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[68:69], v[74:75], v[72:73], v[68:69] op_sel_hi:[0,1,1]
+.Ltmp133:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v6
+	v_mov_b32_e32 v73, v4
+.Ltmp134:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[74:75], v[72:73], v[70:71] op_sel_hi:[0,1,1]
+.Ltmp135:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v50
+	v_mov_b32_e32 v73, v60
+.Ltmp136:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[74:75], v[72:73], v[2:3] op_sel_hi:[0,1,1]
+.Ltmp137:
+	.loc	1 178 25                        ; fused_sigmoid_gating_recurrent.py:178:25
+	v_div_fixup_f32 v74, v113, v102, v111
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v53
+	v_mov_b32_e32 v73, v13
+	.loc	1 181 20                        ; fused_sigmoid_gating_recurrent.py:181:20
+	v_mul_f32_e32 v74, s57, v74
+.Ltmp138:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[0:1], v[74:75], v[72:73], v[0:1] op_sel_hi:[0,1,1]
+.Ltmp139:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v11
+	v_mov_b32_e32 v73, v9
+.Ltmp140:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[68:69], v[74:75], v[72:73], v[68:69] op_sel_hi:[0,1,1]
+.Ltmp141:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v7
+	v_mov_b32_e32 v73, v5
+.Ltmp142:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[70:71], v[74:75], v[72:73], v[70:71] op_sel_hi:[0,1,1]
+.Ltmp143:
+	.loc	1 199 27                        ; fused_sigmoid_gating_recurrent.py:199:27
+	v_mov_b32_e32 v72, v51
+	v_mov_b32_e32 v73, v61
+.Ltmp144:
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_fma_f32 v[2:3], v[74:75], v[72:73], v[2:3] op_sel_hi:[0,1,1]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_e32 v72, v0
+	v_mov_b32_e32 v73, v1
+.Ltmp145:
+	.loc	1 204 15                        ; fused_sigmoid_gating_recurrent.py:204:15
+	s_andn2_b64 vcc, exec, s[54:55]
+.Ltmp146:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_dpp v72, v72 row_shr:8 row_mask:0xf bank_mask:0xc
+	v_mov_b32_dpp v73, v73 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 0
+	v_mov_b32_dpp v72, v0 row_shl:8 row_mask:0xf bank_mask:0x3
+	v_mov_b32_dpp v73, v1 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[0:1], v[0:1], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v0
+	v_mov_b32_e32 v73, v1
+	s_nop 0
+	v_mov_b32_dpp v72, v72 row_shr:4 row_mask:0xf bank_mask:0xa
+	v_mov_b32_dpp v73, v73 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 0
+	v_mov_b32_dpp v72, v0 row_shl:4 row_mask:0xf bank_mask:0x5
+	v_mov_b32_dpp v73, v1 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[0:1], v[0:1], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v0
+	v_mov_b32_e32 v73, v1
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[0:1], v[0:1], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v0
+	v_mov_b32_e32 v73, v1
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[0:1], v[0:1], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_e32 v72, v68
+	v_mov_b32_e32 v73, v69
+.Ltmp147:
+	.loc	1 200 29                        ; fused_sigmoid_gating_recurrent.py:200:29
+	v_cvt_pk_bf16_f32 v0, v0, v1
+.Ltmp148:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_dpp v72, v72 row_shr:8 row_mask:0xf bank_mask:0xc
+	v_mov_b32_dpp v73, v73 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 0
+	v_mov_b32_dpp v72, v68 row_shl:8 row_mask:0xf bank_mask:0x3
+	v_mov_b32_dpp v73, v69 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[68:69], v[68:69], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v68
+	v_mov_b32_e32 v73, v69
+	s_nop 0
+	v_mov_b32_dpp v72, v72 row_shr:4 row_mask:0xf bank_mask:0xa
+	v_mov_b32_dpp v73, v73 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 0
+	v_mov_b32_dpp v72, v68 row_shl:4 row_mask:0xf bank_mask:0x5
+	v_mov_b32_dpp v73, v69 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[68:69], v[68:69], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v68
+	v_mov_b32_e32 v73, v69
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[68:69], v[68:69], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v68
+	v_mov_b32_e32 v73, v69
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[68:69], v[68:69], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_e32 v72, v70
+	v_mov_b32_e32 v73, v71
+.Ltmp149:
+	.loc	1 200 29                        ; fused_sigmoid_gating_recurrent.py:200:29
+	v_cvt_pk_bf16_f32 v1, v68, v69
+.Ltmp150:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_dpp v72, v72 row_shr:8 row_mask:0xf bank_mask:0xc
+	v_mov_b32_dpp v73, v73 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 0
+	v_mov_b32_dpp v72, v70 row_shl:8 row_mask:0xf bank_mask:0x3
+	v_mov_b32_dpp v73, v71 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[70:71], v[70:71], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v70
+	v_mov_b32_e32 v73, v71
+	s_nop 0
+	v_mov_b32_dpp v72, v72 row_shr:4 row_mask:0xf bank_mask:0xa
+	v_mov_b32_dpp v73, v73 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 0
+	v_mov_b32_dpp v72, v70 row_shl:4 row_mask:0xf bank_mask:0x5
+	v_mov_b32_dpp v73, v71 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[70:71], v[70:71], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v70
+	v_mov_b32_e32 v73, v71
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[70:71], v[70:71], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v70
+	v_mov_b32_e32 v73, v71
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[70:71], v[70:71], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_e32 v72, v2
+	v_mov_b32_e32 v73, v3
+.Ltmp151:
+	.loc	1 200 29                        ; fused_sigmoid_gating_recurrent.py:200:29
+	v_cvt_pk_bf16_f32 v68, v70, v71
+.Ltmp152:
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_mov_b32_dpp v72, v72 row_shr:8 row_mask:0xf bank_mask:0xc
+	v_mov_b32_dpp v73, v73 row_shr:8 row_mask:0xf bank_mask:0xc
+	s_nop 0
+	v_mov_b32_dpp v72, v2 row_shl:8 row_mask:0xf bank_mask:0x3
+	v_mov_b32_dpp v73, v3 row_shl:8 row_mask:0xf bank_mask:0x3
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[2:3], v[2:3], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v2
+	v_mov_b32_e32 v73, v3
+	s_nop 0
+	v_mov_b32_dpp v72, v72 row_shr:4 row_mask:0xf bank_mask:0xa
+	v_mov_b32_dpp v73, v73 row_shr:4 row_mask:0xf bank_mask:0xa
+	s_nop 0
+	v_mov_b32_dpp v72, v2 row_shl:4 row_mask:0xf bank_mask:0x5
+	v_mov_b32_dpp v73, v3 row_shl:4 row_mask:0xf bank_mask:0x5
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[2:3], v[2:3], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v2
+	v_mov_b32_e32 v73, v3
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[2:3], v[2:3], v[72:73]
+	.loc	2 291 36                        ; standard.py:291:36 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	s_nop 0
+	v_mov_b32_e32 v72, v2
+	v_mov_b32_e32 v73, v3
+	s_nop 0
+	v_mov_b32_dpp v72, v72 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	v_mov_b32_dpp v73, v73 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf
+	.loc	2 261 15                        ; standard.py:261:15 @[ fused_sigmoid_gating_recurrent.py:199:41 ]
+	v_pk_add_f32 v[2:3], v[2:3], v[72:73]
+.Ltmp153:
+	.loc	1 200 29                        ; fused_sigmoid_gating_recurrent.py:200:29
+	s_nop 0
+	v_cvt_pk_bf16_f32 v2, v2, v3
+	.loc	1 200 22 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:200:22
+	v_add_u32_e32 v3, 0, v79
+	ds_write_b16 v3, v0
+	ds_write_b16_d16_hi v3, v0 offset:8
+	ds_write_b16 v3, v1 offset:16
+	ds_write_b16_d16_hi v3, v1 offset:24
+	ds_write_b16 v3, v68 offset:32
+	ds_write_b16_d16_hi v3, v68 offset:40
+	ds_write_b16 v3, v2 offset:48
+	ds_write_b16_d16_hi v3, v2 offset:56
+	v_add_u32_e32 v0, 0, v88
+	s_waitcnt lgkmcnt(0)
+	; wave barrier
+	s_waitcnt lgkmcnt(0)
+	ds_read_u16 v0, v0
+	s_waitcnt lgkmcnt(0)
+	buffer_store_short v0, v89, s[4:7], 0 offen
+	.loc	1 204 15 is_stmt 1              ; fused_sigmoid_gating_recurrent.py:204:15
+	s_cbranch_vccnz .LBB0_5
+; %bb.7:                                ;   in Loop: Header=BB0_6 Depth=1
+	.loc	1 212 22                        ; fused_sigmoid_gating_recurrent.py:212:22
+	s_ashr_i64 s[0:1], s[26:27], 31
+	s_add_u32 s4, s30, s0
+	s_addc_u32 s0, s31, s1
+	.loc	1 214 43                        ; fused_sigmoid_gating_recurrent.py:214:43
+	v_cvt_pk_bf16_f32 v0, v58, v59
+	v_cvt_pk_bf16_f32 v1, v56, v57
+	v_cvt_pk_bf16_f32 v2, v54, v55
+	v_cvt_pk_bf16_f32 v3, v52, v53
+	.loc	1 214 36 is_stmt 0              ; fused_sigmoid_gating_recurrent.py:214:36
+	s_and_b32 s5, s0, 0xffff
+	.loc	1 214 43                        ; fused_sigmoid_gating_recurrent.py:214:43
+	v_cvt_pk_bf16_f32 v68, v46, v47
+	v_cvt_pk_bf16_f32 v69, v34, v35
+	v_cvt_pk_bf16_f32 v70, v22, v23
+	v_cvt_pk_bf16_f32 v71, v12, v13
+	v_cvt_pk_bf16_f32 v102, v44, v45
+	v_cvt_pk_bf16_f32 v103, v32, v33
+	v_cvt_pk_bf16_f32 v104, v20, v21
+	v_cvt_pk_bf16_f32 v105, v10, v11
+	v_cvt_pk_bf16_f32 v106, v42, v43
+	v_cvt_pk_bf16_f32 v107, v30, v31
+	v_cvt_pk_bf16_f32 v108, v18, v19
+	v_cvt_pk_bf16_f32 v109, v8, v9
+	v_cvt_pk_bf16_f32 v110, v40, v41
+	v_cvt_pk_bf16_f32 v111, v28, v29
+	v_cvt_pk_bf16_f32 v112, v16, v17
+	v_cvt_pk_bf16_f32 v113, v6, v7
+	v_cvt_pk_bf16_f32 v114, v38, v39
+	v_cvt_pk_bf16_f32 v115, v26, v27
+	v_cvt_pk_bf16_f32 v116, v14, v15
+	v_cvt_pk_bf16_f32 v117, v4, v5
+	v_cvt_pk_bf16_f32 v118, v24, v25
+	v_cvt_pk_bf16_f32 v119, v36, v37
+	v_cvt_pk_bf16_f32 v120, v48, v49
+	v_cvt_pk_bf16_f32 v121, v50, v51
+	v_cvt_pk_bf16_f32 v122, v66, v67
+	v_cvt_pk_bf16_f32 v123, v64, v65
+	v_cvt_pk_bf16_f32 v124, v62, v63
+	v_cvt_pk_bf16_f32 v125, v60, v61
+	.loc	1 214 36                        ; fused_sigmoid_gating_recurrent.py:214:36
+	buffer_store_dwordx4 v[0:3], v90, s[4:7], 0 offen
+	buffer_store_dwordx4 v[68:71], v91, s[4:7], 0 offen
+	buffer_store_dwordx4 v[102:105], v92, s[4:7], 0 offen
+	buffer_store_dwordx4 v[106:109], v93, s[4:7], 0 offen
+	buffer_store_dwordx4 v[110:113], v94, s[4:7], 0 offen
+	buffer_store_dwordx4 v[114:117], v95, s[4:7], 0 offen
+	buffer_store_dwordx4 v[118:121], v96, s[4:7], 0 offen
+	buffer_store_dwordx4 v[122:125], v97, s[4:7], 0 offen
+	s_branch .LBB0_5
+.LBB0_8:                                ; %._crit_edge
+	.loc	1 227 4 is_stmt 1               ; fused_sigmoid_gating_recurrent.py:227:4
+	s_endpgm
+.Ltmp154:
+	.section	.rodata,"a",@progbits
+	.p2align	6, 0x0
+	.amdhsa_kernel fused_sigmoid_gating_delta_rule_update_kernel
+		.amdhsa_group_segment_fixed_size 0
+		.amdhsa_private_segment_fixed_size 0
+		.amdhsa_kernarg_size 160
+		.amdhsa_user_sgpr_count 16
+		.amdhsa_user_sgpr_dispatch_ptr 0
+		.amdhsa_user_sgpr_queue_ptr 0
+		.amdhsa_user_sgpr_kernarg_segment_ptr 1
+		.amdhsa_user_sgpr_dispatch_id 0
+		.amdhsa_user_sgpr_kernarg_preload_length 14
+		.amdhsa_user_sgpr_kernarg_preload_offset 0
+		.amdhsa_user_sgpr_private_segment_size 0
+		.amdhsa_uses_dynamic_stack 0
+		.amdhsa_enable_private_segment 0
+		.amdhsa_system_sgpr_workgroup_id_x 1
+		.amdhsa_system_sgpr_workgroup_id_y 1
+		.amdhsa_system_sgpr_workgroup_id_z 1
+		.amdhsa_system_sgpr_workgroup_info 0
+		.amdhsa_system_vgpr_workitem_id 0
+		.amdhsa_next_free_vgpr 128
+		.amdhsa_next_free_sgpr 89
+		.amdhsa_accum_offset 128
+		.amdhsa_reserve_vcc 1
+		.amdhsa_reserve_xnack_mask 1
+		.amdhsa_float_round_mode_32 0
+		.amdhsa_float_round_mode_16_64 0
+		.amdhsa_float_denorm_mode_32 3
+		.amdhsa_float_denorm_mode_16_64 3
+		.amdhsa_dx10_clamp 1
+		.amdhsa_ieee_mode 1
+		.amdhsa_fp16_overflow 0
+		.amdhsa_tg_split 0
+		.amdhsa_exception_fp_ieee_invalid_op 0
+		.amdhsa_exception_fp_denorm_src 0
+		.amdhsa_exception_fp_ieee_div_zero 0
+		.amdhsa_exception_fp_ieee_overflow 0
+		.amdhsa_exception_fp_ieee_underflow 0
+		.amdhsa_exception_fp_ieee_inexact 0
+		.amdhsa_exception_int_div_zero 0
+	.end_amdhsa_kernel
+	.text
+.Lfunc_end0:
+	.size	fused_sigmoid_gating_delta_rule_update_kernel, .Lfunc_end0-fused_sigmoid_gating_delta_rule_update_kernel
+	.cfi_endproc
+                                        ; -- End function
+	.set fused_sigmoid_gating_delta_rule_update_kernel.num_vgpr, 128
+	.set fused_sigmoid_gating_delta_rule_update_kernel.num_agpr, 0
+	.set fused_sigmoid_gating_delta_rule_update_kernel.numbered_sgpr, 89
+	.set fused_sigmoid_gating_delta_rule_update_kernel.private_seg_size, 0
+	.set fused_sigmoid_gating_delta_rule_update_kernel.uses_vcc, 1
+	.set fused_sigmoid_gating_delta_rule_update_kernel.uses_flat_scratch, 0
+	.set fused_sigmoid_gating_delta_rule_update_kernel.has_dyn_sized_stack, 0
+	.set fused_sigmoid_gating_delta_rule_update_kernel.has_recursion, 0
+	.set fused_sigmoid_gating_delta_rule_update_kernel.has_indirect_call, 0
+	.section	.AMDGPU.csdata,"",@progbits
+; Kernel info:
+; codeLenInByte = 8848
+; TotalNumSgprs: 95
+; NumVgprs: 128
+; NumAgprs: 0
+; TotalNumVgprs: 128
+; ScratchSize: 0
+; MemoryBound: 0
+; FloatMode: 240
+; IeeeMode: 1
+; LDSByteSize: 0 bytes/workgroup (compile time only)
+; SGPRBlocks: 11
+; VGPRBlocks: 15
+; NumSGPRsForWavesPerEU: 95
+; NumVGPRsForWavesPerEU: 128
+; AccumOffset: 128
+; Occupancy: 4
+; WaveLimiterHint : 0
+; COMPUTE_PGM_RSRC2:SCRATCH_EN: 0
+; COMPUTE_PGM_RSRC2:USER_SGPR: 16
+; COMPUTE_PGM_RSRC2:TRAP_HANDLER: 0
+; COMPUTE_PGM_RSRC2:TGID_X_EN: 1
+; COMPUTE_PGM_RSRC2:TGID_Y_EN: 1
+; COMPUTE_PGM_RSRC2:TGID_Z_EN: 1
+; COMPUTE_PGM_RSRC2:TIDIG_COMP_CNT: 0
+; COMPUTE_PGM_RSRC3_GFX90A:ACCUM_OFFSET: 31
+; COMPUTE_PGM_RSRC3_GFX90A:TG_SPLIT: 0
+	.text
+	.p2alignl 6, 3212836864
+	.fill 256, 4, 3212836864
+	.section	.AMDGPU.gpr_maximums,"",@progbits
+	.set amdgpu.max_num_vgpr, 0
+	.set amdgpu.max_num_agpr, 0
+	.set amdgpu.max_num_sgpr, 0
+	.text
+	.section	.debug_abbrev,"",@progbits
+	.byte	1                               ; Abbreviation Code
+	.byte	17                              ; DW_TAG_compile_unit
+	.byte	1                               ; DW_CHILDREN_yes
+	.byte	37                              ; DW_AT_producer
+	.byte	14                              ; DW_FORM_strp
+	.byte	19                              ; DW_AT_language
+	.byte	5                               ; DW_FORM_data2
+	.byte	3                               ; DW_AT_name
+	.byte	14                              ; DW_FORM_strp
+	.byte	16                              ; DW_AT_stmt_list
+	.byte	23                              ; DW_FORM_sec_offset
+	.byte	27                              ; DW_AT_comp_dir
+	.byte	14                              ; DW_FORM_strp
+	.byte	17                              ; DW_AT_low_pc
+	.byte	1                               ; DW_FORM_addr
+	.byte	18                              ; DW_AT_high_pc
+	.byte	6                               ; DW_FORM_data4
+	.byte	0                               ; EOM(1)
+	.byte	0                               ; EOM(2)
+	.byte	2                               ; Abbreviation Code
+	.byte	46                              ; DW_TAG_subprogram
+	.byte	0                               ; DW_CHILDREN_no
+	.byte	3                               ; DW_AT_name
+	.byte	14                              ; DW_FORM_strp
+	.byte	32                              ; DW_AT_inline
+	.byte	11                              ; DW_FORM_data1
+	.byte	0                               ; EOM(1)
+	.byte	0                               ; EOM(2)
+	.byte	3                               ; Abbreviation Code
+	.byte	46                              ; DW_TAG_subprogram
+	.byte	1                               ; DW_CHILDREN_yes
+	.byte	17                              ; DW_AT_low_pc
+	.byte	1                               ; DW_FORM_addr
+	.byte	18                              ; DW_AT_high_pc
+	.byte	6                               ; DW_FORM_data4
+	.byte	49                              ; DW_AT_abstract_origin
+	.byte	19                              ; DW_FORM_ref4
+	.byte	0                               ; EOM(1)
+	.byte	0                               ; EOM(2)
+	.byte	4                               ; Abbreviation Code
+	.byte	29                              ; DW_TAG_inlined_subroutine
+	.byte	0                               ; DW_CHILDREN_no
+	.byte	49                              ; DW_AT_abstract_origin
+	.byte	19                              ; DW_FORM_ref4
+	.byte	85                              ; DW_AT_ranges
+	.byte	23                              ; DW_FORM_sec_offset
+	.byte	88                              ; DW_AT_call_file
+	.byte	11                              ; DW_FORM_data1
+	.byte	89                              ; DW_AT_call_line
+	.byte	11                              ; DW_FORM_data1
+	.byte	87                              ; DW_AT_call_column
+	.byte	11                              ; DW_FORM_data1
+	.byte	0                               ; EOM(1)
+	.byte	0                               ; EOM(2)
+	.byte	5                               ; Abbreviation Code
+	.byte	29                              ; DW_TAG_inlined_subroutine
+	.byte	0                               ; DW_CHILDREN_no
+	.byte	49                              ; DW_AT_abstract_origin
+	.byte	19                              ; DW_FORM_ref4
+	.byte	17                              ; DW_AT_low_pc
+	.byte	1                               ; DW_FORM_addr
+	.byte	18                              ; DW_AT_high_pc
+	.byte	6                               ; DW_FORM_data4
+	.byte	88                              ; DW_AT_call_file
+	.byte	11                              ; DW_FORM_data1
+	.byte	89                              ; DW_AT_call_line
+	.byte	11                              ; DW_FORM_data1
+	.byte	87                              ; DW_AT_call_column
+	.byte	11                              ; DW_FORM_data1
+	.byte	0                               ; EOM(1)
+	.byte	0                               ; EOM(2)
+	.byte	0                               ; EOM(3)
+	.section	.debug_info,"",@progbits
+.Lcu_begin0:
+	.long	.Ldebug_info_end0-.Ldebug_info_start0 ; Length of Unit
+.Ldebug_info_start0:
+	.short	4                               ; DWARF version number
+	.long	.debug_abbrev                   ; Offset Into Abbrev. Section
+	.byte	8                               ; Address Size (in bytes)
+	.byte	1                               ; Abbrev [1] 0xb:0x70 DW_TAG_compile_unit
+	.long	.Linfo_string0                  ; DW_AT_producer
+	.short	2                               ; DW_AT_language
+	.long	.Linfo_string1                  ; DW_AT_name
+	.long	.Lline_table_start0             ; DW_AT_stmt_list
+	.long	.Linfo_string2                  ; DW_AT_comp_dir
+	.quad	.Lfunc_begin0                   ; DW_AT_low_pc
+	.long	.Lfunc_end0-.Lfunc_begin0       ; DW_AT_high_pc
+	.byte	2                               ; Abbrev [2] 0x2a:0x6 DW_TAG_subprogram
+	.long	.Linfo_string3                  ; DW_AT_name
+	.byte	1                               ; DW_AT_inline
+	.byte	3                               ; Abbrev [3] 0x30:0x4a DW_TAG_subprogram
+	.quad	.Lfunc_begin0                   ; DW_AT_low_pc
+	.long	.Lfunc_end0-.Lfunc_begin0       ; DW_AT_high_pc
+	.long	42                              ; DW_AT_abstract_origin
+	.byte	4                               ; Abbrev [4] 0x41:0xc DW_TAG_inlined_subroutine
+	.long	42                              ; DW_AT_abstract_origin
+	.long	.Ldebug_ranges0                 ; DW_AT_ranges
+	.byte	1                               ; DW_AT_call_file
+	.byte	178                             ; DW_AT_call_line
+	.byte	40                              ; DW_AT_call_column
+	.byte	5                               ; Abbrev [5] 0x4d:0x14 DW_TAG_inlined_subroutine
+	.long	42                              ; DW_AT_abstract_origin
+	.quad	.Ltmp6                          ; DW_AT_low_pc
+	.long	.Ltmp7-.Ltmp6                   ; DW_AT_high_pc
+	.byte	1                               ; DW_AT_call_file
+	.byte	179                             ; DW_AT_call_line
+	.byte	40                              ; DW_AT_call_column
+	.byte	4                               ; Abbrev [4] 0x61:0xc DW_TAG_inlined_subroutine
+	.long	42                              ; DW_AT_abstract_origin
+	.long	.Ldebug_ranges1                 ; DW_AT_ranges
+	.byte	1                               ; DW_AT_call_file
+	.byte	190                             ; DW_AT_call_line
+	.byte	42                              ; DW_AT_call_column
+	.byte	4                               ; Abbrev [4] 0x6d:0xc DW_TAG_inlined_subroutine
+	.long	42                              ; DW_AT_abstract_origin
+	.long	.Ldebug_ranges2                 ; DW_AT_ranges
+	.byte	1                               ; DW_AT_call_file
+	.byte	199                             ; DW_AT_call_line
+	.byte	41                              ; DW_AT_call_column
+	.byte	0                               ; End Of Children Mark
+	.byte	0                               ; End Of Children Mark
+.Ldebug_info_end0:
+	.section	.debug_ranges,"",@progbits
+.Ldebug_ranges0:
+	.quad	.Ltmp2-.Lfunc_begin0
+	.quad	.Ltmp3-.Lfunc_begin0
+	.quad	.Ltmp4-.Lfunc_begin0
+	.quad	.Ltmp5-.Lfunc_begin0
+	.quad	0
+	.quad	0
+.Ldebug_ranges1:
+	.quad	.Ltmp8-.Lfunc_begin0
+	.quad	.Ltmp9-.Lfunc_begin0
+	.quad	.Ltmp10-.Lfunc_begin0
+	.quad	.Ltmp11-.Lfunc_begin0
+	.quad	.Ltmp12-.Lfunc_begin0
+	.quad	.Ltmp13-.Lfunc_begin0
+	.quad	.Ltmp14-.Lfunc_begin0
+	.quad	.Ltmp15-.Lfunc_begin0
+	.quad	.Ltmp16-.Lfunc_begin0
+	.quad	.Ltmp17-.Lfunc_begin0
+	.quad	.Ltmp18-.Lfunc_begin0
+	.quad	.Ltmp19-.Lfunc_begin0
+	.quad	.Ltmp20-.Lfunc_begin0
+	.quad	.Ltmp21-.Lfunc_begin0
+	.quad	.Ltmp22-.Lfunc_begin0
+	.quad	.Ltmp23-.Lfunc_begin0
+	.quad	.Ltmp24-.Lfunc_begin0
+	.quad	.Ltmp25-.Lfunc_begin0
+	.quad	.Ltmp26-.Lfunc_begin0
+	.quad	.Ltmp27-.Lfunc_begin0
+	.quad	.Ltmp28-.Lfunc_begin0
+	.quad	.Ltmp29-.Lfunc_begin0
+	.quad	.Ltmp30-.Lfunc_begin0
+	.quad	.Ltmp31-.Lfunc_begin0
+	.quad	.Ltmp32-.Lfunc_begin0
+	.quad	.Ltmp33-.Lfunc_begin0
+	.quad	.Ltmp34-.Lfunc_begin0
+	.quad	.Ltmp35-.Lfunc_begin0
+	.quad	.Ltmp36-.Lfunc_begin0
+	.quad	.Ltmp37-.Lfunc_begin0
+	.quad	.Ltmp38-.Lfunc_begin0
+	.quad	.Ltmp39-.Lfunc_begin0
+	.quad	.Ltmp40-.Lfunc_begin0
+	.quad	.Ltmp41-.Lfunc_begin0
+	.quad	.Ltmp42-.Lfunc_begin0
+	.quad	.Ltmp43-.Lfunc_begin0
+	.quad	.Ltmp44-.Lfunc_begin0
+	.quad	.Ltmp45-.Lfunc_begin0
+	.quad	.Ltmp46-.Lfunc_begin0
+	.quad	.Ltmp47-.Lfunc_begin0
+	.quad	.Ltmp48-.Lfunc_begin0
+	.quad	.Ltmp49-.Lfunc_begin0
+	.quad	.Ltmp50-.Lfunc_begin0
+	.quad	.Ltmp51-.Lfunc_begin0
+	.quad	.Ltmp52-.Lfunc_begin0
+	.quad	.Ltmp53-.Lfunc_begin0
+	.quad	.Ltmp54-.Lfunc_begin0
+	.quad	.Ltmp55-.Lfunc_begin0
+	.quad	.Ltmp56-.Lfunc_begin0
+	.quad	.Ltmp57-.Lfunc_begin0
+	.quad	.Ltmp58-.Lfunc_begin0
+	.quad	.Ltmp59-.Lfunc_begin0
+	.quad	.Ltmp60-.Lfunc_begin0
+	.quad	.Ltmp61-.Lfunc_begin0
+	.quad	.Ltmp62-.Lfunc_begin0
+	.quad	.Ltmp63-.Lfunc_begin0
+	.quad	.Ltmp64-.Lfunc_begin0
+	.quad	.Ltmp65-.Lfunc_begin0
+	.quad	.Ltmp66-.Lfunc_begin0
+	.quad	.Ltmp67-.Lfunc_begin0
+	.quad	.Ltmp68-.Lfunc_begin0
+	.quad	.Ltmp69-.Lfunc_begin0
+	.quad	.Ltmp70-.Lfunc_begin0
+	.quad	.Ltmp71-.Lfunc_begin0
+	.quad	.Ltmp72-.Lfunc_begin0
+	.quad	.Ltmp73-.Lfunc_begin0
+	.quad	.Ltmp74-.Lfunc_begin0
+	.quad	.Ltmp75-.Lfunc_begin0
+	.quad	.Ltmp76-.Lfunc_begin0
+	.quad	.Ltmp77-.Lfunc_begin0
+	.quad	.Ltmp78-.Lfunc_begin0
+	.quad	.Ltmp79-.Lfunc_begin0
+	.quad	.Ltmp80-.Lfunc_begin0
+	.quad	.Ltmp81-.Lfunc_begin0
+	.quad	.Ltmp82-.Lfunc_begin0
+	.quad	.Ltmp83-.Lfunc_begin0
+	.quad	.Ltmp84-.Lfunc_begin0
+	.quad	.Ltmp85-.Lfunc_begin0
+	.quad	0
+	.quad	0
+.Ldebug_ranges2:
+	.quad	.Ltmp86-.Lfunc_begin0
+	.quad	.Ltmp87-.Lfunc_begin0
+	.quad	.Ltmp88-.Lfunc_begin0
+	.quad	.Ltmp89-.Lfunc_begin0
+	.quad	.Ltmp90-.Lfunc_begin0
+	.quad	.Ltmp91-.Lfunc_begin0
+	.quad	.Ltmp92-.Lfunc_begin0
+	.quad	.Ltmp93-.Lfunc_begin0
+	.quad	.Ltmp94-.Lfunc_begin0
+	.quad	.Ltmp95-.Lfunc_begin0
+	.quad	.Ltmp96-.Lfunc_begin0
+	.quad	.Ltmp97-.Lfunc_begin0
+	.quad	.Ltmp98-.Lfunc_begin0
+	.quad	.Ltmp99-.Lfunc_begin0
+	.quad	.Ltmp100-.Lfunc_begin0
+	.quad	.Ltmp101-.Lfunc_begin0
+	.quad	.Ltmp102-.Lfunc_begin0
+	.quad	.Ltmp103-.Lfunc_begin0
+	.quad	.Ltmp104-.Lfunc_begin0
+	.quad	.Ltmp105-.Lfunc_begin0
+	.quad	.Ltmp106-.Lfunc_begin0
+	.quad	.Ltmp107-.Lfunc_begin0
+	.quad	.Ltmp108-.Lfunc_begin0
+	.quad	.Ltmp109-.Lfunc_begin0
+	.quad	.Ltmp110-.Lfunc_begin0
+	.quad	.Ltmp111-.Lfunc_begin0
+	.quad	.Ltmp112-.Lfunc_begin0
+	.quad	.Ltmp113-.Lfunc_begin0
+	.quad	.Ltmp114-.Lfunc_begin0
+	.quad	.Ltmp115-.Lfunc_begin0
+	.quad	.Ltmp116-.Lfunc_begin0
+	.quad	.Ltmp117-.Lfunc_begin0
+	.quad	.Ltmp118-.Lfunc_begin0
+	.quad	.Ltmp119-.Lfunc_begin0
+	.quad	.Ltmp120-.Lfunc_begin0
+	.quad	.Ltmp121-.Lfunc_begin0
+	.quad	.Ltmp122-.Lfunc_begin0
+	.quad	.Ltmp123-.Lfunc_begin0
+	.quad	.Ltmp124-.Lfunc_begin0
+	.quad	.Ltmp125-.Lfunc_begin0
+	.quad	.Ltmp126-.Lfunc_begin0
+	.quad	.Ltmp127-.Lfunc_begin0
+	.quad	.Ltmp128-.Lfunc_begin0
+	.quad	.Ltmp129-.Lfunc_begin0
+	.quad	.Ltmp130-.Lfunc_begin0
+	.quad	.Ltmp131-.Lfunc_begin0
+	.quad	.Ltmp132-.Lfunc_begin0
+	.quad	.Ltmp133-.Lfunc_begin0
+	.quad	.Ltmp134-.Lfunc_begin0
+	.quad	.Ltmp135-.Lfunc_begin0
+	.quad	.Ltmp136-.Lfunc_begin0
+	.quad	.Ltmp137-.Lfunc_begin0
+	.quad	.Ltmp138-.Lfunc_begin0
+	.quad	.Ltmp139-.Lfunc_begin0
+	.quad	.Ltmp140-.Lfunc_begin0
+	.quad	.Ltmp141-.Lfunc_begin0
+	.quad	.Ltmp142-.Lfunc_begin0
+	.quad	.Ltmp143-.Lfunc_begin0
+	.quad	.Ltmp144-.Lfunc_begin0
+	.quad	.Ltmp145-.Lfunc_begin0
+	.quad	.Ltmp146-.Lfunc_begin0
+	.quad	.Ltmp147-.Lfunc_begin0
+	.quad	.Ltmp148-.Lfunc_begin0
+	.quad	.Ltmp149-.Lfunc_begin0
+	.quad	.Ltmp150-.Lfunc_begin0
+	.quad	.Ltmp151-.Lfunc_begin0
+	.quad	.Ltmp152-.Lfunc_begin0
+	.quad	.Ltmp153-.Lfunc_begin0
+	.quad	0
+	.quad	0
+	.section	.debug_str,"MS",@progbits,1
+.Linfo_string0:
+	.asciz	"triton"                        ; string offset=0
+.Linfo_string1:
+	.asciz	"fused_sigmoid_gating_recurrent.py" ; string offset=7
+.Linfo_string2:
+	.asciz	"/sgl-workspace/sglang/python/sglang/srt/layers/attention/fla" ; string offset=41
+.Linfo_string3:
+	.asciz	"fused_sigmoid_gating_delta_rule_update_kernel" ; string offset=102
+	.section	".note.GNU-stack","",@progbits
+	.amdgpu_metadata
+---
+amdhsa.kernels:
+  - .agpr_count:     0
+    .args:
+      - .address_space:  global
+        .offset:         0
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         8
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         16
+        .size:           8
+        .value_kind:     global_buffer
+      - .offset:         24
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         28
+        .size:           4
+        .value_kind:     by_value
+      - .address_space:  global
+        .offset:         32
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         40
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         48
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         56
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         64
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         72
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         80
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         88
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         96
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         104
+        .size:           8
+        .value_kind:     global_buffer
+      - .offset:         112
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         116
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         120
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         124
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         128
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         132
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         136
+        .size:           4
+        .value_kind:     by_value
+      - .offset:         140
+        .size:           4
+        .value_kind:     by_value
+      - .address_space:  global
+        .offset:         144
+        .size:           8
+        .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         152
+        .size:           8
+        .value_kind:     global_buffer
+    .group_segment_fixed_size: 0
+    .kernarg_segment_align: 8
+    .kernarg_segment_size: 160
+    .max_flat_workgroup_size: 64
+    .name:           fused_sigmoid_gating_delta_rule_update_kernel
+    .private_segment_fixed_size: 0
+    .sgpr_count:     95
+    .sgpr_spill_count: 0
+    .symbol:         fused_sigmoid_gating_delta_rule_update_kernel.kd
+    .uses_dynamic_stack: false
+    .vgpr_count:     128
+    .vgpr_spill_count: 0
+    .wavefront_size: 64
+amdhsa.target:   amdgcn-amd-amdhsa--gfx950
+amdhsa.version:
+  - 1
+  - 2
+...
+
+	.end_amdgpu_metadata
+	.section	.debug_line,"",@progbits
+.Lline_table_start0:

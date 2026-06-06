@@ -1,0 +1,173 @@
+; ModuleID = 'LLVMDialectModule'
+source_filename = "LLVMDialectModule"
+target datalayout = "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-p7:160:256:256:32-p8:128:128:128:48-p9:192:256:256:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7:8:9"
+target triple = "amdgcn-amd-amdhsa"
+
+@global_smem = external local_unnamed_addr addrspace(3) global [0 x i8], align 16
+
+; Function Attrs: nofree norecurse nounwind
+define amdgpu_kernel void @create_flashinfer_kv_indices_triton(ptr addrspace(1) inreg readonly captures(none) %0, ptr addrspace(1) inreg readonly captures(none) %1, ptr addrspace(1) inreg readonly captures(none) %2, ptr addrspace(1) inreg readonly captures(none) %3, ptr addrspace(1) inreg writeonly captures(none) %4, ptr addrspace(1) inreg readnone captures(none) %5, ptr addrspace(1) inreg readnone captures(none) %6) local_unnamed_addr #0 !dbg !4 {
+  %8 = tail call i32 @llvm.amdgcn.workgroup.id.x(), !dbg !7
+  %9 = sext i32 %8 to i64, !dbg !8
+  %10 = getelementptr i64, ptr addrspace(1) %1, i64 %9, !dbg !8
+  %11 = load <1 x i64>, ptr addrspace(1) %10, align 8, !dbg !9
+  %12 = extractelement <1 x i64> %11, i64 0, !dbg !9
+  %13 = getelementptr i32, ptr addrspace(1) %3, i64 %9, !dbg !10
+  %14 = load <1 x i32>, ptr addrspace(1) %13, align 4, !dbg !11
+  %15 = extractelement <1 x i32> %14, i64 0, !dbg !11
+  %16 = getelementptr i32, ptr addrspace(1) %2, i64 %9, !dbg !12
+  %17 = load <1 x i32>, ptr addrspace(1) %16, align 4, !dbg !13
+  %18 = extractelement <1 x i32> %17, i64 0, !dbg !13
+  %19 = add i32 %18, 511, !dbg !14
+  %20 = sdiv i32 %19, 512, !dbg !18
+  %21 = tail call i32 @llvm.amdgcn.workitem.id.x(), !dbg !19
+  %22 = and i32 %21, 255, !dbg !19
+  %23 = shl nuw nsw i32 %22, 1, !dbg !19
+  %24 = or disjoint i32 %23, 1, !dbg !19
+  %25 = or disjoint i32 %22, 256, !dbg !19
+  %26 = zext nneg i32 %23 to i64, !dbg !20
+  %27 = zext nneg i32 %24 to i64, !dbg !20
+  %28 = zext nneg i32 %22 to i64, !dbg !20
+  %29 = zext nneg i32 %25 to i64, !dbg !20
+  %30 = sext i32 %18 to i64, !dbg !21
+  %.idx = mul i64 %12, 1048608, !dbg !22
+  %31 = getelementptr i8, ptr addrspace(1) %0, i64 %.idx, !dbg !22
+  %32 = sext i32 %15 to i64, !dbg !23
+  %33 = getelementptr i64, ptr addrspace(1) %4, i64 %32, !dbg !23
+  %34 = icmp sgt i32 %19, 511, !dbg !24
+  br i1 %34, label %.lr.ph, label %._crit_edge, !dbg !24
+
+.lr.ph:                                           ; preds = %7
+  %35 = shl nuw nsw i32 %22, 3
+  %36 = shl nuw nsw i32 %24, 2
+  %37 = shl nuw nsw i32 %21, 2
+  %38 = and i32 %37, 124
+  %39 = shl nuw nsw i32 %21, 1
+  %40 = and i32 %39, 384
+  %41 = shl nuw nsw i32 %21, 4
+  %42 = and i32 %41, 512
+  %43 = getelementptr inbounds nuw i8, ptr addrspace(3) @global_smem, i32 %38
+  %44 = getelementptr inbounds nuw i8, ptr addrspace(3) %43, i32 %40
+  %45 = getelementptr inbounds nuw i8, ptr addrspace(3) %44, i32 %42
+  %46 = getelementptr inbounds nuw i8, ptr addrspace(3) %45, i32 1024
+  %47 = and i32 %39, 124
+  %48 = shl nuw nsw i32 %21, 10
+  %49 = and i32 %48, 1024
+  %50 = shl nuw nsw i32 %21, 3
+  %51 = and i32 %50, 512
+  %52 = and i32 %21, 128
+  %53 = getelementptr inbounds nuw i8, ptr addrspace(3) @global_smem, i32 %47
+  %54 = getelementptr inbounds nuw i8, ptr addrspace(3) %53, i32 %49
+  %55 = getelementptr inbounds nuw i8, ptr addrspace(3) %54, i32 %51
+  %56 = getelementptr inbounds nuw i8, ptr addrspace(3) %55, i32 %52
+  %57 = getelementptr inbounds nuw i8, ptr addrspace(3) %56, i32 256
+  %58 = shl nuw nsw i32 %25, 3
+  br label %59, !dbg !24
+
+59:                                               ; preds = %.lr.ph, %59
+  %60 = phi i32 [ 0, %.lr.ph ], [ %89, %59 ]
+  %61 = shl i32 %60, 9, !dbg !25
+  %62 = sext i32 %61 to i64, !dbg !26
+  %63 = or disjoint i64 %62, %26, !dbg !26
+  %64 = or disjoint i64 %62, %27, !dbg !26
+  %65 = or disjoint i64 %62, %28, !dbg !26
+  %66 = or disjoint i64 %62, %29, !dbg !26
+  %67 = icmp slt i64 %63, %30, !dbg !21
+  %68 = icmp slt i64 %64, %30, !dbg !21
+  %69 = icmp slt i64 %65, %30, !dbg !21
+  %70 = icmp slt i64 %66, %30, !dbg !21
+  %71 = getelementptr i32, ptr addrspace(1) %31, i64 %62, !dbg !27
+  %72 = tail call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %71, i16 0, i32 2147483646, i32 159744), !dbg !28
+  %73 = select i1 %67, i32 %35, i32 -2147483648, !dbg !28
+  %74 = tail call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) %72, i32 %73, i32 0, i32 0), !dbg !28
+  %75 = select i1 %68, i32 %36, i32 -2147483648, !dbg !28
+  %76 = tail call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) %72, i32 %75, i32 0, i32 0), !dbg !28
+  %77 = getelementptr i64, ptr addrspace(1) %33, i64 %62, !dbg !29
+  fence syncscope("workgroup") release, !dbg !30
+  tail call void @llvm.amdgcn.s.barrier(), !dbg !30
+  fence syncscope("workgroup") acquire, !dbg !30
+  %78 = insertelement <1 x i32> poison, i32 %74, i64 0, !dbg !30
+  store <1 x i32> %78, ptr addrspace(3) %45, align 4, !dbg !30
+  %79 = insertelement <1 x i32> poison, i32 %76, i64 0, !dbg !30
+  store <1 x i32> %79, ptr addrspace(3) %46, align 4, !dbg !30
+  fence syncscope("workgroup") release, !dbg !30
+  tail call void @llvm.amdgcn.s.barrier(), !dbg !30
+  fence syncscope("workgroup") acquire, !dbg !30
+  %80 = load <1 x i32>, ptr addrspace(3) %56, align 4, !dbg !30
+  %81 = extractelement <1 x i32> %80, i64 0, !dbg !30
+  %82 = load <1 x i32>, ptr addrspace(3) %57, align 4, !dbg !30
+  %83 = extractelement <1 x i32> %82, i64 0, !dbg !30
+  %84 = sext i32 %81 to i64, !dbg !30
+  %85 = sext i32 %83 to i64, !dbg !30
+  %86 = tail call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %77, i16 0, i32 2147483646, i32 159744), !dbg !30
+  %87 = select i1 %69, i32 %35, i32 -2147483648, !dbg !30
+  tail call void @llvm.amdgcn.raw.ptr.buffer.store.i64(i64 %84, ptr addrspace(8) %86, i32 %87, i32 0, i32 0), !dbg !30
+  %88 = select i1 %70, i32 %58, i32 -2147483648, !dbg !30
+  tail call void @llvm.amdgcn.raw.ptr.buffer.store.i64(i64 %85, ptr addrspace(8) %86, i32 %88, i32 0, i32 0), !dbg !30
+  %89 = add nuw nsw i32 %60, 1, !dbg !24
+  %exitcond.not = icmp eq i32 %89, %20, !dbg !24
+  br i1 %exitcond.not, label %._crit_edge, label %59, !dbg !24
+
+._crit_edge:                                      ; preds = %59, %7
+  ret void, !dbg !31
+}
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare noundef i32 @llvm.amdgcn.workgroup.id.x() #1
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare noundef range(i32 0, 1024) i32 @llvm.amdgcn.workitem.id.x() #1
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) readnone, i16, i32, i32) #1
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: read)
+declare i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) readonly captures(none), i32, i32, i32 immarg) #2
+
+; Function Attrs: convergent mustprogress nocallback nofree nounwind willreturn
+declare void @llvm.amdgcn.s.barrier() #3
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: write)
+declare void @llvm.amdgcn.raw.ptr.buffer.store.i64(i64, ptr addrspace(8) writeonly captures(none), i32, i32, i32 immarg) #4
+
+attributes #0 = { nofree norecurse nounwind "amdgpu-agpr-alloc"="0" "amdgpu-flat-work-group-size"="1,256" "amdgpu-no-completion-action" "amdgpu-no-default-queue" "amdgpu-no-dispatch-id" "amdgpu-no-dispatch-ptr" "amdgpu-no-flat-scratch-init" "amdgpu-no-heap-ptr" "amdgpu-no-hostcall-ptr" "amdgpu-no-implicitarg-ptr" "amdgpu-no-lds-kernel-id" "amdgpu-no-multigrid-sync-arg" "amdgpu-no-queue-ptr" "amdgpu-no-workgroup-id-x" "amdgpu-no-workgroup-id-y" "amdgpu-no-workgroup-id-z" "amdgpu-no-workitem-id-x" "amdgpu-no-workitem-id-y" "amdgpu-no-workitem-id-z" "amdgpu-waves-per-eu"="1" "denormal-fp-math-f32"="ieee" "uniform-work-group-size"="false" }
+attributes #1 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #2 = { mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: read) }
+attributes #3 = { convergent mustprogress nocallback nofree nounwind willreturn }
+attributes #4 = { mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: write) }
+
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!2, !3}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "triton", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)
+!1 = !DIFile(filename: "kv_indices.py", directory: "/sgl-workspace/sglang/python/sglang/srt/layers/attention/triton_ops")
+!2 = !{i32 2, !"Debug Info Version", i32 3}
+!3 = !{i32 1, !"amdhsa_code_object_version", i32 500}
+!4 = distinct !DISubprogram(name: "create_flashinfer_kv_indices_triton", linkageName: "create_flashinfer_kv_indices_triton", scope: !1, file: !1, line: 9, type: !5, scopeLine: 9, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!5 = !DISubroutineType(cc: DW_CC_normal, types: !6)
+!6 = !{}
+!7 = !DILocation(line: 19, column: 24, scope: !4)
+!8 = !DILocation(line: 22, column: 52, scope: !4)
+!9 = !DILocation(line: 22, column: 29, scope: !4)
+!10 = !DILocation(line: 23, column: 44, scope: !4)
+!11 = !DILocation(line: 23, column: 32, scope: !4)
+!12 = !DILocation(line: 30, column: 45, scope: !4)
+!13 = !DILocation(line: 30, column: 22, scope: !4)
+!14 = !DILocation(line: 41, column: 22, scope: !15, inlinedAt: !17)
+!15 = distinct !DILexicalBlockFile(scope: !4, file: !16, discriminator: 0)
+!16 = !DIFile(filename: "standard.py", directory: "/opt/venv/lib/python3.10/site-packages/triton/language")
+!17 = !DILocation(line: 32, column: 42, scope: !4)
+!18 = !DILocation(line: 41, column: 28, scope: !15, inlinedAt: !17)
+!19 = !DILocation(line: 35, column: 30, scope: !4)
+!20 = !DILocation(line: 35, column: 45, scope: !4)
+!21 = !DILocation(line: 36, column: 24, scope: !4)
+!22 = !DILocation(line: 39, column: 14, scope: !4)
+!23 = !DILocation(line: 44, column: 34, scope: !4)
+!24 = !DILocation(line: 33, column: 19, scope: !4)
+!25 = !DILocation(line: 35, column: 61, scope: !4)
+!26 = !DILocation(line: 35, column: 57, scope: !4)
+!27 = !DILocation(line: 41, column: 14, scope: !4)
+!28 = !DILocation(line: 38, column: 12, scope: !4)
+!29 = !DILocation(line: 44, column: 54, scope: !4)
+!30 = !DILocation(line: 44, column: 62, scope: !4)
+!31 = !DILocation(line: 33, column: 4, scope: !4)
