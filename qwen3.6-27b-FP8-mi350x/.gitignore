@@ -1,3 +1,4 @@
 .env
 triton_cache_qwen36_27b/cache/**/*.hsaco
+triton_cache_qwen36_27b/cache/**/*.so
 sglang_cache_qwen36_27b/
