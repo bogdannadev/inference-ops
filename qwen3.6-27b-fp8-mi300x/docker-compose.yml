@@ -113,7 +113,7 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --context-length 262144
-      --attention-backend triton
+      --attention-backend aiter
       --mamba-scheduler-strategy no_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-full-memory-ratio 0.7
