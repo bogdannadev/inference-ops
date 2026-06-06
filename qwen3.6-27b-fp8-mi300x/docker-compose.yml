@@ -1,0 +1,159 @@
+# =============================================================================
+# QWEN3.6-27B-FP8 — SGLANG TP=1 on a single MI300X (AMD sgl-dev, ROCm 7.2)
+# Durable long-context coding sessions (opencode, ~4 users), HiCache enabled.
+# =============================================================================
+# Image:    rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260529  (FREEZE the digest)
+#             docker buildx imagetools inspect \
+#               rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260529
+#           Digest at time of writing:
+#             sha256:edd63ee0c179d69736a0e3f3ad8d96b63af370f8b866fd5664d3291d2a93f614
+#
+# Hardware: 1x AMD Instinct MI300X (192 GB HBM3, CDNA3 / gfx942), DO droplet.
+#           Cloud MI300X is usually virtualised (SR-IOV). Confirm you have a FULL
+#           card, not a CPX/VF partition:  amd-smi static | grep -i partition
+#           A partitioned device alone can explain order-of-magnitude slowness.
+#
+# Model:    Qwen/Qwen3.6-27B-FP8 (official, block-fp8 / block size 128, ~27 GB).
+#           DENSE + HYBRID: 48 Gated-DeltaNet (linear, fixed state) + 16 Gated-
+#           Attention layers; only 16 of 64 carry a growing KV cache. Long context
+#           is cheap on 3/4 of the network — memory is NOT the constraint here.
+#           Default ctx 262144. Qwen advise keeping >=128K to preserve thinking.
+#
+# WHAT CHANGED vs the BF16 file (and why):
+#   - Model -> Qwen3.6-27B-FP8. NO --quantization flag: block-fp8 is auto-detected
+#     from the checkpoint config. Passing --quantization fp8 can fight the loader.
+#     FP8 weights are what make AITER's GEMM path earn its keep on CDNA3.
+#   - SPEC DECODE (NEXTN) REMOVED. Three independent reasons:
+#       (1) HiCache + NEXTN + host-pool eviction is a documented crash (sglang
+#           #23429), on this very model family. HiCache is on here, so spec is out.
+#       (2) FP8 + "draft" on SGLang is implicated in the garbage-output reports
+#           for this checkpoint (HF discussion #8). Advice there: drop the draft.
+#       (3) Acceptance on hybrid GDN was never verified good on ROCm anyway.
+#     => You cannot run HiCache and NEXTN together right now. Pick one per lane.
+#   - KV CACHE LEFT AT DEFAULT (no --kv-cache-dtype fp8). You have ~160 GB spare
+#     with FP8 weights; FP8 KV buys you nothing here AND is implicated in the same
+#     garbage-output reports. FP8 the weights, not the KV.
+#   - --mamba-full-memory-ratio added: the durable-session RESIDENCY lever. Sizes
+#     the GDN-state pool so all ~4 sessions' recurrent state survives between turns
+#     instead of being evicted into a full re-prefill. 0.7 is a STARTING point —
+#     watch mamba-pool occupancy vs KV-pool pressure in /metrics and tune.
+#   - --enable-mixed-chunk added + --chunked-prefill-size 16384->8192: latency-
+#     first under concurrency. One user's long prefill no longer freezes the other
+#     three users' decode.
+#   - --max-running-requests 8->5, --cuda-graph-max-bs 8->5: match real concurrency
+#     (4 users + headroom); stops over-reserving and widening the decode batch.
+#   - --enable-cache-report re-added: with spec decode gone, per-response
+#     cached_tokens works again (it zeroed under NEXTN via #20451). Use it plus the
+#     /metrics gauge to confirm turn-2 actually reuses turn-1's prefix.
+#   - --mem-fraction-static 0.88->0.90: FP8 frees VRAM; give it to the KV pool.
+#
+# HICACHE — EXPERIMENTAL, YOU ASKED TO TRY IT. Read this before booting:
+#   HiCache offload for hybrid GDN/Mamba is still UPSTREAM WORK IN PROGRESS
+#   (#12826, #12867, unified-radix-tree refactor). It may not initialise for this
+#   architecture at all. We use the SAFE shape: write_through (NOT write_back,
+#   which is the #23429 crash), L2/host only (NO L3 — the droplet has one
+#   rotational disk). If the server fails to come up or misbehaves, EJECT HiCache:
+#   delete the 5 --hicache* lines + --enable-hierarchical-cache and the
+#   SGLANG_HICACHE_MAX_PINNED_RATIO env var. You then fall back to the in-GPU
+#   MambaRadixCache (L1-only), which already gives cross-turn prefix reuse.
+#
+# FP8 SANITY CHECK FIRST: this checkpoint has garbage-output reports (HF disc #8).
+#   Before trusting any benchmark, send one plain prompt and confirm COHERENT text.
+#   If gibberish: suspect chat template / parser, then kv quant (already off here),
+#   then the draft (already off here).
+#
+# Verify every flag against `--help` inside THIS image before boot; names drift.
+# Least certain on ROCm: --hicache-io-backend kernel (fallback: direct),
+# --hicache-mem-layout, --mamba-full-memory-ratio range.
+# =============================================================================
+
+services:
+  qwen36-27b-fp8-sgldev-mi300x:
+    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260606
+    container_name: qwen36-27b-fp8-sgldev-mi300x
+    ipc: host
+    shm_size: "32g"
+
+    ports:
+      - "8002:8002"
+
+    devices:
+      - /dev/kfd
+      - /dev/dri
+
+    group_add:
+      - video
+      - render
+
+    security_opt:
+      - seccomp:unconfined
+
+    cap_add:
+      - SYS_PTRACE
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - SGLANG_USE_AITER=1
+      - PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
+      - SGLANG_HICACHE_MAX_PINNED_RATIO=0.15
+      - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+
+    entrypoint: python3 -m sglang.launch_server
+    command: >
+      --model-path Qwen/Qwen3.6-27B-FP8
+      --served-model-name qwen36-27b-fp8
+      --host 0.0.0.0
+      --port 8002
+      --trust-remote-code
+      --dtype bfloat16
+      --context-length 262144
+      --attention-backend triton
+      --mamba-scheduler-strategy no_buffer
+      --mamba-ssm-dtype bfloat16
+      --mamba-full-memory-ratio 0.7
+      --page-size 64
+      --mem-fraction-static 0.90
+      --chunked-prefill-size 16384
+      --max-prefill-tokens 32768
+      --max-running-requests 5
+      --cuda-graph-max-bs 5
+      --enable-mixed-chunk
+      --schedule-policy lpm
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --grammar-backend xgrammar
+      --enable-hierarchical-cache
+      --hicache-ratio 1
+      --hicache-write-policy write_through
+      --hicache-mem-layout page_first_direct
+      --hicache-io-backend kernel
+      --allow-auto-truncate
+      --enable-metrics
+      --enable-cache-report
+      --watchdog-timeout 1200
+      --api-key ${SGLANG_API_KEY}
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2400s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  default:
+    name: qwen36-27b-fp8-mi300x-network
