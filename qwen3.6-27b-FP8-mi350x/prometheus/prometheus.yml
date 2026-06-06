@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Inference plane: TTFT, TPOT, throughput, KV pressure, spec-decode accept length.
+  - job_name: sglang
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["qwen36-27b-fp8-sglang:8002"]
+    authorization:
+      type: Bearer
+      credentials: "{SGLANG_API_KEY:-}"
+
+  # Hardware plane: 5s for tighter correlation with kernel-level events.
+  - job_name: amd_gpu
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["device-metrics-exporter:5000"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

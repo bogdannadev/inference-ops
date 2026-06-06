@@ -1,0 +1,47 @@
+# =============================================================================
+# docker-compose.profiling.yml  —  kernel-profiling overlay (NOT for serving)
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.profiling.yml \
+#     up -d qwen36-27b-fp8-sglang
+# Layers on top of the base service; overrides only what profiling requires.
+# =============================================================================
+services:
+  qwen36-27b-fp8-sglang:
+
+    # CAP_SYS_ADMIN is the addition that unlocks hardware-counter reads;
+    # SYS_PTRACE + unconfined seccomp are already in the base file.
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+
+    # Persist profiler output to the host so reports survive teardown.
+    volumes:
+      - ./profiling:/workdir
+
+    environment:
+      # Surface every kernel dispatch as its own HIP launch so the profiler
+      # can attribute counters per-kernel (graphs would hide them).
+      - SGLANG_ENABLE_TORCH_COMPILE=0
+
+    # Override the serving command for a clean, single-stream, graph-free
+    # capture. Note: speculative decoding removed, graphs disabled,
+    # concurrency pinned to 1, context trimmed for fast repeatable dispatches.
+    command: >
+      --model-path Qwen/Qwen3.6-27B-FP8
+      --port 8002
+      --host 0.0.0.0
+      --served-model-name qwen36-27b-fp8-profiling
+      --trust-remote-code
+      --reasoning-parser qwen3
+      --tp 1
+      --context-length 32768
+      --mem-fraction-static 0.9
+      --max-running-requests 1
+      --page-size 64
+      --attention-backend triton
+      --mamba-backend triton
+      --mamba-ssm-dtype bfloat16
+      --disable-cuda-graph
+      --grammar-backend xgrammar
+      --watchdog-timeout 1200
+      --api-key ${SGLANG_API_KEY}

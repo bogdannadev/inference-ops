@@ -1,0 +1,10 @@
+# grafana/provisioning/dashboards/provider.yml
+apiVersion: 1
+providers:
+  - name: amd-gpu
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      # path inside the container; matches the read-only mount in compose
+      path: /etc/grafana/provisioning/dashboards/json
