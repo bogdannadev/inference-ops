@@ -1,0 +1,53 @@
+# =============================================================================
+# compose.metrics.yml — Prometheus (SGLang metrics only) / endast SGLang-mått
+# -----------------------------------------------------------------------------
+# This is a compose OVERRIDE. It adds one service — Prometheus — alongside your
+# existing SGLang service, without touching it. Merged explicitly with -f.
+# Detta är ett compose-TILLÄGG. Det lägger till en tjänst — Prometheus — vid
+# sidan av din SGLang-tjänst, utan att röra den. Slås ihop uttryckligen med -f.
+#
+# RUN / KÖR:
+#   docker compose -f docker-compose.yml -f compose.metrics.yml up -d prometheus
+#
+# STOP / STOPPA:
+#   docker compose -f docker-compose.yml -f compose.metrics.yml stop prometheus
+#
+# SCOPE / OMFATTNING:
+#   GPU telemetry is deliberately NOT here (you asked for SGLang only, for now).
+#   GPU-telemetri är medvetet inte med (du bad om endast SGLang tills vidare).
+# =============================================================================
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.12.0     # current stable, pinned / aktuell stabil, fastnålad
+    container_name: sglang-prometheus
+
+    ports:
+      - "9090:9090"                    # web UI + query API / webbgränssnitt + fråge-API
+
+    volumes:
+      # The scrape config (read-only) / skrapkonfigurationen (skrivskyddad):
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Named volume so the TSDB survives container restarts.
+      # Namngiven volym så att tidsseriedatabasen överlever omstart.
+      - prometheus-data:/prometheus
+
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Keep ~30 days of history; tune to taste. / Behåll ca 30 dagars historik.
+      - --storage.tsdb.retention.time=30d
+      # Allows `curl -X POST localhost:9090/-/reload` after editing the config.
+      # Tillåter omladdning av config utan omstart.
+      - --web.enable-lifecycle
+
+    restart: unless-stopped
+
+    # No `networks:` key on purpose: the service joins the base compose's
+    # `default` network, so it can resolve "qwen36-27b-sgldev-mi350x" by name.
+    # Ingen `networks:`-nyckel med flit: tjänsten ansluter till basens
+    # default-nät, så namnuppslag mot SGLang-tjänsten fungerar.
+
+# Top-level volume declaration for the TSDB / volymdeklaration för databasen.
+volumes:
+  prometheus-data:
