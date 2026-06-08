@@ -1,20 +1,22 @@
 # =============================================================================
-# compose.metrics.yml — Prometheus (SGLang metrics only) / endast SGLang-mått
+# compose.metrics.yml — Prometheus + Grafana (SGLang metrics)
 # -----------------------------------------------------------------------------
-# This is a compose OVERRIDE. It adds one service — Prometheus — alongside your
+# This is a compose OVERRIDE. It adds Prometheus and Grafana alongside your
 # existing SGLang service, without touching it. Merged explicitly with -f.
-# Detta är ett compose-TILLÄGG. Det lägger till en tjänst — Prometheus — vid
-# sidan av din SGLang-tjänst, utan att röra den. Slås ihop uttryckligen med -f.
 #
 # RUN / KÖR:
-#   docker compose -f docker-compose.yml -f compose.metrics.yml up -d prometheus
+#   docker compose -f docker-compose.yml -f compose.metrics.yml up -d
 #
 # STOP / STOPPA:
-#   docker compose -f docker-compose.yml -f compose.metrics.yml stop prometheus
+#   docker compose -f docker-compose.yml -f compose.metrics.yml down
+#
+# ACCESS / ÅTKOMST:
+#   Prometheus: http://localhost:9090
+#   Grafana:    http://localhost:3000  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})
 #
 # SCOPE / OMFATTNING:
-#   GPU telemetry is deliberately NOT here (you asked for SGLang only, for now).
-#   GPU-telemetri är medvetet inte med (du bad om endast SGLang tills vidare).
+#   GPU telemetry is deliberately NOT here (SGLang metrics only, for now).
+#   GPU-telemetri är medvetet inte med (endast SGLang-mått tills vidare).
 # =============================================================================
 
 services:
@@ -45,9 +47,30 @@ services:
 
     # No `networks:` key on purpose: the service joins the base compose's
     # `default` network, so it can resolve "qwen36-27b-sgldev-mi350x" by name.
-    # Ingen `networks:`-nyckel med flit: tjänsten ansluter till basens
-    # default-nät, så namnuppslag mot SGLang-tjänsten fungerar.
 
-# Top-level volume declaration for the TSDB / volymdeklaration för databasen.
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: sglang-grafana
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - ./grafana/datasources/datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml:ro
+      - ./grafana/dashboards/config/dashboard.yaml:/etc/grafana/provisioning/dashboards/dashboard.yaml:ro
+      - ./grafana/dashboards/json:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+
+    restart: unless-stopped
+
+    depends_on:
+      - prometheus
+
+# Top-level volume declarations.
 volumes:
   prometheus-data:
+  grafana-data:
