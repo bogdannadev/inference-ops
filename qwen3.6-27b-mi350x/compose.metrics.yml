@@ -1,8 +1,8 @@
 # =============================================================================
-# compose.metrics.yml — Prometheus + Grafana (SGLang metrics)
+# compose.metrics.yml — Prometheus + Grafana + AMD GPU Exporter
 # -----------------------------------------------------------------------------
-# This is a compose OVERRIDE. It adds Prometheus and Grafana alongside your
-# existing SGLang service, without touching it. Merged explicitly with -f.
+# This is a compose OVERRIDE. It adds Prometheus, Grafana, and the amd-smi
+# exporter alongside your existing SGLang service. Merged explicitly with -f.
 #
 # RUN / KÖR:
 #   docker compose -f docker-compose.yml -f compose.metrics.yml up -d
@@ -11,12 +11,14 @@
 #   docker compose -f docker-compose.yml -f compose.metrics.yml down
 #
 # ACCESS / ÅTKOMST:
-#   Prometheus: http://localhost:9090
-#   Grafana:    http://localhost:3000  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})
+#   Prometheus:  http://localhost:9090
+#   Grafana:     http://localhost:3000  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})
+#   AMD Exporter: http://localhost:9300/metrics
 #
-# SCOPE / OMFATTNING:
-#   GPU telemetry is deliberately NOT here (SGLang metrics only, for now).
-#   GPU-telemetri är medvetet inte med (endast SGLang-mått tills vidare).
+# ROCMPROFV3 PROFILING (on-demand, not continuous):
+#   python3 rocprofv3_profile.py --duration 30 --pmcs basic
+#   python3 rocprofv3_profile.py --duration 60 --pmcs full
+#   python3 rocprofv3_profile.py --pmcs list
 # =============================================================================
 
 services:
@@ -47,6 +49,45 @@ services:
 
     # No `networks:` key on purpose: the service joins the base compose's
     # `default` network, so it can resolve "qwen36-27b-sgldev-mi350x" by name.
+
+  amd-smi-exporter:
+    image: python:3.12-slim
+    container_name: amd-smi-exporter
+
+    ports:
+      - "9300:9300"
+
+    devices:
+      - /dev/kfd
+      - /dev/dri
+
+    group_add:
+      - video
+
+    security_opt:
+      - seccomp:unconfined
+
+    cap_add:
+      - SYS_PTRACE
+
+    volumes:
+      - ./amd_smi_exporter.py:/app/amd_smi_exporter.py:ro
+      - /opt/rocm:/opt/rocm:ro
+      - /usr/bin/amd-smi:/usr/bin/amd-smi:ro
+      - /usr/lib/x86_64-linux-gnu/libdrm.so.2:/usr/lib/x86_64-linux-gnu/libdrm.so.2:ro
+      - /usr/lib/x86_64-linux-gnu/libdrm_amdgpu.so.1:/usr/lib/x86_64-linux-gnu/libdrm_amdgpu.so.1:ro
+      - /etc/group:/etc/group:ro
+
+    environment:
+      - PATH=/opt/rocm/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      - LD_LIBRARY_PATH=/opt/rocm/lib:/usr/lib/x86_64-linux-gnu
+
+    command: ["python3", "/app/amd_smi_exporter.py", "9300"]
+
+    restart: unless-stopped
+
+    depends_on:
+      - prometheus
 
   grafana:
     image: grafana/grafana:11.6.0
