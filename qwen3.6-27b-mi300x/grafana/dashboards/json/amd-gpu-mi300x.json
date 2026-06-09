@@ -1,0 +1,633 @@
+{
+  "title": "AMD MI300X GPU Telemetry — Kernel Optimization",
+  "uid": "amd-gpu-mi300x",
+  "tags": ["amd", "mi300x", "gpu", "kernel-opt"],
+  "schemaVersion": 39,
+  "version": 2,
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "title": "GPU Health",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "gpu_health",
+        "legendFormat": ""
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "green", "value": 1 }
+          ]},
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": { "text": "OK", "color": "green" },
+                "0": { "text": "DEGRADED", "color": "red" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "GFX Activity",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{
+        "expr": "gpu_gfx_activity",
+        "legendFormat": "GFX"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 50 },
+            { "color": "red", "value": 90 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "UMC Activity",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{
+        "expr": "gpu_umc_activity",
+        "legendFormat": "UMC"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 50 },
+            { "color": "red", "value": 90 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "ECC Uncorrectable",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "gpu_ecc_uncorrect_total",
+        "legendFormat": ""
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "PCIe Recovery Count",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [{
+        "expr": "pcie_recovery_count",
+        "legendFormat": ""
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Nodes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [{
+        "expr": "gpu_nodes_total",
+        "legendFormat": ""
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "title": "System Clock Frequencies",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "description": "Core GPU system clocks (MHz). clock_index = individual core/lane frequencies. Dropping clocks indicate throttling.",
+      "targets": [
+        { "expr": "gpu_clock{clock_type=\"system\"}", "legendFormat": "sys-{{clock_index}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "meghertz",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "Memory & Fabric Clock",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 4 },
+      "description": "Memory clock (MHz) and Infinity Fabric clock (MHz). Memory bandwidth is proportional to mem clock x bus width.",
+      "targets": [
+        { "expr": "gpu_clock{clock_type=\"memory\"}", "legendFormat": "mem-{{clock_index}}" },
+        { "expr": "gpu_clock{clock_type=\"fabric\"}", "legendFormat": "fabric-{{clock_index}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "meghertz",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "SOC & Data Clocks",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "description": "SOC (AID, VCN, etc) and Data fabric clocks. Low SOC clocks = power saving.",
+      "targets": [
+        { "expr": "gpu_clock{clock_type=\"soc\"}", "legendFormat": "soc-{{clock_index}}" },
+        { "expr": "gpu_clock{clock_type=\"data\"}", "legendFormat": "data-{{clock_index}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "meghertz",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "VRAM Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "description": "Total VRAM breakdown. ~192 GB total on MI300X. Used - free = total. High usage may limit concurrent kernel launches.",
+      "targets": [
+        { "expr": "gpu_used_vram", "legendFormat": "used" },
+        { "expr": "gpu_free_vram", "legendFormat": "free" },
+        { "expr": "gpu_total_vram", "legendFormat": "total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "megabyte",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Visible VRAM",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "description": "Visible VRAM (accessible directly by GPU without GTT mapping). Used/FREE ratio impacts allocation performance.",
+      "targets": [
+        { "expr": "gpu_used_visible_vram", "legendFormat": "used" },
+        { "expr": "gpu_free_visible_vram", "legendFormat": "free" },
+        { "expr": "gpu_total_visible_vram", "legendFormat": "total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "megabyte",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "GTT Memory",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "description": "Graphics Translation Table (GTT) - system memory mapped for GPU access. High GTT usage means VRAM overflow or pinned buffers.",
+      "targets": [
+        { "expr": "gpu_used_gtt", "legendFormat": "used" },
+        { "expr": "gpu_free_gtt", "legendFormat": "free" },
+        { "expr": "gpu_total_gtt", "legendFormat": "total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "megabyte",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "GPU Power (Package vs Total)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "description": "Package power (socket) vs total GPU power. TDP of MI300X is ~750W. Sustained near-TDP = power throttling risk.",
+      "targets": [
+        { "expr": "gpu_package_power", "legendFormat": "package" },
+        { "expr": "gpu_power_usage", "legendFormat": "total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 600 },
+            { "color": "red", "value": 700 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Temperatures",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
+      "description": "Junction (hotspot) and memory temperature. Junction >100°C triggers throttling. HBM3 max is ~95-105°C.",
+      "targets": [
+        { "expr": "gpu_junction_temperature", "legendFormat": "junction" },
+        { "expr": "gpu_memory_temperature", "legendFormat": "memory" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 80 },
+            { "color": "red", "value": 100 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Energy Consumed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 20 },
+      "description": "Accumulated energy in microjoules. Rate of change = instantaneous power. Useful for per-kernel energy profiling.",
+      "targets": [{
+        "expr": "rate(gpu_energy_consumed[1m])",
+        "legendFormat": "energy rate (uJ/s)"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Clock Throttling — Power",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "description": "Percentage of time GFX clock is below host limit due to POWER constraints. >0% = power throttling active.",
+      "targets": [
+        { "expr": "gpu_violation_gfx_clock_below_host_limit_power_percentage", "legendFormat": "power throttle %" },
+        { "expr": "rate(gpu_violation_gfx_clock_below_host_limit_power_accumulated[1m])", "legendFormat": "power throttle rate" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0,
+          "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "red", "value": 50 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Clock Throttling — Thermal",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "description": "Percentage of time GFX clock is below host limit due to THERMAL constraints. >0% means the cooler can't keep up.",
+      "targets": [
+        { "expr": "gpu_violation_gfx_clock_below_host_limit_thermal_percentage", "legendFormat": "thermal throttle %" },
+        { "expr": "rate(gpu_violation_gfx_clock_below_host_limit_thermal_accumulated[1m])", "legendFormat": "thermal throttle rate" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "title": "Clock Throttling — Total",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "description": "Total time GFX clock below host limit (any reason). KEY metric for kernel performance — if >0% your kernels are being slowed down.",
+      "targets": [
+        { "expr": "gpu_violation_gfx_clock_below_host_limit_total_percentage", "legendFormat": "total throttle %" },
+        { "expr": "rate(gpu_violation_gfx_clock_below_host_limit_total_accumulated[1m])", "legendFormat": "total throttle rate" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "title": "Thermal Violations — Residency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 36 },
+      "description": "Percentage of time spent in thermal violation states. HBM, processor hot, socket, VR thermal throttling.",
+      "targets": [
+        { "expr": "gpu_violation_hbm_thermal_residency_percentage", "legendFormat": "HBM" },
+        { "expr": "gpu_violation_processor_hot_residency_percentage", "legendFormat": "proc hot" },
+        { "expr": "gpu_violation_socket_thermal_residency_percentage", "legendFormat": "socket" },
+        { "expr": "gpu_violation_vr_thermal_residency_percentage", "legendFormat": "VR" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0,
+          "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Power & Utilization Violations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 36 },
+      "description": "PPT (Package Power Tracking) and low-utilization violation percentages.",
+      "targets": [
+        { "expr": "gpu_violation_ppt_residency_percentage", "legendFormat": "PPT" },
+        { "expr": "gpu_violation_low_utilization_percentage", "legendFormat": "low util" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "title": "Current Violation Counter",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 36 },
+      "targets": [{
+        "expr": "gpu_violation_current_accumulated_counter",
+        "legendFormat": "current violations"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "PCIe Bandwidth & Speed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 44 },
+      "description": "Current PCIe bandwidth (Mb/s) and speed (GT/s). MI300X typically uses PCIe 5.0 x16 = 32 GT/s, ~504 Gb/s theoretical.",
+      "targets": [
+        { "expr": "pcie_bandwidth", "legendFormat": "bandwidth (Mb/s)" },
+        { "expr": "pcie_speed", "legendFormat": "speed (GT/s)" },
+        { "expr": "pcie_max_speed", "legendFormat": "max speed (GT/s)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "PCIe Bidirectional Bandwidth",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 44 },
+      "description": "Accumulated bidirectional PCIe bandwidth (GB/sec). Measures actual data transfer between CPU and GPU.",
+      "targets": [{
+        "expr": "pcie_bidirectional_bandwidth",
+        "legendFormat": "bidirectional (GB/s)"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "PCIe Errors",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 44 },
+      "description": "PCIe errors that indicate link issues. Any non-zero here = hardware problem.",
+      "targets": [
+        { "expr": "pcie_replay_count", "legendFormat": "replays" },
+        { "expr": "pcie_replay_rollover_count", "legendFormat": "replay rollovers" },
+        { "expr": "pcie_nack_received_count", "legendFormat": "NAK recv" },
+        { "expr": "pcie_nack_sent_count", "legendFormat": "NAK sent" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "XGMI Throughput per Neighbor",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "description": "XGMI transmit throughput to each neighbor. Each beat = 32 bytes. Throughput = beats/time * 1e9 bytes/sec. Single-GPU setup should show 0.",
+      "targets": [
+        { "expr": "gpu_xgmi_nbr_0_tx_thrput", "legendFormat": "nbr-0" },
+        { "expr": "gpu_xgmi_nbr_1_tx_thrput", "legendFormat": "nbr-1" },
+        { "expr": "gpu_xgmi_nbr_2_tx_thrput", "legendFormat": "nbr-2" },
+        { "expr": "gpu_xgmi_nbr_3_tx_thrput", "legendFormat": "nbr-3" },
+        { "expr": "gpu_xgmi_nbr_4_tx_thrput", "legendFormat": "nbr-4" },
+        { "expr": "gpu_xgmi_nbr_5_tx_thrput", "legendFormat": "nbr-5" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "XGMI Accumulated TX/RX",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "description": "Accumulated XGMI data read (RX) and write (TX) in KB. Rate of change indicates active inter-GPU traffic.",
+      "targets": [
+        { "expr": "rate(gpu_xgmi_link_tx[1m])", "legendFormat": "tx rate" },
+        { "expr": "rate(gpu_xgmi_link_rx[1m])", "legendFormat": "rx rate" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "XGMI Neighbor 0 — Detailed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 60 },
+      "description": "Detailed XGMI traffic composition to neighbor 0: data beats, requests, responses, NOPs.",
+      "targets": [
+        { "expr": "rate(gpu_xgmi_nbr_0_beats_tx[1m])", "legendFormat": "beats/s" },
+        { "expr": "rate(gpu_xgmi_nbr_0_req_tx[1m])", "legendFormat": "req/s" },
+        { "expr": "rate(gpu_xgmi_nbr_0_resp_tx[1m])", "legendFormat": "resp/s" },
+        { "expr": "rate(gpu_xgmi_nbr_0_nop_tx[1m])", "legendFormat": "NOPs/s" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "XGMI Neighbor 1 — Detailed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 60 },
+      "targets": [
+        { "expr": "rate(gpu_xgmi_nbr_1_beats_tx[1m])", "legendFormat": "beats/s" },
+        { "expr": "rate(gpu_xgmi_nbr_1_req_tx[1m])", "legendFormat": "req/s" },
+        { "expr": "rate(gpu_xgmi_nbr_1_resp_tx[1m])", "legendFormat": "resp/s" },
+        { "expr": "rate(gpu_xgmi_nbr_1_nop_tx[1m])", "legendFormat": "NOPs/s" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "ECC Correctable — Top Blocks",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 60 },
+      "description": "Correctable ECC error rate per hardware block. High rates = memory/interconnect degradation.",
+      "targets": [
+        { "expr": "rate(gpu_ecc_correct_umc[1m])", "legendFormat": "UMC" },
+        { "expr": "rate(gpu_ecc_correct_gfx[1m])", "legendFormat": "GFX" },
+        { "expr": "rate(gpu_ecc_correct_hdp[1m])", "legendFormat": "HDP" },
+        { "expr": "rate(gpu_ecc_correct_mmhub[1m])", "legendFormat": "MMHUB" },
+        { "expr": "rate(gpu_ecc_correct_xgmi_wafl[1m])", "legendFormat": "XGMI" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "ECC Correctable — Total Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 68 },
+      "targets": [{
+        "expr": "rate(gpu_ecc_correct_total[1m])",
+        "legendFormat": "correctable/s"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Clock Range (Min/Max)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 68 },
+      "description": "Min and max achievable clock frequencies. If min == max, clock is locked at that frequency.",
+      "targets": [
+        { "expr": "gpu_min_clock{clock_type=\"system\"}", "legendFormat": "min-sys-{{clock_index}}" },
+        { "expr": "gpu_max_clock{clock_type=\"system\"}", "legendFormat": "max-sys-{{clock_index}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "meghertz",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "VRAM Utilization %",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 68 },
+      "targets": [{
+        "expr": "gpu_used_vram / gpu_total_vram * 100",
+        "legendFormat": "VRAM util %"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "min": 0,
+          "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 80 },
+            { "color": "red", "value": 95 }
+          ]}
+        }
+      }
+    }
+  ]
+}
