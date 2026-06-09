@@ -36,7 +36,7 @@
 
 services:
   qwen36-27b-sgldev-mi300x:
-    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260609
+    image: rocm/sgl-dev:v0.5.12.post1-rocm700-mi30x-20260608
     container_name: qwen36-27b-sgldev-mi300x
     ipc: host
     shm_size: "32g"
