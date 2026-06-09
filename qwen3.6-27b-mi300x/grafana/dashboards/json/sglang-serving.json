@@ -1,0 +1,615 @@
+{
+  "title": "SGLang Serving — Qwen3.6-27B MI300X",
+  "uid": "sglang-serving-mi300x",
+  "tags": ["sglang", "mi300x", "inference", "qwen3.6"],
+  "schemaVersion": 39,
+  "version": 2,
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "title": "Generation Throughput",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sglang:gen_throughput", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "green", "value": 50 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Running Requests",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 2, "x": 4, "y": 0 },
+      "targets": [{ "expr": "sglang:num_running_reqs", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 2 },
+            { "color": "red", "value": 4 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Queue Depth",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 2, "x": 6, "y": 0 },
+      "targets": [{ "expr": "sglang:num_queue_reqs", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 3 },
+            { "color": "red", "value": 10 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Cache Hit Rate",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 8, "y": 0 },
+      "targets": [{ "expr": "sglang:cache_hit_rate * 100", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 25 },
+            { "color": "green", "value": 60 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Utilization",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 11, "y": 0 },
+      "targets": [{ "expr": "sglang:utilization * 100", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 50 },
+            { "color": "red", "value": 90 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Fwd Occupancy",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 14, "y": 0 },
+      "targets": [{ "expr": "sglang:fwd_occupancy", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 30 },
+            { "color": "green", "value": 70 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Token Usage",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 17, "y": 0 },
+      "targets": [{ "expr": "sglang:token_usage", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 500000 },
+            { "color": "red", "value": 900000 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "New Token Ratio",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [{ "expr": "sglang:new_token_ratio * 100", "legendFormat": "" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 50 },
+            { "color": "red", "value": 90 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "TTFT (Time to First Token)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "description": "P50/P95/P99 Time to First Token — critical for latency-first serving. High P95 = prefill bottleneck.",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(sglang:time_to_first_token_seconds_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:time_to_first_token_seconds_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(sglang:time_to_first_token_seconds_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "ITL (Inter-Token Latency)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 4 },
+      "description": "P50/P95/P99 Inter-Token Latency — decode speed. <50ms P50 is good for Qwen3.6-27B on MI300X.",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(sglang:inter_token_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:inter_token_latency_seconds_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(sglang:inter_token_latency_seconds_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "E2E Request Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "description": "P50/P95/P99 end-to-end request latency.",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(sglang:e2e_request_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:e2e_request_latency_seconds_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(sglang:e2e_request_latency_seconds_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Queue Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "description": "P50/P95/P99 queue wait time. Spikes here = scheduler bottleneck or request overflow.",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(sglang:queue_time_seconds_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:queue_time_seconds_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(sglang:queue_time_seconds_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Per-Stage Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "description": "P95 latency per stage — model_prefill, model_decode, commit, etc. Helps identify which stage is the bottleneck.",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(sglang:per_stage_req_latency_seconds_bucket[5m]))", "legendFormat": "{{stage}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Prompt Tokens (Histogram)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "description": "Distribution of prompt token lengths (P50/P95/P99). Useful for tuning chunked-prefill-size (currently 32768).",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(sglang:prompt_tokens_histogram_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:prompt_tokens_histogram_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(sglang:prompt_tokens_histogram_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "KV Cache — Qwen3.6 Hybrid (16 Attn Layers)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 20 },
+      "description": "KV cache token usage. Qwen3.6-27B has only 16 attention layers (out of 64 total). Low KV cache means more room for batch.",
+      "targets": [
+        { "expr": "sglang:kv_used_tokens", "legendFormat": "used" },
+        { "expr": "sglang:kv_available_tokens", "legendFormat": "available" },
+        { "expr": "sglang:kv_evictable_tokens", "legendFormat": "evictable" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Mamba State — Gated-DeltaNet (48 Layers)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 20 },
+      "description": "Mamba SSM token slots for 48 Gated-DeltaNet layers. KEY metric: GDN layers dominate the model (75%). High usage = long context.",
+      "targets": [
+        { "expr": "sglang:mamba_used_tokens", "legendFormat": "used" },
+        { "expr": "sglang:mamba_available_tokens", "legendFormat": "available" },
+        { "expr": "sglang:mamba_evictable_tokens", "legendFormat": "evictable" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "SWA Tokens — Sliding Window Attn",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 20 },
+      "description": "Sliding Window Attention tokens for 16 attention layers (SWA variant).",
+      "targets": [
+        { "expr": "sglang:swa_used_tokens", "legendFormat": "used" },
+        { "expr": "sglang:swa_available_tokens", "legendFormat": "available" },
+        { "expr": "sglang:swa_evictable_tokens", "legendFormat": "evictable" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Cached Tokens by Source",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 20 },
+      "description": "Prefix-cached tokens by storage tier. device=GPU fast cache, host=HiCache DDR, storage=disk. Pinning is Qwen3.6 hybrid-specific.",
+      "targets": [
+        { "expr": "rate(sglang:cached_tokens_total[5m])", "legendFormat": "tier={{source}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "HiCache Performance",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "description": "Host KV cache utilization. Hit ratio drives prefill speed. Current: write_through policy, page_first_direct layout.",
+      "targets": [
+        { "expr": "sglang:hicache_host_used_tokens", "legendFormat": "used tokens" },
+        { "expr": "sglang:hicache_host_total_tokens", "legendFormat": "total capacity" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Cache Hit Rate Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "targets": [
+        { "expr": "sglang:cache_hit_rate * 100", "legendFormat": "hit rate %" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 25 },
+            { "color": "green", "value": 60 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Uncached Prompt Tokens",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "description": "Avg uncached prompt tokens per request. Lower = better cache reuse. High values = many cold-start requests.",
+      "targets": [
+        { "expr": "rate(sglang:uncached_prompt_tokens_histogram_sum[5m]) / rate(sglang:uncached_prompt_tokens_histogram_count[5m])", "legendFormat": "avg uncached" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:uncached_prompt_tokens_histogram_bucket[5m]))", "legendFormat": "P95" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Token Processing Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 36 },
+      "description": "Token processing rates broken down by phase (prefill vs decode) and cache status.",
+      "targets": [
+        { "expr": "rate(sglang:prompt_tokens_total[5m])", "legendFormat": "prefill tokens/s" },
+        { "expr": "rate(sglang:generation_tokens_total[5m])", "legendFormat": "gen tokens/s" },
+        { "expr": "sglang:gen_throughput", "legendFormat": "current throughput" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Real-Time Tokens by Mode",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 36 },
+      "description": "Real-time token counting: prefill_compute = actual compute, prefill_cache = served from cache, decode = generation.",
+      "targets": [
+        { "expr": "rate(sglang:realtime_tokens_total{mode=\"prefill_compute\"}[5m])", "legendFormat": "prefill-compute" },
+        { "expr": "rate(sglang:realtime_tokens_total{mode=\"prefill_cache\"}[5m])", "legendFormat": "prefill-cache" },
+        { "expr": "rate(sglang:realtime_tokens_total{mode=\"decode\"}[5m])", "legendFormat": "decode" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Generation Tokens Histogram",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 36 },
+      "description": "Distribution of output generation lengths.",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(sglang:generation_tokens_histogram_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(sglang:generation_tokens_histogram_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(sglang:generation_tokens_histogram_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "CUDA Graph Efficiency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 44 },
+      "description": "CUDA graph usage. is_cuda_graph=1 means the current batch is using a captured CUDA graph (faster). cuda_graph_passes captures how many passes hit the graph.",
+      "targets": [
+        { "expr": "sglang:is_cuda_graph", "legendFormat": "is using cuda graph" },
+        { "expr": "rate(sglang:cuda_graph_passes_total[5m])", "legendFormat": "graph passes/s" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Hybrid Memory Distribution",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 44 },
+      "description": "Memory usage breakdown across the 3 pools of Qwen3.6-27B hybrid model: KV (16 attn layers), Mamba (48 GDN layers), SWA (16 attn layers).",
+      "targets": [
+        { "expr": "sglang:kv_used_tokens", "legendFormat": "KV cache (attn)" },
+        { "expr": "sglang:mamba_used_tokens", "legendFormat": "Mamba state (GDN)" },
+        { "expr": "sglang:swa_used_tokens", "legendFormat": "SWA tokens" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Hybrid Cache Usage %",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 44 },
+      "description": "Percentage utilization of each cache pool. Mamba (48 layers) should dominate. If KV or SWA saturate, batch size is limited.",
+      "targets": [
+        { "expr": "sglang:full_token_usage * 100", "legendFormat": "full attn %" },
+        { "expr": "sglang:mamba_usage * 100", "legendFormat": "mamba %" },
+        { "expr": "sglang:swa_token_usage * 100", "legendFormat": "SWA %" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 70 },
+            { "color": "red", "value": 90 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Num Pages & Max Tokens",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 44 },
+      "targets": [
+        { "expr": "sglang:num_pages", "legendFormat": "pages" },
+        { "expr": "sglang:num_used_tokens", "legendFormat": "used tokens" },
+        { "expr": "sglang:max_total_num_tokens", "legendFormat": "max total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Request Flow",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 52 },
+      "description": "Request processing rates and retraction/pause events.",
+      "targets": [
+        { "expr": "rate(sglang:num_requests_total[5m])", "legendFormat": "req/s" },
+        { "expr": "sglang:num_retracted_reqs", "legendFormat": "retracted" },
+        { "expr": "sglang:num_paused_reqs", "legendFormat": "paused" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Queue Breakdown",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 52 },
+      "description": "All scheduling queues depth. Prefill bootstrap/inflight + decode prealloc/transfer show scheduler internal state.",
+      "targets": [
+        { "expr": "sglang:num_prefill_bootstrap_queue_reqs", "legendFormat": "prefill bootstrap" },
+        { "expr": "sglang:num_prefill_inflight_queue_reqs", "legendFormat": "prefill inflight" },
+        { "expr": "sglang:num_decode_prealloc_queue_reqs", "legendFormat": "decode prealloc" },
+        { "expr": "sglang:num_grammar_queue_reqs", "legendFormat": "grammar" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "HTTP Traffic",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 52 },
+      "targets": [
+        { "expr": "rate(sglang:http_requests_total[5m])", "legendFormat": "req/s" },
+        { "expr": "sglang:http_requests_active", "legendFormat": "active" },
+        { "expr": "rate(sglang:http_responses_total[5m])", "legendFormat": "resp/s" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Pending Prealloc Token Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 60 },
+      "description": "Tokens pending preallocation — when this is high, requests are waiting for memory before prefill can start.",
+      "targets": [{ "expr": "sglang:pending_prealloc_token_usage", "legendFormat": "pending" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "CPU Time (Process)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 60 },
+      "targets": [{ "expr": "rate(sglang:process_cpu_seconds_total[5m])", "legendFormat": "CPU s/s" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Decode Sum Seq Lengths",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 60 },
+      "targets": [{ "expr": "sglang:decode_sum_seq_lens", "legendFormat": "total" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "title": "Page Size & Context Length",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 60 },
+      "targets": [
+        { "expr": "sglang:page_size", "legendFormat": "page size" },
+        { "expr": "sglang:context_len", "legendFormat": "context" },
+        { "expr": "sglang:startup_available_gpu_memory_gb", "legendFormat": "avail GPU mem" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    }
+  ]
+}
