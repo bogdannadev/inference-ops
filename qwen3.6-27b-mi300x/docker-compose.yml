@@ -36,7 +36,7 @@
 
 services:
   qwen36-27b-sgldev-mi300x:
-    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260608
+    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260609
     container_name: qwen36-27b-sgldev-mi300x
     ipc: host
     shm_size: "32g"
@@ -69,7 +69,6 @@ services:
       - SGLANG_USE_AITER=1
       - PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
       - SGLANG_API_KEY=${SGLANG_API_KEY:-}
-      - PYTORCH_TUNABLEOP_ENABLED=1
 
     entrypoint: python3 -m sglang.launch_server
     command: >
