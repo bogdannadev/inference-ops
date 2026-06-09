@@ -36,7 +36,7 @@
 
 services:
   qwen36-27b-sgldev-mi300x:
-    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260529
+    image: rocm/sgl-dev:v0.5.12.post1-rocm720-mi30x-20260609
     container_name: qwen36-27b-sgldev-mi300x
     ipc: host
     shm_size: "32g"
@@ -69,6 +69,7 @@ services:
       - SGLANG_USE_AITER=1
       - PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
       - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+      - PYTORCH_TUNABLEOP_ENABLED=1
 
     entrypoint: python3 -m sglang.launch_server
     command: >
@@ -85,7 +86,7 @@ services:
       --mamba-ssm-dtype bfloat16
       --page-size 64
       --mem-fraction-static 0.88
-      --chunked-prefill-size 16384
+      --chunked-prefill-size 32768
       --max-prefill-tokens 32768
       --max-running-requests 2
       --cuda-graph-max-bs 2
@@ -100,6 +101,7 @@ services:
       --hicache-io-backend kernel
       --allow-auto-truncate
       --enable-metrics
+      --enable-cache-report
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
