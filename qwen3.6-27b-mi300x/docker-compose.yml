@@ -95,7 +95,7 @@ services:
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
       --enable-hierarchical-cache
-      --hicache-ratio 2
+      --hicache-ratio 1
       --hicache-write-policy write_through
       --hicache-mem-layout page_first_direct
       --hicache-io-backend kernel
