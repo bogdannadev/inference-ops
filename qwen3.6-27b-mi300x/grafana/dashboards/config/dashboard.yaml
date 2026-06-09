@@ -1,0 +1,16 @@
+apiVersion: 1
+
+providers:
+  - name: "mi300x"
+    orgId: 1
+    folder: "MI300X"
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Dashboards dropped here are auto-loaded. See ./json/README.md for which
+      # official dashboards to fetch (AMD GPU + SGLang serving).
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
