@@ -97,8 +97,8 @@ services:
       --mamba-full-memory-ratio 0.7
       --page-size 64
       --mem-fraction-static 0.90
-      --chunked-prefill-size 8192
-      --max-prefill-tokens 16384
+      --chunked-prefill-size 32768
+      --max-prefill-tokens 32768
       --max-running-requests 2
       --cuda-graph-max-bs 2
       --enable-mixed-chunk
