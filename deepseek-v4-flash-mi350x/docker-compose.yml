@@ -53,7 +53,7 @@
 
 services:
   deepseek-v4-flash-mi350x:
-    image: rocm/sgl-dev:sglang-0.5.12.post1-rocm720-mi35x-mori-0610-dsv4
+    image: lmsysorg/sglang:v0.5.13-rocm720-mi35x
     container_name: deepseek-v4-flash-mi350x
     ipc: host
     shm_size: "32g"
@@ -98,7 +98,7 @@ services:
       --context-length 1048576
       --mem-fraction-static 0.90
       --max-running-requests 2
-      --cuda-graph-max-bs-decode 2
+      --cuda-graph-max-bs 2
       --chunked-prefill-size 32768
       --max-prefill-tokens 32768
       --enable-mixed-chunk
