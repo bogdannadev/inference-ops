@@ -1,0 +1,139 @@
+# =============================================================================
+# DEEPSEEK-V4-FLASH (284B/13B, native FP4 MoE + FP8 attention) — SGLANG TP=1
+# Single MI350X (gfx950 / CDNA4), prefix-cache lane, MAXIMUM context, ~2 users
+# MAX-OPTIMISATION variant: all AMD-VALID V4 flags applied.
+# =============================================================================
+# STATUS: SCAFFOLD, NOT A VERIFIED RECIPE. The official SGLang DeepSeek-V4
+#   cookbook verifies NVIDIA only; there is NO gfx950 cell. The ROCm FP4 path is
+#   AMD out-of-tree work. CONFIRM this build runs FP4 at native speed (not the
+#   1-2 tok/s FP8 fallback) before trusting throughput.
+#
+# Image:    rocm/sgl-dev:v0.5.13-rocm720-mi35x-20260612  (FREEZE the digest)
+#             docker buildx imagetools inspect \
+#               rocm/sgl-dev:v0.5.13-rocm720-mi35x-20260612
+#
+# Checkpoint: deepseek-ai/DeepSeek-V4-Flash — native FP4 experts + FP8 attn
+#             (~160 GB). Use AS SHIPPED; do NOT re-quantise. Precision is
+#             AUTO-DETECTED from the checkpoint config — no --quantization flag.
+#
+# -----------------------------------------------------------------------------
+# APPLIED (AMD-plausible) — verify EACH against `--help` inside THIS image:
+#   --attention-backend triton            flashinfer is CUDA-only; triton = AMD
+#   --moe-runner-backend triton           NOT flashinfer_mxfp4; AMD FP4 MoE rides
+#                                          AITER (SGLANG_USE_AITER=1). If triton
+#                                          rejects FP4 experts, drop this flag and
+#                                          let auto-select + AITER take it.
+#   --enable-deepseek-v4-fp4-indexer      engages the native FP4 sparse-attn path
+#   --reasoning-parser deepseek-r1        BEST GUESS — confirm exact name
+#   --tool-call-parser deepseekv3         BEST GUESS — confirm exact name (opencode)
+#   --enable-hierarchical-cache + hicache-*   host-extends ShadowRadix prefix cache
+#                                             (the big lane optimisation). NEW on
+#                                             sparse-attn V4 — watch boot for the
+#                                             #12826/#12867 hybrid-cache failure
+#                                             mode; io-backend is often silently
+#                                             overridden, confirm from the log.
+#
+# EXCLUDED ON PURPOSE (CUDA/Blackwell-only — would fail or no-op on gfx950):
+#   --moe-runner-backend flashinfer_mxfp4    Blackwell FP4 tensor cores
+#   DeepGEMM Mega MoE / SGLANG_OPT_DEEPGEMM_*  CUDA kernels
+#   TileLang mHC / SGLANG_OPT_USE_TILELANG_MHC_PRE   CUDA
+#   FlashMLA, FlashInfer TRTLLM-Gen MoE      CUDA
+#   --speculative-* (MTP)                    conflicts with the prefix-cache lane
+#   --enable-dp-attention / --ep / --enable-nsa-prefill-context-parallel
+#                                            multi-GPU; you are TP=1 single card
+#   --enable-hisparse / PD-disagg            multi-node decode role
+#
+# STAGED ENABLEMENT (your one-variable rule — do NOT flip all of these at once):
+#   1) boot at --context-length 262144, NO hicache, confirm coherent FP4 + speed
+#   2) add --reasoning/--tool-call parsers, confirm opencode tool calls parse
+#   3) add --enable-hierarchical-cache, confirm ShadowRadix hit on turn 2
+#   4) raise --context-length to 1048576 last
+# The file ships with everything ON; comment back to stage 1 if anything breaks.
+# =============================================================================
+
+services:
+  deepseek-v4-flash-mi350x:
+    image: rocm/sgl-dev:sglang-0.5.12.post1-rocm720-mi35x-mori-0610-dsv4
+    container_name: deepseek-v4-flash-mi350x
+    ipc: host
+    shm_size: "32g"
+
+    ports:
+      - "8002:8002"
+
+    devices:
+      - /dev/kfd
+      - /dev/dri
+
+    group_add:
+      - video
+      - render
+
+    security_opt:
+      - seccomp:unconfined
+
+    cap_add:
+      - SYS_PTRACE
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - SGLANG_USE_AITER=1
+      - PYTORCH_ALLOC_CONF=expandable_segments:True
+      - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+
+    entrypoint: python3 -m sglang.launch_server
+    command: >
+      --model-path deepseek-ai/DeepSeek-V4-Flash
+      --served-model-name deepseek-v4-flash
+      --host 0.0.0.0
+      --port 8002
+      --trust-remote-code
+      --tp 1
+      --context-length 1048576
+      --mem-fraction-static 0.90
+      --max-running-requests 2
+      --cuda-graph-max-bs-decode 2
+      --chunked-prefill-size 32768
+      --max-prefill-tokens 32768
+      --enable-mixed-chunk
+      --schedule-policy lpm
+      --attention-backend triton
+      --moe-runner-backend triton
+      --reasoning-parser deepseek-r1
+      --tool-call-parser deepseekv3
+      --grammar-backend xgrammar
+      --allow-auto-truncate
+      --enable-hierarchical-cache
+      --hicache-ratio 2
+      --hicache-write-policy write_through
+      --hicache-mem-layout page_first_direct
+      --hicache-io-backend direct
+      --enable-metrics
+      --enable-cache-report
+      --watchdog-timeout 3600
+      --api-key ${SGLANG_API_KEY}
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 3000s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  default:
+    name: deepseek-v4-flash-mi350x-network
