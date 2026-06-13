@@ -1,65 +1,36 @@
 # =============================================================================
-# DEEPSEEK-V4-FLASH (284B/13B, native FP4 MoE + FP8 attention) — SGLANG TP=1
-# Single MI350X (gfx950 / CDNA4), prefix-cache lane, MAXIMUM context, ~2 users
-# MAX-OPTIMISATION variant: all AMD-VALID V4 flags applied.
+# DEEPSEEK-V4-FLASH — vLLM ROCm TP=1
+# Single AMD GPU ROCm lane, OpenAI-compatible API on :8000
 # =============================================================================
-# STATUS: SCAFFOLD, NOT A VERIFIED RECIPE. The official SGLang DeepSeek-V4
-#   cookbook verifies NVIDIA only; there is NO gfx950 cell. The ROCm FP4 path is
-#   AMD out-of-tree work. CONFIRM this build runs FP4 at native speed (not the
-#   1-2 tok/s FP8 fallback) before trusting throughput.
+# Mirrors this docker run:
+#   docker run --device=/dev/kfd --device=/dev/dri \
+#     --security-opt seccomp=unconfined --group-add video \
+#     --privileged --ipc=host -p 8000:8000 \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     -e VLLM_ROCM_USE_AITER=1 \
+#     vllm/vllm-openai-rocm:nightly deepseek-ai/DeepSeek-V4-Flash ...
 #
-# Image:    rocm/sgl-dev:v0.5.13-rocm720-mi35x-20260612  (FREEZE the digest)
-#             docker buildx imagetools inspect \
-#               rocm/sgl-dev:v0.5.13-rocm720-mi35x-20260612
-#
-# Checkpoint: deepseek-ai/DeepSeek-V4-Flash — native FP4 experts + FP8 attn
-#             (~160 GB). Use AS SHIPPED; do NOT re-quantise. Precision is
-#             AUTO-DETECTED from the checkpoint config — no --quantization flag.
-#
-# -----------------------------------------------------------------------------
-# APPLIED (AMD-plausible) — verify EACH against `--help` inside THIS image:
-#   --attention-backend triton            flashinfer is CUDA-only; triton = AMD
-#   --moe-runner-backend triton           NOT flashinfer_mxfp4; AMD FP4 MoE rides
-#                                          AITER (SGLANG_USE_AITER=1). If triton
-#                                          rejects FP4 experts, drop this flag and
-#                                          let auto-select + AITER take it.
-#   --enable-deepseek-v4-fp4-indexer      engages the native FP4 sparse-attn path
-#   --reasoning-parser deepseek-r1        BEST GUESS — confirm exact name
-#   --tool-call-parser deepseekv3         BEST GUESS — confirm exact name (opencode)
-#   --enable-hierarchical-cache + hicache-*   host-extends ShadowRadix prefix cache
-#                                             (the big lane optimisation). NEW on
-#                                             sparse-attn V4 — watch boot for the
-#                                             #12826/#12867 hybrid-cache failure
-#                                             mode; io-backend is often silently
-#                                             overridden, confirm from the log.
-#
-# EXCLUDED ON PURPOSE (CUDA/Blackwell-only — would fail or no-op on gfx950):
-#   --moe-runner-backend flashinfer_mxfp4    Blackwell FP4 tensor cores
-#   DeepGEMM Mega MoE / SGLANG_OPT_DEEPGEMM_*  CUDA kernels
-#   TileLang mHC / SGLANG_OPT_USE_TILELANG_MHC_PRE   CUDA
-#   FlashMLA, FlashInfer TRTLLM-Gen MoE      CUDA
-#   --speculative-* (MTP)                    conflicts with the prefix-cache lane
-#   --enable-dp-attention / --ep / --enable-nsa-prefill-context-parallel
-#                                            multi-GPU; you are TP=1 single card
-#   --enable-hisparse / PD-disagg            multi-node decode role
-#
-# STAGED ENABLEMENT (your one-variable rule — do NOT flip all of these at once):
-#   1) boot at --context-length 262144, NO hicache, confirm coherent FP4 + speed
-#   2) add --reasoning/--tool-call parsers, confirm opencode tool calls parse
-#   3) add --enable-hierarchical-cache, confirm ShadowRadix hit on turn 2
-#   4) raise --context-length to 1048576 last
-# The file ships with everything ON; comment back to stage 1 if anything breaks.
+# Notes:
+#   - This uses the vLLM OpenAI server image entrypoint; the command begins with
+#     the model name exactly like your docker run invocation.
+#   - Keep --trust-remote-code for DeepSeek-V4 custom model/tokenizer logic.
+#   - FP8 KV cache, block-size 256, TP=1, mp backend, and DeepSeek-V4 parsers are
+#     carried over verbatim.
+#   - For private/gated HF models, export HF_TOKEN before `docker compose up`.
+#   - Freeze the image digest for reproducibility once this boots successfully:
+#       docker buildx imagetools inspect vllm/vllm-openai-rocm:nightly
 # =============================================================================
 
 services:
-  deepseek-v4-flash-mi350x:
-    image: lmsysorg/sglang:v0.5.13-rocm720-mi35x
-    container_name: deepseek-v4-flash-mi350x
+  deepseek-v4-flash-vllm-rocm:
+    image: vllm/vllm-openai-rocm:nightly
+    container_name: deepseek-v4-flash-vllm-rocm
+
     ipc: host
-    shm_size: "32g"
+    privileged: true
 
     ports:
-      - "8002:8002"
+      - "8000:8000"
 
     devices:
       - /dev/kfd
@@ -72,6 +43,7 @@ services:
     security_opt:
       - seccomp:unconfined
 
+    # Mirrors --privileged, while keeping SYS_PTRACE useful for ROCm debugging.
     cap_add:
       - SYS_PTRACE
 
@@ -83,46 +55,43 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - PYTHONUNBUFFERED=1
-      - SGLANG_USE_AITER=1
+      - VLLM_ROCM_USE_AITER=1
+      - VLLM_ROCM_USE_AITER_MOE=1
+      # - AITER_ONLINE_TUNE=1
+      # - HIP_FORCE_DEV_KERNARG=1
+      # - SAFETENSORS_FAST_GPU=1
+      # - TORCH_BLAS_PREFER_HIPBLAST=1
+      # - HSA_NO_SCRATCH_RECLAIM=1
+      # Optional: uncomment if you hit allocator fragmentation on long runs.
       - PYTORCH_ALLOC_CONF=expandable_segments:True
-      - SGLANG_API_KEY=${SGLANG_API_KEY:-}
+      # Optional OpenAI-compatible API key; only effective if passed via args/env supported by image.
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
 
-    entrypoint: python3 -m sglang.launch_server
     command: >
-      --model-path deepseek-ai/DeepSeek-V4-Flash
+      deepseek-ai/DeepSeek-V4-Flash
       --served-model-name deepseek-v4-flash
       --host 0.0.0.0
-      --port 8002
+      --port 8000
       --trust-remote-code
-      --tp 1
-      --context-length 1048576
-      --mem-fraction-static 0.90
-      --max-running-requests 2
-      --cuda-graph-max-bs 2
-      --chunked-prefill-size 32768
-      --max-prefill-tokens 32768
-      --enable-mixed-chunk
-      --schedule-policy lpm
-      --attention-backend triton
-      --moe-runner-backend triton
-      --reasoning-parser deepseek-r1
-      --tool-call-parser deepseekv3
-      --grammar-backend xgrammar
-      --allow-auto-truncate
-      --enable-hierarchical-cache
-      --hicache-ratio 2
-      --hicache-write-policy write_through
-      --hicache-mem-layout page_first_direct
-      --hicache-io-backend direct
-      --enable-metrics
-      --enable-cache-report
-      --watchdog-timeout 3600
-      --api-key ${SGLANG_API_KEY}
+      --kv-cache-dtype fp8
+      --block-size 256
+      --tensor-parallel-size 1
+      --distributed-executor-backend mp
+      --gpu-memory-utilization 0.9
+      --max-num-seqs 2
+      --max-num-batched-tokens 8192
+      --compilation-config '{"cudagraph_mode": "NONE"}'
+      --tokenizer-mode deepseek_v4
+      --tool-call-parser deepseek_v4
+      --enable-auto-tool-choice
+      --reasoning-parser deepseek_v4
+      --api-key ${VLLM_API_KEY}
+      
 
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -136,4 +105,4 @@ services:
 
 networks:
   default:
-    name: deepseek-v4-flash-mi350x-network
+    name: deepseek-v4-flash-vllm-rocm-network
