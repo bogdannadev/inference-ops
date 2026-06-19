@@ -26,8 +26,7 @@
 #     http://qwen36-27b-router:8000
 # =============================================================================
 
-x-sglang-image: &sglang-image
-  lmsysorg/sglang:nightly-dev-cu13-20260617-d86a7e70
+x-sglang-image: &sglang-image lmsysorg/sglang:nightly-dev-cu13-20260617-d86a7e70
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -237,8 +236,29 @@ services:
 
     networks:
       - qwen36-27b-a100-network
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "443:443"
+      - "80:80"
+    environment:
+      - EDGE_API_KEY=${EDGE_API_KEY:?set EDGE_API_KEY in .env}
+      - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks:
+      - qwen36-27b-a100-network # required: reach qwen36-27b-router
+    depends_on:
+      - qwen36-27b-router # optional; just orders startup
 
 networks:
   qwen36-27b-a100-network:
     name: qwen36-27b-a100-network
     driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
