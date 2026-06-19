@@ -103,7 +103,7 @@ services:
       --context-length 196608
       --max-total-tokens 190000
       --mem-fraction-static 0.85
-      --tokenizer-worker-num 4
+      --tokenizer-worker-num 2
       --attention-backend flashinfer
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
@@ -174,7 +174,7 @@ services:
       --context-length 196608
       --max-total-tokens 190000
       --mem-fraction-static 0.85
-      --tokenizer-worker-num 4
+      --tokenizer-worker-num 2
       --attention-backend flashinfer
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
