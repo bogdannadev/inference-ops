@@ -1,0 +1,14 @@
+qw36-27b.bnna.dev {
+	tls contact@bogdanna.dev
+
+	@valid_key header Authorization "Bearer {$EDGE_API_KEY}"
+	handle @valid_key {
+		reverse_proxy qwen36-27b-router:8000 {
+			header_up Authorization "Bearer {$SGLANG_API_KEY}"
+		}
+	}
+
+	handle {
+		respond "Unauthorized" 401
+	}
+}
