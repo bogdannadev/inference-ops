@@ -1,0 +1,285 @@
+# =============================================================================
+# QWEN3.6-27B BF16 — SGLANG PATTERN A
+# 2× TP=1 replicas + cache-aware router + NGRAM speculative decoding
+#
+# Host:
+#   2× A100 80GB PCIe
+#   P2P between GPUs: NS / not supported
+#   1 TB RAM
+#
+# Design:
+#   - Two independent TP=1 replicas
+#   - One replica per GPU
+#   - No inter-GPU communication
+#   - Router uses cache-aware routing
+#   - No host ports are published
+#
+# Important:
+#   HiCache is intentionally disabled for Qwen3.6-27B because current SGLang
+#   builds can crash on the hybrid Mamba/Attention HiCache path with:
+#     RuntimeError: Destination indices must be a CUDA tensor
+#
+# Future gateway:
+#   Attach gateway to:
+#     qwen36-27b-a100-network
+#   Proxy to:
+#     http://qwen36-27b-router:8000
+# =============================================================================
+
+x-sglang-image: &sglang-image lmsysorg/sglang:nightly-dev-cu13-20260619-ea407df4
+
+x-replica-common: &replica-common
+  image: *sglang-image
+
+  ipc: host
+  shm_size: "32g"
+
+  cap_add:
+    - SYS_NICE
+
+  ulimits:
+    memlock: -1
+    stack: 67108864
+
+  environment:
+    - PYTHONUNBUFFERED=1
+    - PYTHONWARNINGS=ignore::SyntaxWarning
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # Hugging Face auth
+    - HF_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
+    - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
+
+    # SGLang OpenAI-compatible API auth
+    - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
+
+  entrypoint: sglang serve
+
+  restart: unless-stopped
+
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+  networks:
+    - qwen36-27b-a100-network
+
+services:
+  # ---------------------------------------------------------------------------
+  # Replica 0 — physical GPU 0
+  # Internal-only endpoint:
+  #   http://qwen36-27b-r0:8001
+  # ---------------------------------------------------------------------------
+  qwen36-27b-r0:
+    <<: *replica-common
+    container_name: qwen36-27b-r0
+
+    expose:
+      - "8001"
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs/r0:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+    command: >
+      --model-path Qwen/Qwen3.6-27B
+      --served-model-name qwen36-27b
+      --host 0.0.0.0
+      --port 8001
+      --trust-remote-code
+      --dtype bfloat16
+      --tp 1
+      --context-length 196608
+      --max-total-tokens 190000
+      --mem-fraction-static 0.85
+      --tokenizer-worker-num 4
+      --attention-backend flashinfer
+      --mamba-radix-cache-strategy extra_buffer
+      --mamba-ssm-dtype bfloat16
+      --page-size 64
+      --chunked-prefill-size 32768
+      --max-prefill-tokens 16384
+      --max-running-requests 1
+      --cuda-graph-max-bs-decode 2
+      --enable-mixed-chunk
+      --schedule-policy lpm
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --grammar-backend xgrammar
+      --allow-auto-truncate
+      --enable-metrics
+      --enable-mfu-metrics
+      --enable-cache-report
+      --speculative-algorithm EAGLE
+      --speculative-num-draft-tokens 4
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --watchdog-timeout 1200
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2400s
+
+  # ---------------------------------------------------------------------------
+  # Replica 1 — physical GPU 1
+  # Internal-only endpoint:
+  #   http://qwen36-27b-r1:8002
+  # ---------------------------------------------------------------------------
+  qwen36-27b-r1:
+    <<: *replica-common
+    container_name: qwen36-27b-r1
+
+    depends_on:
+      qwen36-27b-r0:
+        condition: service_healthy
+
+    expose:
+      - "8002"
+
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ./logs/r1:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+    command: >
+      --model-path Qwen/Qwen3.6-27B
+      --served-model-name qwen36-27b
+      --host 0.0.0.0
+      --port 8002
+      --trust-remote-code
+      --dtype bfloat16
+      --tp 1
+      --context-length 196608
+      --max-total-tokens 190000
+      --mem-fraction-static 0.85
+      --tokenizer-worker-num 4
+      --attention-backend flashinfer
+      --mamba-radix-cache-strategy extra_buffer
+      --mamba-ssm-dtype bfloat16
+      --page-size 64
+      --chunked-prefill-size 32768
+      --max-prefill-tokens 16384
+      --max-running-requests 1
+      --cuda-graph-max-bs-decode 2
+      --enable-mixed-chunk
+      --schedule-policy lpm
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --grammar-backend xgrammar
+      --allow-auto-truncate
+      --enable-metrics
+      --enable-mfu-metrics
+      --enable-cache-report
+      --speculative-algorithm EAGLE
+      --speculative-num-draft-tokens 4
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --watchdog-timeout 1200
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2400s
+
+  # ---------------------------------------------------------------------------
+  # Router — internal-only OpenAI-compatible endpoint
+  #
+  # Internal URL:
+  #   http://qwen36-27b-router:8000
+  #
+  # Future gateway target:
+  #   http://qwen36-27b-router:8000
+  # ---------------------------------------------------------------------------
+  qwen36-27b-router:
+    image: *sglang-image
+    container_name: qwen36-27b-router
+
+    expose:
+      - "8000"
+      - "29000"
+
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    entrypoint: python3 -m sglang_router.launch_router
+
+    command: >
+      --host 0.0.0.0
+      --port 8000
+      --policy cache_aware
+      --worker-urls http://qwen36-27b-r0:8001 http://qwen36-27b-r1:8002
+      --max-concurrent-requests 2
+      --queue-size 8
+      --queue-timeout-secs 60
+      --request-timeout-secs 1200
+      --prometheus-host 0.0.0.0
+      --prometheus-port 29000
+
+    depends_on:
+      qwen36-27b-r0:
+        condition: service_healthy
+      qwen36-27b-r1:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-a100-network
+
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "443:443"
+      - "80:80"
+    environment:
+      - EDGE_API_KEY=${EDGE_API_KEY:?set EDGE_API_KEY in .env}
+      - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks:
+      - qwen36-27b-a100-network # required: reach qwen36-27b-router
+    depends_on:
+      - qwen36-27b-router # optional; just orders startup
+
+networks:
+  qwen36-27b-a100-network:
+    name: qwen36-27b-a100-network
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
