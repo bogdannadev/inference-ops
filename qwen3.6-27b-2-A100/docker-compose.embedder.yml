@@ -1,0 +1,38 @@
+# qwen3-embedding-cpu/docker-compose.yml  — DRAFT (pending guide + topology)
+# Independent co-tenant. Joins the A100 stack ONLY via the shared external network.
+# Pattern: separate project — fault isolation from the LLM replicas.
+
+services:
+  qwen3-emb:
+    # Pin ≥1.9 (past the Qwen3 CPU FP16 / last-token nondeterminism bugs). Digest-pin for prod.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    container_name: qwen3-emb
+
+    # --- NUMA isolation: TEI/ORT is NUMA-blind, so the OS draws the cage ---
+    # cpuset = cores on the node NOT feeding the busiest A100. FILL FROM `nvidia-smi topo -m` + NPS.
+    cpuset: "48-55"          # e.g. "48-55"
+    # NOTE: compose has no cpuset-mems key. For true membind either:
+    #   (a) override entrypoint with `numactl --cpunodebind=N --membind=N ...` (needs numactl in image), or
+    #   (b) rely on cpuset + Linux local-alloc first-touch (good enough on NPS>1, moot on NPS1).
+
+    environment:
+      - HF_TOKEN=${HF_TOKEN:?set in .env}
+      # Thread cap = pinned core count. OVERRIDE the model-card's nproc advice (it grabs all 56).
+      - OMP_NUM_THREADS=8           # = number of pinned cores
+      - RAYON_NUM_THREADS=8
+
+    command: >
+      --model-id onnx-community/Qwen3-Embedding-0.6B-ONNX
+      --pooling last-token
+      --auto-truncate false
+      --max-batch-tokens 32768
+
+    expose:
+      - "8000"                        # internal only; no host port
+    restart: unless-stopped
+    networks:
+      - qwen36-27b-a100-network
+
+networks:
+  qwen36-27b-a100-network:
+    external: true                  # `docker network create` once; owned by neither stack
