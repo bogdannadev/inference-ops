@@ -5,6 +5,7 @@ qw36-27b.bnna.dev {
 	handle @valid_key {
 		reverse_proxy qwen36-27b-router:8000 {
 			header_up Authorization "Bearer {$SGLANG_API_KEY}"
+			flush_interval -1
 		}
 	}
 
