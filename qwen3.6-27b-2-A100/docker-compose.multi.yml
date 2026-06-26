@@ -1,3 +1,4 @@
+
 # =============================================================================
 # QWEN3.6-27B BF16 — SGLANG PATTERN A
 # 2× TP=1 replicas + cache-aware router + NGRAM speculative decoding
@@ -26,7 +27,7 @@
 #     http://qwen36-27b-router:8000
 # =============================================================================
 
-x-sglang-image: &sglang-image lmsysorg/sglang:nightly-dev-cu13-20260619-ea407df4
+x-sglang-image: &sglang-image lmsysorg/sglang:latest-cu130
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -79,6 +80,8 @@ services:
     expose:
       - "8001"
 
+    cpuset: "0-27"
+
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
       - ./logs/r0:/app/logs
@@ -100,7 +103,7 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 196608
+      --context-length 184320
       --max-total-tokens 190000
       --mem-fraction-static 0.85
       --tokenizer-worker-num 2
@@ -117,7 +120,6 @@ services:
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
-      --allow-auto-truncate
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
@@ -126,12 +128,17 @@ services:
       --speculative-num-steps 3
       --speculative-eagle-topk 1
       --watchdog-timeout 1200
+      --enable-hierarchical-cache
+      --hicache-size 128
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --hicache-write-policy write_through
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 15s
+      retries: 10
       start_period: 2400s
 
   # ---------------------------------------------------------------------------
@@ -142,6 +149,8 @@ services:
   qwen36-27b-r1:
     <<: *replica-common
     container_name: qwen36-27b-r1
+
+    cpuset: "28-47"
 
     depends_on:
       qwen36-27b-r0:
@@ -171,7 +180,7 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 196608
+      --context-length 184320
       --max-total-tokens 190000
       --mem-fraction-static 0.85
       --tokenizer-worker-num 2
@@ -188,7 +197,6 @@ services:
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
-      --allow-auto-truncate
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
@@ -197,12 +205,17 @@ services:
       --speculative-num-steps 3
       --speculative-eagle-topk 1
       --watchdog-timeout 1200
+      --enable-hierarchical-cache
+      --hicache-size 128
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --hicache-write-policy write_through
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 15s
+      retries: 10
       start_period: 2400s
 
   # ---------------------------------------------------------------------------
@@ -234,8 +247,8 @@ services:
       --worker-urls http://qwen36-27b-r0:8001 http://qwen36-27b-r1:8002
       --max-concurrent-requests 2
       --queue-size 8
-      --queue-timeout-secs 60
-      --request-timeout-secs 1200
+      --queue-timeout-secs 180
+      --request-timeout-secs 900
       --prometheus-host 0.0.0.0
       --prometheus-port 29000
 
