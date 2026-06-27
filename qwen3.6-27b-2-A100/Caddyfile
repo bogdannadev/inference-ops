@@ -16,7 +16,7 @@ embed.example.com {
 	tls contact@example.com
 	@valid_key header Authorization "Bearer {$EDGE_API_KEY}"
 	handle @valid_key {
-		reverse_proxy qwen3-emb:8000
+		reverse_proxy qwen3-emb:80
 	}
 	handle {
 		respond "Unauthorized" 401
