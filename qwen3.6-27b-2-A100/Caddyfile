@@ -1,6 +1,5 @@
 model.example.com {
 	tls contact@example.com
-
 	@valid_key header Authorization "Bearer {$EDGE_API_KEY}"
 	handle @valid_key {
 		reverse_proxy qwen36-27b-router:8000 {
@@ -8,7 +7,17 @@ model.example.com {
 			flush_interval -1
 		}
 	}
+	handle {
+		respond "Unauthorized" 401
+	}
+}
 
+embed.example.com {
+	tls contact@example.com
+	@valid_key header Authorization "Bearer {$EDGE_API_KEY}"
+	handle @valid_key {
+		reverse_proxy qwen3-emb:8000
+	}
 	handle {
 		respond "Unauthorized" 401
 	}
