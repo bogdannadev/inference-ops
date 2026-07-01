@@ -27,7 +27,7 @@
 #     http://qwen36-27b-router:8000
 # =============================================================================
 
-x-sglang-image: &sglang-image lmsysorg/sglang:latest-cu130
+x-sglang-image: &sglang-image lmsysorg/sglang:dev-cu13
 
 x-replica-common: &replica-common
   image: *sglang-image
