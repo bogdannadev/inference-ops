@@ -133,7 +133,7 @@ services:
       --hicache-io-backend direct
       --hicache-mem-layout page_first_direct
       --hicache-write-policy write_through
-      --api-keys ${SGLANG_API_KEY}
+      --api-key ${SGLANG_API_KEY}
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
