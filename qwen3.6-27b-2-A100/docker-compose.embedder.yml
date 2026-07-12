@@ -31,8 +31,8 @@ services:
       - "8000"                        # internal only; no host port
     restart: unless-stopped
     networks:
-      - qwen36-27b-a100-network
+      - edge
 
 networks:
-  qwen36-27b-a100-network:
+  edge:
     external: true                  # `docker network create` once; owned by neither stack

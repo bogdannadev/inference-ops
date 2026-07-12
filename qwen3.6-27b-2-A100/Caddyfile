@@ -1,24 +1,62 @@
-qw36-27b.bnna.dev {
+# =============================================================================
+# Edge gateway — bnna.dev
+#
+# Pattern:
+#   - One shared snippet (edge_auth) carries TLS contact, request-body cap,
+#     and the edge-key guard clause. Each site imports it with its own
+#     body-size argument. Adding a third upstream is a three-line site block.
+#
+# Guard-clause mechanics:
+#   - Caddy sorts directives by its internal order, where `respond` runs
+#     AFTER `reverse_proxy` — so a bare matched respond would never fire.
+#     Wrapping the 401 in `route` pins evaluation where it is written:
+#     bad keys terminate here, valid keys fall through to the proxy.
+#
+# Body cap rationale:
+#   - The production outage began with a ~244K-token request. A 184K-token
+#     prompt is roughly 0.75 MB of JSON, so an 8MB cap rejects pathological
+#     payloads at the edge with generous headroom. Tune per site via the
+#     import argument.
+# =============================================================================
+
+(edge_auth) {
+	# ACME registration contact for certificate issuance
 	tls contact@bogdanna.dev
-	@valid_key header Authorization "Bearer {$EDGE_API_KEY}"
-	handle @valid_key {
-		reverse_proxy qwen36-27b-router:8000 {
-			header_up Authorization "Bearer {$SGLANG_API_KEY}"
-			flush_interval -1
-		}
+
+	# Edge request-body cap — size passed per-site as {args[0]}
+	request_body {
+		max_size {args[0]}
 	}
-	handle {
+
+	# Reject anything without the edge key before it reaches the proxy
+	@bad_key not header Authorization "Bearer {$EDGE_API_KEY}"
+	route @bad_key {
 		respond "Unauthorized" 401
 	}
 }
 
+# -----------------------------------------------------------------------------
+# Qwen3.6-27B — SGLang router on the A100 node
+# -----------------------------------------------------------------------------
+qw36-27b.bnna.dev {
+	import edge_auth 8MB
+
+	reverse_proxy qwen36-27b-router:8000 {
+		# Swap the edge credential for the internal SGLang key
+		header_up Authorization "Bearer {$SGLANG_API_KEY}"
+
+		# SSE streaming: disable response buffering entirely
+		flush_interval -1
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Qwen3-Embedding-0.6B — TEI (CPU)
+# NOTE: after the network split, the TEI container must join the shared
+# `edge` network so the name `qwen3-emb` resolves from this Caddy.
+# -----------------------------------------------------------------------------
 qw3-emb.bnna.dev {
-	tls contact@bogdanna.dev
-	@valid_key header Authorization "Bearer {$EDGE_API_KEY}"
-	handle @valid_key {
-		reverse_proxy qwen3-emb:80
-	}
-	handle {
-		respond "Unauthorized" 401
-	}
+	import edge_auth 8MB
+
+	reverse_proxy qwen3-emb:80
 }
