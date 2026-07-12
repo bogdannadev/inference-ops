@@ -1,0 +1,152 @@
+# =============================================================================
+# OBSERVABILITY OVERLAY — qwen36-27b A100 node
+# Prometheus + Grafana + NVIDIA DCGM Exporter
+#
+# Usage — ALWAYS both files, one compose project:
+#   docker compose -f docker-compose.yml -f compose.metrics.yml up -d
+#
+# Rationale:
+#   - Same project as the inference tier. This removes the known hazard of
+#     observability containers living in a separate compose project and
+#     being deleted by `--remove-orphans` from the other side.
+#   - If a standalone dcgm-exporter / prometheus already runs on this host
+#     from another project, retire it first and let this overlay own it.
+#
+# Access model:
+#   - No externally published ports. Prometheus and Grafana bind to
+#     127.0.0.1 on the host only. Reach them over an SSH tunnel:
+#       ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <host>
+#
+# Network:
+#   - Written against the segmented layout (qwen36-27b-backend).
+#   - If you have NOT applied the network split yet, replace every
+#     `qwen36-27b-backend` below with `qwen36-27b-a100-network`.
+#
+# Image pinning:
+#   - Tags below are FLOATING PLACEHOLDERS. Resolve real tags (NGC tags for
+#     dcgm-exporter are versioned, e.g. X.Y.Z-A.B.C-ubuntu22.04 — use the
+#     registry API, not the rendered page), then pin digests:
+#       docker pull <image:tag>
+#       docker inspect --format='{{index .RepoDigests 0}}' <image:tag>
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Prometheus — scrapes both SGLang workers, the router, and DCGM.
+  # Scrape config lives in ./prometheus/prometheus.yml
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest   # PLACEHOLDER — resolve tag, pin digest
+    container_name: qwen36-27b-prometheus
+
+    # Observability CPU load is in the noise; park it on the NUMA-node-1
+    # tail cores (shared with TEI) and keep worker cores 0-47 clean.
+    cpuset: "48-55"
+
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=0.0.0.0:9090
+
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    # Loopback bind only — not reachable from outside the host.
+    ports:
+      - "127.0.0.1:9090:9090"
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # NVIDIA DCGM Exporter — per-GPU telemetry on :9400
+  # (utilisation, memory, SM clocks, throttling, XID errors, NVLink/PCIe)
+  # ---------------------------------------------------------------------------
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:latest   # PLACEHOLDER — see header
+    container_name: qwen36-27b-dcgm
+
+    cpuset: "48-55"
+
+    # SYS_ADMIN is required for the DCP/profiling metric groups
+    # (e.g. SM occupancy, tensor-core activity). Drop it if you only
+    # need the basic utilisation/memory/power set.
+    cap_add:
+      - SYS_ADMIN
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1"]   # both A100s
+              capabilities: [gpu]
+
+    # Internal-only; Prometheus scrapes it over the Docker network.
+    expose:
+      - "9400"
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards; datasource auto-provisioned from
+  # ./grafana/provisioning/datasources/datasources.yml
+  #
+  # Add to .env:
+  #   GRAFANA_ADMIN_USER=...
+  #   GRAFANA_ADMIN_PASSWORD=...
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:latest   # PLACEHOLDER — resolve tag, pin digest
+    container_name: qwen36-27b-grafana
+
+    cpuset: "48-55"
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER in .env}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+
+    # Loopback bind only — SSH tunnel access.
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    depends_on:
+      - prometheus
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+volumes:
+  prometheus_data:
+  grafana_data:

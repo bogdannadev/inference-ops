@@ -1,0 +1,15 @@
+# =============================================================================
+# Grafana datasource provisioning — qwen36-27b A100 node
+# Location in repo: ./grafana/provisioning/datasources/datasources.yml
+# Auto-loaded at Grafana boot; no manual datasource setup needed.
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
