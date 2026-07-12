@@ -1,0 +1,59 @@
+# =============================================================================
+# Prometheus scrape config — qwen36-27b A100 node
+# Location in repo: ./prometheus/prometheus.yml
+# Mounted read-only into the prometheus container by compose.metrics.yml
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # SGLang workers — engine-level metrics (--enable-metrics / --enable-mfu-metrics)
+  #
+  # NOTE: verify whether --api-key gates /metrics on your build. If it does,
+  # uncomment the authorization block and keep the key OUT of this file
+  # (credentials_file, mounted from a secret, not the plain credential).
+  # ---------------------------------------------------------------------------
+  - job_name: sglang-workers
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - qwen36-27b-r0:8001
+          - qwen36-27b-r1:8002
+        labels:
+          node: a100
+          model: qwen36-27b
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/sglang_api_key
+
+  # ---------------------------------------------------------------------------
+  # sgl-router — queueing / routing / per-worker dispatch metrics
+  # (router flag pair: --prometheus-host 0.0.0.0 --prometheus-port 29000)
+  # ---------------------------------------------------------------------------
+  - job_name: sglang-router
+    static_configs:
+      - targets:
+          - qwen36-27b-router:29000
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # DCGM — per-GPU hardware telemetry
+  # ---------------------------------------------------------------------------
+  - job_name: dcgm
+    static_configs:
+      - targets:
+          - dcgm-exporter:9400
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # Prometheus self-scrape
+  # ---------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

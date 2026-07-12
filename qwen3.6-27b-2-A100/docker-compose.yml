@@ -1,33 +1,48 @@
-
 # =============================================================================
 # QWEN3.6-27B BF16 — SGLANG PATTERN A
-# 2× TP=1 replicas + cache-aware router + NGRAM speculative decoding
+# 2× TP=1 replicas + cache-aware router + EAGLE (MTP) speculative decoding
+# + HiCache + Caddy edge gateway + segmented networks
 #
 # Host:
-#   2× A100 80GB PCIe
-#   P2P between GPUs: NS / not supported
-#   1 TB RAM
+#   2× A100 80GB PCIe (P2P: NS — hence two TP=1 replicas, no TP=2)
+#   AMD EPYC 7663, NPS2, SMT off: cores 0-27 NUMA0, 28-55 NUMA1
+#   1 TB RAM (HiCache host tier)
 #
 # Design:
-#   - Two independent TP=1 replicas
-#   - One replica per GPU
-#   - No inter-GPU communication
-#   - Router uses cache-aware routing
-#   - No host ports are published
+#   - Two independent TP=1 replicas, one per GPU, no inter-GPU comms
+#   - Router: cache-aware routing (prefix locality per worker)
+#   - Networks: `edge` (external, shared) carries Caddy <-> router;
+#     `qwen36-27b-backend` (project-owned) carries router <-> workers.
+#     Caddy cannot reach worker ports / ZMQ sockets (CVE-2026-3059/3060
+#     lateral-movement hardening).
+#   - Only Caddy publishes host ports (80/443)
 #
-# Important:
-#   HiCache is intentionally disabled for Qwen3.6-27B because current SGLang
-#   builds can crash on the hybrid Mamba/Attention HiCache path with:
-#     RuntimeError: Destination indices must be a CUDA tensor
+# HiCache:
+#   ENABLED. The old hybrid Mamba/Attention crash
+#   ("Destination indices must be a CUDA tensor") was retired by the
+#   UnifiedRadixTree refactor (v0.5.13+, PR #27759). Flag set below is the
+#   compatibility-first pairing (direct / page_first_direct) validated on
+#   this node. --hicache-size is PER RANK, in GB of host RAM.
 #
-# Future gateway:
-#   Attach gateway to:
-#     qwen36-27b-a100-network
-#   Proxy to:
-#     http://qwen36-27b-router:8000
+# Speculative decoding:
+#   EAGLE against the model's bundled MTP head (mtp.safetensors), per the
+#   official Qwen3.6 cookbook. BOOT CHECK on every start (issue #29857):
+#   read the `Memory pool end` line — if the profiled max_total_num_tokens
+#   has collapsed (~50 GB VRAM stranded), drop the four --speculative-*
+#   flags and reboot clean before investigating.
+#
+# Metrics:
+#   Observability tier lives in compose.metrics.yml — SAME project.
+#   After first combined `up`, ALWAYS pass both files to compose commands:
+#     docker compose -f docker-compose.yml -f compose.metrics.yml <cmd>
+#
+# Gateway target (for any future external consumer on `edge`):
+#   http://qwen36-27b-router:8000
 # =============================================================================
 
-x-sglang-image: &sglang-image lmsysorg/sglang:dev-cu13
+# PIN BY DIGEST before production (guide §2):
+#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:dev-cu13
+x-sglang-image: &sglang-image lmsysorg/sglang:dev-cu13   # -> dev-cu13@sha256:...
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -35,12 +50,18 @@ x-replica-common: &replica-common
   ipc: host
   shm_size: "32g"
 
+  # SYS_NICE: lets the scheduler set thread affinity/priority sanely on the
+  # dual-NUMA topology (both GPUs report NUMA affinity to nodes 0-1).
   cap_add:
     - SYS_NICE
 
   ulimits:
     memlock: -1
     stack: 67108864
+
+  # Default SIGKILL grace is 10s. Workers need time to drain in-flight
+  # generations and finish HiCache write-through before termination.
+  stop_grace_period: 120s
 
   environment:
     - PYTHONUNBUFFERED=1
@@ -51,7 +72,8 @@ x-replica-common: &replica-common
     - HF_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
     - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
 
-    # SGLang OpenAI-compatible API auth
+    # SGLang OpenAI-compatible API auth (internal key; Caddy swaps the
+    # edge key for this one — clients never see it)
     - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
 
   entrypoint: sglang serve
@@ -65,22 +87,48 @@ x-replica-common: &replica-common
       max-file: "5"
 
   networks:
-    - qwen36-27b-a100-network
+    - qwen36-27b-backend
+
+# NOTE on flag duplication: the two replica command blocks below are
+# intentionally identical except for --port. YAML cannot splice an anchor
+# into the middle of a command string, so keep them in sync BY HAND — any
+# flag change must be applied to both blocks.
+#
+# VERIFY AGAINST THE LIVE IMAGE (guide §2) — three unsettled names:
+#   1. --api-key vs --api-keys        (must be identical on both replicas)
+#   2. --mamba-radix-cache-strategy vs --mamba-scheduler-strategy
+#      (cookbook documents the latter; keep whichever `--help` accepts)
+#   3. worker-side /health bypass flag, if the build has one
 
 services:
   # ---------------------------------------------------------------------------
-  # Replica 0 — physical GPU 0
-  # Internal-only endpoint:
-  #   http://qwen36-27b-r0:8001
+  # Replica 0 — physical GPU 0, NUMA node 0 cores
+  # Internal endpoint: http://qwen36-27b-r0:8001
+  #
+  # Flag-group rationale (applies to both replicas):
+  #   context/tokens : 184320 context cap (post-outage guard against the
+  #                    ~244K-token requests); max-total-tokens 190000 must
+  #                    EXCEED the context window — never below it.
+  #   prefill/decode : chunked-prefill and max-prefill aligned at 16384
+  #                    (previous 32768/16384 split meant the effective
+  #                    chunk was 16384 anyway — one number, stated once).
+  #                    max-running-requests 1 is the conservative memory
+  #                    guard while EAGLE+HiCache co-exist; the decode graph
+  #                    is captured to bs=2 as pre-paid headroom for raising
+  #                    it after a clean #29857 boot check.
+  #   mixed-chunk    : legal under EAGLE per current builds — confirm from
+  #                    boot logs it is not silently disabled.
   # ---------------------------------------------------------------------------
   qwen36-27b-r0:
     <<: *replica-common
     container_name: qwen36-27b-r0
 
+    # NUMA discipline: r0 owns node-0 cores; 48-55 stay reserved for
+    # TEI + observability.
+    cpuset: "0-27"
+
     expose:
       - "8001"
-
-    cpuset: "0-27"
 
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
@@ -110,8 +158,9 @@ services:
       --attention-backend flashinfer
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
+      --mamba-track-interval 64
       --page-size 64
-      --chunked-prefill-size 32768
+      --chunked-prefill-size 16384
       --max-prefill-tokens 16384
       --max-running-requests 1
       --cuda-graph-max-bs-decode 2
@@ -127,15 +176,17 @@ services:
       --speculative-num-draft-tokens 4
       --speculative-num-steps 3
       --speculative-eagle-topk 1
-      --watchdog-timeout 1200
       --enable-hierarchical-cache
       --hicache-size 128
       --hicache-io-backend direct
       --hicache-mem-layout page_first_direct
       --hicache-write-policy write_through
+      --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
     healthcheck:
+      # /health is a GENERATION probe, not a liveness check — parameters
+      # are deliberately loose so a worker mid-prefill does not flap.
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 60s
       timeout: 15s
@@ -143,9 +194,9 @@ services:
       start_period: 2400s
 
   # ---------------------------------------------------------------------------
-  # Replica 1 — physical GPU 1
-  # Internal-only endpoint:
-  #   http://qwen36-27b-r1:8002
+  # Replica 1 — physical GPU 1, NUMA node 1 cores
+  # Internal endpoint: http://qwen36-27b-r1:8002
+  # Starts after r0 so one container populates the shared HF cache.
   # ---------------------------------------------------------------------------
   qwen36-27b-r1:
     <<: *replica-common
@@ -188,8 +239,9 @@ services:
       --attention-backend flashinfer
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
+      --mamba-track-interval 64
       --page-size 64
-      --chunked-prefill-size 32768
+      --chunked-prefill-size 16384
       --max-prefill-tokens 16384
       --max-running-requests 1
       --cuda-graph-max-bs-decode 2
@@ -205,12 +257,12 @@ services:
       --speculative-num-draft-tokens 4
       --speculative-num-steps 3
       --speculative-eagle-topk 1
-      --watchdog-timeout 1200
       --enable-hierarchical-cache
       --hicache-size 128
       --hicache-io-backend direct
       --hicache-mem-layout page_first_direct
       --hicache-write-policy write_through
+      --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
     healthcheck:
@@ -221,13 +273,13 @@ services:
       start_period: 2400s
 
   # ---------------------------------------------------------------------------
-  # Router — internal-only OpenAI-compatible endpoint
+  # Router — sole bridge between edge and backend
+  # Internal URL: http://qwen36-27b-router:8000
+  # Prometheus:   http://qwen36-27b-router:29000 (scraped by overlay)
   #
-  # Internal URL:
-  #   http://qwen36-27b-router:8000
-  #
-  # Future gateway target:
-  #   http://qwen36-27b-router:8000
+  # Queue/timeout rationale: post-outage settings — bounded queue so the
+  # edge sees 429/503 instead of silent pile-up; request timeout below the
+  # worker watchdog so the router, not the watchdog, is the first to act.
   # ---------------------------------------------------------------------------
   qwen36-27b-router:
     image: *sglang-image
@@ -236,6 +288,8 @@ services:
     expose:
       - "8000"
       - "29000"
+
+    stop_grace_period: 30s
 
     environment:
       - PYTHONUNBUFFERED=1
@@ -260,6 +314,15 @@ services:
       qwen36-27b-r1:
         condition: service_healthy
 
+    # Required for Caddy's service_healthy condition below. Short
+    # start_period: the router only starts once both workers are healthy.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
     restart: unless-stopped
 
     logging:
@@ -269,30 +332,63 @@ services:
         max-file: "5"
 
     networks:
-      - qwen36-27b-a100-network
+      - qwen36-27b-backend   # reach workers
+      - edge                 # be reachable from Caddy
 
-
+  # ---------------------------------------------------------------------------
+  # Caddy — TLS termination, edge auth, request-body cap
+  # The ONLY service publishing host ports. Edge network only: it can reach
+  # the router (and qwen3-emb from the embedding project), never a worker.
+  # ---------------------------------------------------------------------------
   caddy:
     image: caddy:2-alpine
+
+    cpuset: "48-55"
+
     ports:
       - "443:443"
       - "80:80"
+
+    stop_grace_period: 30s
+
     environment:
       - EDGE_API_KEY=${EDGE_API_KEY:?set EDGE_API_KEY in .env}
       - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
+
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    restart: unless-stopped
-    networks:
-      - qwen36-27b-a100-network # required: reach qwen36-27b-router
+
+    # service_healthy (not bare depends_on): Caddy must not serve 502s
+    # during the ~40-minute cold warm-up window.
     depends_on:
-      - qwen36-27b-router # optional; just orders startup
+      qwen36-27b-router:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - edge
 
 networks:
-  qwen36-27b-a100-network:
-    name: qwen36-27b-a100-network
+  # Shared edge network — created ONCE outside any compose project:
+  #   docker network create edge
+  # Members: this Caddy, this router, and the TEI container from the
+  # embedding project (so `qwen3-emb` resolves for Caddy).
+  edge:
+    name: edge
+    external: true
+
+  # Project-owned backend — workers + router (+ metrics overlay) only.
+  qwen36-27b-backend:
+    name: qwen36-27b-backend
     driver: bridge
 
 volumes:
