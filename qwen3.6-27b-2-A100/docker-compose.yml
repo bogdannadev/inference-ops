@@ -1,3 +1,4 @@
+
 # =============================================================================
 # QWEN3.6-27B BF16 — SGLANG PATTERN A
 # 2× TP=1 replicas + cache-aware router + NGRAM speculative decoding
@@ -26,7 +27,7 @@
 #     http://qwen36-27b-router:8000
 # =============================================================================
 
-x-sglang-image: &sglang-image lmsysorg/sglang:nightly-dev-cu13-20260617-d86a7e70
+x-sglang-image: &sglang-image lmsysorg/sglang:dev-cu13
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -79,6 +80,8 @@ services:
     expose:
       - "8001"
 
+    cpuset: "0-27"
+
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
       - ./logs/r0:/app/logs
@@ -100,34 +103,43 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 131072
-      --mem-fraction-static 0.90
+      --context-length 184320
+      --max-total-tokens 190000
+      --mem-fraction-static 0.85
+      --tokenizer-worker-num 1
       --attention-backend flashinfer
-      --mamba-scheduler-strategy extra_buffer
+      --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --page-size 64
       --chunked-prefill-size 32768
-      --max-prefill-tokens 32768
-      --max-running-requests 4
-      --cuda-graph-max-bs-decode 4
+      --max-prefill-tokens 16384
+      --max-running-requests 1
+      --cuda-graph-max-bs-decode 2
       --enable-mixed-chunk
       --schedule-policy lpm
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
-      --allow-auto-truncate
       --enable-metrics
+      --enable-mfu-metrics
       --enable-cache-report
-      --speculative-algorithm NGRAM
+      --speculative-algorithm EAGLE
       --speculative-num-draft-tokens 4
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
       --watchdog-timeout 1200
-      --api-key ${SGLANG_API_KEY}
+      --enable-hierarchical-cache
+      --hicache-size 128
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --hicache-write-policy write_through
+      --api-keys ${SGLANG_API_KEY}
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 15s
+      retries: 10
       start_period: 2400s
 
   # ---------------------------------------------------------------------------
@@ -138,6 +150,12 @@ services:
   qwen36-27b-r1:
     <<: *replica-common
     container_name: qwen36-27b-r1
+
+    cpuset: "28-47"
+
+    depends_on:
+      qwen36-27b-r0:
+        condition: service_healthy
 
     expose:
       - "8002"
@@ -163,34 +181,43 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 131072
-      --mem-fraction-static 0.90
+      --context-length 184320
+      --max-total-tokens 190000
+      --mem-fraction-static 0.85
+      --tokenizer-worker-num 1
       --attention-backend flashinfer
-      --mamba-scheduler-strategy extra_buffer
+      --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --page-size 64
       --chunked-prefill-size 32768
-      --max-prefill-tokens 32768
-      --max-running-requests 4
-      --cuda-graph-max-bs-decode 4
+      --max-prefill-tokens 16384
+      --max-running-requests 1
+      --cuda-graph-max-bs-decode 2
       --enable-mixed-chunk
       --schedule-policy lpm
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
-      --allow-auto-truncate
       --enable-metrics
+      --enable-mfu-metrics
       --enable-cache-report
-      --speculative-algorithm NGRAM
+      --speculative-algorithm EAGLE
       --speculative-num-draft-tokens 4
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
       --watchdog-timeout 1200
+      --enable-hierarchical-cache
+      --hicache-size 128
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --hicache-write-policy write_through
       --api-key ${SGLANG_API_KEY}
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 15s
+      retries: 10
       start_period: 2400s
 
   # ---------------------------------------------------------------------------
@@ -208,6 +235,7 @@ services:
 
     expose:
       - "8000"
+      - "29000"
 
     environment:
       - PYTHONUNBUFFERED=1
@@ -219,6 +247,12 @@ services:
       --port 8000
       --policy cache_aware
       --worker-urls http://qwen36-27b-r0:8001 http://qwen36-27b-r1:8002
+      --max-concurrent-requests 2
+      --queue-size 8
+      --queue-timeout-secs 180
+      --request-timeout-secs 900
+      --prometheus-host 0.0.0.0
+      --prometheus-port 29000
 
     depends_on:
       qwen36-27b-r0:
@@ -236,6 +270,8 @@ services:
 
     networks:
       - qwen36-27b-a100-network
+
+
   caddy:
     image: caddy:2-alpine
     ports:
