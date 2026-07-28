@@ -277,9 +277,29 @@ services:
   # Internal URL: http://qwen36-27b-router:8000
   # Prometheus:   http://qwen36-27b-router:29000 (scraped by overlay)
   #
-  # Queue/timeout rationale: post-outage settings — bounded queue so the
-  # edge sees 429/503 instead of silent pile-up; request timeout below the
-  # worker watchdog so the router, not the watchdog, is the first to act.
+  # Policy rationale (2026-07-28, measured — see benchmarks/results/):
+  #   `cache_aware` was starving r0 completely: 8/8 sequential requests with
+  #   fully DISJOINT prefixes all routed to r1, r0_delta=0 every time, while
+  #   both workers reported load=0 and is_healthy=true. GPU0 sat at 0% util
+  #   during load. Two compounding causes:
+  #     1. balance_abs_threshold defaults to 64, but with
+  #        --max-running-requests 1 the load delta between workers can never
+  #        exceed 1 — the rebalance escape hatch is mathematically unreachable.
+  #     2. With one shared system prompt (coding-agent traffic), affinity
+  #        routing WANTS to pile the whole team onto whichever replica warmed
+  #        first. Cache-affinity is built for many prefixes across many
+  #        workers; here it is one prefix across two.
+  #   power_of_two on 2 workers == pick-the-less-loaded, so long requests do
+  #   not get a second one stacked on them. The shared system prompt caches on
+  #   BOTH replicas after first use, so prefix-cache benefit is retained.
+  #
+  # Rate-limit rationale: --max-concurrent-requests is NOT a concurrency cap.
+  #   Per `launch_router --help` it is a TOKEN BUCKET whose refill rate
+  #   defaults to the same number, i.e. `2` meant "2 requests per SECOND,
+  #   service-wide". Bursts died with 408 + router log
+  #   "Queue: request timed out waiting for token". Default is -1 (disabled);
+  #   omitted here so backpressure comes from worker queues, not an
+  #   arbitrary bucket. Revisit if unbounded queueing shows up under real load.
   # ---------------------------------------------------------------------------
   qwen36-27b-router:
     image: *sglang-image
@@ -299,11 +319,8 @@ services:
     command: >
       --host 0.0.0.0
       --port 8000
-      --policy cache_aware
+      --policy power_of_two
       --worker-urls http://qwen36-27b-r0:8001 http://qwen36-27b-r1:8002
-      --max-concurrent-requests 2
-      --queue-size 8
-      --queue-timeout-secs 180
       --request-timeout-secs 900
       --prometheus-host 0.0.0.0
       --prometheus-port 29000

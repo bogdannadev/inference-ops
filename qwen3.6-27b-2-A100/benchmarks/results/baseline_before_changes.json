@@ -1,0 +1,298 @@
+{
+  "label": "baseline_before_changes",
+  "timestamp_utc": "2026-07-28T15:23:05.408237Z",
+  "git_commit": "4144d3d50f8f47c79511907610f8b7fc47d7f1b5",
+  "git_dirty_files": 3,
+  "r0_image_id": "sha256:26f620b13e49900cc6ab59ed693f9ce8f9ea4f3531074c1e39a3bf9db06ab8f0",
+  "gpu_memory_before": [
+    "0, 74472 MiB, 81920 MiB, 0 %",
+    "1, 75134 MiB, 81920 MiB, 0 %"
+  ],
+  "gpu_memory_after": [
+    "0, 74472 MiB, 81920 MiB, 0 %",
+    "1, 75134 MiB, 81920 MiB, 53 %"
+  ],
+  "benchmark": {
+    "scenarios": {
+      "sequential_short_nonstream": {
+        "requests": [
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 2.036,
+            "ttft_s": 2.036,
+            "prompt_tokens": 23,
+            "completion_tokens": 128,
+            "tokens_per_sec": 62.87
+          },
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 1.948,
+            "ttft_s": 1.948,
+            "prompt_tokens": 23,
+            "completion_tokens": 128,
+            "tokens_per_sec": 65.72
+          },
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 1.972,
+            "ttft_s": 1.972,
+            "prompt_tokens": 23,
+            "completion_tokens": 128,
+            "tokens_per_sec": 64.92
+          }
+        ],
+        "latency_summary": {
+          "n": 3,
+          "mean": 1.985,
+          "median": 1.972,
+          "min": 1.948,
+          "max": 2.036
+        },
+        "tokens_per_sec_summary": {
+          "n": 3,
+          "mean": 64.503,
+          "median": 64.92,
+          "min": 62.87,
+          "max": 65.72
+        }
+      },
+      "sequential_short_stream": {
+        "requests": [
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 1.969,
+            "ttft_s": 0.114,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 1.971,
+            "ttft_s": 0.11,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 1.982,
+            "ttft_s": 0.124,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          }
+        ],
+        "ttft_summary": {
+          "n": 3,
+          "mean": 0.116,
+          "median": 0.114,
+          "min": 0.11,
+          "max": 0.124
+        },
+        "latency_summary": {
+          "n": 3,
+          "mean": 1.974,
+          "median": 1.971,
+          "min": 1.969,
+          "max": 1.982
+        }
+      },
+      "long_context_prefill": {
+        "status": 200,
+        "error": null,
+        "latency_s": 1.947,
+        "ttft_s": 1.947,
+        "prompt_tokens": 420,
+        "completion_tokens": 128,
+        "tokens_per_sec": 65.73
+      },
+      "concurrency_burst": {
+        "concurrency": 6,
+        "wall_time_s": 3.926,
+        "success_count": 2,
+        "failed_count": 4,
+        "failed_details": [
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.501,
+            "ttft_s": 0.501,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.501,
+            "ttft_s": 0.501,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.504,
+            "ttft_s": 0.504,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.506,
+            "ttft_s": 0.506,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          }
+        ],
+        "per_request_latency_summary": {
+          "n": 2,
+          "mean": 2.935,
+          "median": 2.935,
+          "min": 1.948,
+          "max": 3.922
+        },
+        "aggregate_tokens_per_sec": 65.21,
+        "requests": [
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.501,
+            "ttft_s": 0.501,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.501,
+            "ttft_s": 0.501,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.504,
+            "ttft_s": 0.504,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 408,
+            "error": "json parse failed: Expecting value: line 1 column 1 (char 0); raw[:200]=b''",
+            "latency_s": 0.506,
+            "ttft_s": 0.506,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "tokens_per_sec": null
+          },
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 1.948,
+            "ttft_s": 1.948,
+            "prompt_tokens": 23,
+            "completion_tokens": 128,
+            "tokens_per_sec": 65.7
+          },
+          {
+            "status": 200,
+            "error": null,
+            "latency_s": 3.922,
+            "ttft_s": 3.922,
+            "prompt_tokens": 23,
+            "completion_tokens": 128,
+            "tokens_per_sec": 32.64
+          }
+        ]
+      }
+    },
+    "metrics_before": {
+      "r0": {
+        "cache_hit_rate": [
+          0.0
+        ],
+        "mamba_usage": [
+          0.0
+        ],
+        "spec_accept_length": [
+          1.0
+        ],
+        "spec_accept_rate": [
+          0.0
+        ],
+        "spec_verify_calls_total": [
+          29277.0
+        ]
+      },
+      "r1": {
+        "cache_hit_rate": [
+          0.0
+        ],
+        "mamba_usage": [
+          0.0
+        ],
+        "spec_accept_length": [
+          1.25
+        ],
+        "spec_accept_rate": [
+          0.08333333333333333
+        ],
+        "spec_verify_calls_total": [
+          27821.0
+        ]
+      }
+    },
+    "metrics_after": {
+      "r0": {
+        "cache_hit_rate": [
+          0.0
+        ],
+        "mamba_usage": [
+          0.0
+        ],
+        "spec_accept_length": [
+          1.0
+        ],
+        "spec_accept_rate": [
+          0.0
+        ],
+        "spec_verify_calls_total": [
+          29277.0
+        ]
+      },
+      "r1": {
+        "cache_hit_rate": [
+          0.0
+        ],
+        "mamba_usage": [
+          0.08823529411764706
+        ],
+        "spec_accept_length": [
+          3.0
+        ],
+        "spec_accept_rate": [
+          0.6666666666666666
+        ],
+        "spec_verify_calls_total": [
+          28195.0
+        ]
+      }
+    }
+  }
+}
