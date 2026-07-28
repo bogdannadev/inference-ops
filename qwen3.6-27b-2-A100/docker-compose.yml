@@ -105,19 +105,47 @@ services:
   # Replica 0 — physical GPU 0, NUMA node 0 cores
   # Internal endpoint: http://qwen36-27b-r0:8001
   #
-  # Flag-group rationale (applies to both replicas):
-  #   context/tokens : 184320 context cap (post-outage guard against the
-  #                    ~244K-token requests); max-total-tokens 190000 must
-  #                    EXCEED the context window — never below it.
+  # Flag-group rationale (applies to both replicas) — VERIFIED 2026-07-28
+  # against the live process (/get_server_info) and the boot log, not assumed.
+  #
+  #   context/tokens : --context-length 184320 is a guard against the
+  #                    ~244K-token requests seen in the outage.
+  #                    CAVEAT: --max-total-tokens 190000 is NOT what the
+  #                    engine uses. Memory profiling wins, and the real pool
+  #                    is max_total_num_tokens=117760 — 66,560 SHORT of the
+  #                    declared context window. A request between 117,760 and
+  #                    184,320 tokens passes the length check and then cannot
+  #                    be allocated. Closing that gap needs a higher
+  #                    --mem-fraction-static, not a bigger --max-total-tokens
+  #                    (which the docs call a debugging knob / ceiling).
+  #
   #   prefill/decode : chunked-prefill and max-prefill aligned at 16384
   #                    (previous 32768/16384 split meant the effective
   #                    chunk was 16384 anyway — one number, stated once).
-  #                    max-running-requests 1 is the conservative memory
-  #                    guard while EAGLE+HiCache co-exist; the decode graph
-  #                    is captured to bs=2 as pre-paid headroom for raising
-  #                    it after a clean #29857 boot check.
-  #   mixed-chunk    : legal under EAGLE per current builds — confirm from
-  #                    boot logs it is not silently disabled.
+  #                    --max-running-requests 2 (raised from 1 on 2026-07-28):
+  #                    at ~65 KB/token, two concurrent 36K-token requests use
+  #                    72K of the 117,760-token pool and leave ~46K for the
+  #                    prefix cache. THREE would leave only ~10K and thrash
+  #                    the cache — do not raise past 2 without more KV.
+  #
+  #   cuda graph     : --cuda-graph-max-bs-decode is CLAMPED to
+  #                    max-running-requests. At max-running-requests 1 the boot
+  #                    log captured bs=[1] for target-verify, draft-decode and
+  #                    draft-extend despite this flag saying 2 — so there was
+  #                    never any "pre-paid headroom". It becomes real only now
+  #                    that max-running-requests is 2.
+  #
+  #   queueing       : --max-queued-requests 32 is the ONLY admission control
+  #                    in the stack (the router's token bucket was removed —
+  #                    see the router block). Without it the worker queue is
+  #                    unbounded and overload turns into a silent wait until
+  #                    --request-timeout-secs 900 fires. Bounded queue => fast
+  #                    503 instead of a 15-minute stall.
+  #
+  #   mixed-chunk    : REMOVED 2026-07-28. It never took effect — boot log:
+  #                    "Mixed chunked prefill is disabled because of using
+  #                    eagle speculative decoding." Do not re-add while EAGLE
+  #                    is on; it is silently ignored.
   # ---------------------------------------------------------------------------
   qwen36-27b-r0:
     <<: *replica-common
@@ -143,6 +171,21 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
 
+    # NOTE: `command: >` is a FOLDED SCALAR — a `#` line inside it is literal
+    # argv text, not a comment, and compose rejects the file. Keep annotations
+    # out here, above the key.
+    #
+    # REJECTED 2026-07-28: --enable-gdn-replayssm-spec (RFC #28511 Part B).
+    # Preconditions looked right (GDN model, --speculative-eagle-topk 1), but
+    # the build refuses it outright:
+    #   ValueError: --enable-gdn-replayssm-spec is not yet compatible with
+    #   mamba extra_buffer (radix prefix caching); use --disable-radix-cache
+    #   or --mamba-radix-cache-strategy no_buffer.
+    # Buying it means surrendering radix prefix caching, which is measured at
+    # 36x on this workload (16K-token prompt: 12.278s cold TTFT -> 0.338s
+    # warm). Coding-agent traffic shares a system prompt, so the cache is the
+    # single largest lever we have. Do not re-enable until upstream makes the
+    # kernel compatible with extra_buffer.
     command: >
       --model-path Qwen/Qwen3.6-27B
       --served-model-name qwen36-27b
@@ -162,9 +205,9 @@ services:
       --page-size 64
       --chunked-prefill-size 16384
       --max-prefill-tokens 16384
-      --max-running-requests 1
+      --max-running-requests 2
+      --max-queued-requests 32
       --cuda-graph-max-bs-decode 2
-      --enable-mixed-chunk
       --schedule-policy lpm
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
@@ -243,9 +286,9 @@ services:
       --page-size 64
       --chunked-prefill-size 16384
       --max-prefill-tokens 16384
-      --max-running-requests 1
+      --max-running-requests 2
+      --max-queued-requests 32
       --cuda-graph-max-bs-decode 2
-      --enable-mixed-chunk
       --schedule-policy lpm
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
@@ -319,7 +362,7 @@ services:
     command: >
       --host 0.0.0.0
       --port 8000
-      --policy power_of_two
+      --policy round_robin
       --worker-urls http://qwen36-27b-r0:8001 http://qwen36-27b-r1:8002
       --request-timeout-secs 900
       --prometheus-host 0.0.0.0
