@@ -533,6 +533,21 @@ services:
   #   omitted here so backpressure comes from worker queues, not an
   #   arbitrary bucket. Revisit if unbounded queueing shows up under real load.
   # ---------------------------------------------------------------------------
+  # Rolling a replica: use ./deploy/roll-replica.sh <r0|r1>. Do NOT
+  # `docker compose restart qwen36-27b-router` afterwards — that step is
+  # obsolete (measured 2026-07-31b). The router tracks workers by URL and
+  # re-adds a returning worker on its own, so the restart was never required;
+  # worse, it drops in-flight requests on BOTH replicas. What the restart also
+  # never fixed is that a naive roll leaves the router sending traffic to a
+  # DEAD worker for ~159 s (health-check-interval 60 s x failure-threshold 3),
+  # then wastes ~71 s before re-adding it (interval x success-threshold 2).
+  # The script removes both windows via the router's REST API:
+  #   GET /workers  |  DELETE /workers/<id>  |  POST /workers {"url": ...}
+  #
+  # --health-check-interval-secs is left at the 60 s default ON PURPOSE: the
+  # worker /health endpoint is a GENERATION probe costing ~1.0 s per call, so
+  # tightening it to shrink the lag would spend real GPU time. Draining makes
+  # the lag irrelevant instead.
   qwen36-27b-router:
     image: *sglang-image
     container_name: qwen36-27b-router
