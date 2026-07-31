@@ -1,0 +1,71 @@
+{
+  "label": "phase1_prefillgraph2048",
+  "host": "qwen36-27b-r1",
+  "port": 8002,
+  "metrics_before": {
+    "gen_throughput": 0.0,
+    "cache_hit_rate": 0.0,
+    "mamba_used_tokens": 0.0,
+    "spec_accept_length": 0.0,
+    "spec_accept_rate": 0.0,
+    "spec_verify_calls_total": 3.0
+  },
+  "decode_runs": [
+    {
+      "status": 200,
+      "latency_s": 6.817,
+      "prompt_tokens": 24,
+      "completion_tokens": 512,
+      "decode_tok_s": 75.11,
+      "finish_reason": "length",
+      "text": "",
+      "reasoning": "Here's a thinking process:\n\n1.  **Understand User Request:**\n   - **Task:** Write a Python function that merges two sorted lists.\n   - **Requirement:** Explain each step.\n   - **Input:** Two sorted lists (ascending order is standard, but I should clarify/assume it).\n   - **Output:** A single sorted list containing all elements from both input lists.\n\n2.  **Identify Key Algorithm:**\n   - The classic approach is the \"merge\" step from Merge Sort.\n   - It uses two pointers, one for each list, compares elements, and appends the smaller one to the result list.\n   - Time complexity: O(n + m) where n and m are lengths of the lists.\n   - Space complexity: O(n + m) for the result list.\n\n3.  **Draft the Function (Mental):**\n   ```python\n   def merge_sorted_lists(list1, list2):\n       merged = []\n       i, j = 0, 0\n       while i < len(list1) and j < len(list2):\n           if list1[i] <= list2[j]:\n               merged.append(list1[i])\n               i += 1\n           else:\n               merged.append(list2[j])\n               j += 1\n       # Append remaining elements\n       merged.extend(list1[i:])\n       merged.extend(list2[j:])\n       return merged\n   ```\n\n4.  **Verify Correctness:**\n   - Handles empty lists? Yes.\n   - Handles lists of different lengths? Yes.\n   - Maintains sorted order? Yes.\n   - Handles duplicates? Yes (<= ensures stability).\n   - Edge cases: Both empty, one empty, all elements in one smaller/larger. All covered.\n\n5.  **Structure the Explanation:**\n   - Start with the function code.\n   - Break down the explanation step-by-step.\n   - Cover: initialization, comparison loop, handling leftovers, return.\n   - Mention time/space complexity.\n   - Provide an example usage.\n\n6.  **Draft the Response (Mental Refinement):**\n   *(Code Block)*\n   ```python\n   def merge_sorted_lists(list1, list2):\n       merged = []\n       i, j = 0, 0\n\n       # Step 1: Compare elements from both lists\n       while i < len(list"
+    },
+    {
+      "status": 200,
+      "latency_s": 8.029,
+      "prompt_tokens": 27,
+      "completion_tokens": 512,
+      "decode_tok_s": 63.77,
+      "finish_reason": "length",
+      "text": "",
+      "reasoning": "Here's a thinking process:\n\n1.  **Understand User Query:** The user wants an explanation of how a B-tree index speeds up a range query in a relational database.\n\n2.  **Identify Key Concepts:**\n   - B-tree index structure\n   - Range query definition\n   - How B-trees work (nodes, keys, pointers, balanced tree, sorted order)\n   - How range queries are executed using B-trees\n   - Comparison with full table scan (why it's faster)\n   - Step-by-step process of a range query on a B-tree\n   - Time complexity/efficiency\n\n3.  **Deconstruct B-tree Structure:**\n   - Balanced tree structure\n   - Each node contains multiple keys and pointers to child nodes\n   - Keys are sorted within each node\n   - All leaf nodes are at the same depth\n   - Leaf nodes contain actual data pointers (or data itself) and are linked together (often via a doubly-linked list)\n   - Internal nodes guide the search\n\n4.  **Define Range Query:**\n   - Query that retrieves records where a column value falls within a specified range (e.g., `WHERE age BETWEEN 20 AND 30` or `WHERE price > 100`)\n   - Requires retrieving multiple contiguous values in sorted order\n\n5.  **Explain How B-tree Speeds Up Range Queries:**\n   - **Sorted Order:** B-trees maintain keys in sorted order, which is crucial for range queries.\n   - **Efficient Navigation:** Instead of scanning every row, the database uses the B-tree to quickly locate the starting point of the range.\n   - **Leaf Node Traversal:** Once the starting leaf is found, the database can traverse the linked leaf nodes to fetch all matching records in order without backtracking up the tree.\n   - **Reduced I/O:** B-trees are optimized for disk I/O (large node size matches disk block size), minimizing the number of disk reads.\n   - **Logarithmic Search:** Finding the start of the range takes O(log N) time, and scanning the range takes O(K) time where K is the number of matching rows. Total: O(log N + K), much better than O(N) for a full table scan.\n\n6.  **Structure the Explanation:**\n   - Introduction: What is a B-tree index and what is a range query?\n   - Key Properties of B-t"
+    },
+    {
+      "status": 200,
+      "latency_s": 7.632,
+      "prompt_tokens": 21,
+      "completion_tokens": 512,
+      "decode_tok_s": 67.08,
+      "finish_reason": "length",
+      "text": "",
+      "reasoning": "Here's a thinking process:\n\n1.  **Understand User Query:** The user asks to \"Describe the difference between optimistic and pessimistic concurrency control.\" This is a classic database/systems concept. I need to explain both approaches, highlight their key differences, and provide context on when each is used.\n\n2.  **Define Core Concepts:**\n   - **Concurrency Control:** Mechanisms to manage simultaneous access to shared resources (like database records) to prevent conflicts and ensure data consistency.\n   - **Pessimistic Concurrency Control (PCC):** Assumes conflicts are likely, so it prevents them by locking resources before access/modification.\n   - **Optimistic Concurrency Control (OCC):** Assumes conflicts are rare, so it allows free access/modification but checks for conflicts before committing changes.\n\n3.  **Key Differences to Cover:**\n   - Assumption about conflict frequency\n   - Mechanism/How it works\n   - Performance characteristics (read vs. write heavy, contention levels)\n   - Overhead (locking vs. validation/rollback)\n   - Use cases/When to choose which\n   - Examples/Implementation details\n\n4.  **Structure the Response:**\n   - Introduction: Briefly define concurrency control and the two approaches\n   - Pessimistic Concurrency Control: Definition, how it works, pros, cons, use cases\n   - Optimistic Concurrency Control: Definition, how it works, pros, cons, use cases\n   - Direct Comparison/Key Differences (table or bullet points for clarity)\n   - Summary/Recommendation on when to use which\n   - Keep it concise, technical but accessible\n\n5.  **Draft - Section by Section:**\n   *(Introduction)*\n   Concurrency control ensures that multiple transactions accessing shared data simultaneously don\u2019t corrupt it or produce inconsistent results. The two main strategies are pessimistic and optimistic concurrency control, which differ fundamentally in how they anticipate and handle conflicts.\n\n   *(Pessimistic Concurrency Control)*\n   - **Assumption:** Conflicts are likely, so prevent them upfront.\n   - **Mechanism:** Uses locks (shared/read locks, exclusive/write locks) to restrict access to data while a transaction is in progress. A transaction must acquire a lock before reading/writing, and other transactions are blocked until the lock is released.\n   - **Pros:** Guarantees consistency; simple to reason about; works well under high contention.\n   - **Cons:** Can cause blocking"
+    }
+  ],
+  "decode_tok_s_mean": 68.65,
+  "long_prompt_stream": {
+    "status": 200,
+    "latency_s": 17.344,
+    "ttft_s": 13.87,
+    "stream_chunks": 75,
+    "decode_tok_s": 21.59
+  },
+  "greedy_probe": {
+    "status": 200,
+    "latency_s": 6.047,
+    "prompt_tokens": 25,
+    "completion_tokens": 493,
+    "decode_tok_s": 81.53,
+    "finish_reason": "stop",
+    "text": "\n\n2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37",
+    "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - Request: \"List the first 12 prime numbers, comma separated, nothing else.\"\n   - Key constraints: \n     - First 12 prime numbers\n     - Comma separated\n     - Nothing else (no extra text, explanations, etc.)\n\n2.  **Identify Prime Numbers:**\n   - Prime numbers are natural numbers greater than 1 that have no positive divisors other than 1 and themselves.\n   - Let's list them in order:\n     1. 2\n     2. 3\n     3. 5\n     4. 7\n     5. 11\n     6. 13\n     7. 17\n     8. 19\n     9. 23\n     10. 29\n     11. 31\n     12. 37\n   - Check: Are these correct? Yes. 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37. Count is 12.\n\n3.  **Format Output:**\n   - Comma separated: \"2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37\"\n   - Constraint check: \"nothing else\" means I should output exactly that string and nothing more.\n\n4.  **Final Output Generation:**\n   - Just the comma-separated list.\n   - \"2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37\"\n\n   Double-check: First 12 primes? Yes. Comma separated? Yes. Nothing else? Yes.\n   Ready.\u2705\n"
+  },
+  "metrics_after": {
+    "gen_throughput": 80.6332390795236,
+    "cache_hit_rate": 0.0,
+    "mamba_used_tokens": 3.0,
+    "spec_accept_length": 3.6,
+    "spec_accept_rate": 0.8666666666666667,
+    "spec_verify_calls_total": 708.0
+  }
+}

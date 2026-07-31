@@ -18,11 +18,89 @@
 #   - Only Caddy publishes host ports (80/443)
 #
 # HiCache:
-#   ENABLED. The old hybrid Mamba/Attention crash
-#   ("Destination indices must be a CUDA tensor") was retired by the
-#   UnifiedRadixTree refactor (v0.5.13+, PR #27759). Flag set below is the
-#   compatibility-first pairing (direct / page_first_direct) validated on
-#   this node. --hicache-size is PER RANK, in GB of host RAM.
+#   REMOVED 2026-07-31. It worked — it just never got used. Measured on the
+#   live replicas after 2 days of production traffic:
+#     cached_tokens device   r0 7,496,896   r1 8,026,048
+#     cached_tokens host     r0    32,768   r1    34,816   -> 0.43% of hits
+#   Root cause: one shared system prompt stays permanently hot in the
+#   160,768-token DEVICE tier and is never evicted, so the ~1.95M-token host
+#   tier is written on every miss and read almost never. Cost of that 0.43%:
+#   ~253 GiB RSS per replica (506 GiB total) and ~4m10s added to every boot.
+#
+#   The 36x TTFT win (16K prompt, 12.278s cold -> 0.338s warm) is the DEVICE
+#   radix tree, which is a separate mechanism and is UNAFFECTED —
+#   disable_radix_cache stays False and mamba_radix_cache_strategy stays
+#   extra_buffer. Removing HiCache does not remove prefix caching.
+#
+#   BOOT CHECK: max_total_num_tokens must still read 160768. The KV pool is
+#   profiled before any HiCache allocation, so it should be unchanged —
+#   confirm it rather than assuming.
+#
+#   Flags removed (both replicas): --enable-hierarchical-cache,
+#   --hicache-size 128, --hicache-io-backend direct,
+#   --hicache-mem-layout page_first_direct, --hicache-write-policy write_through.
+#   Re-add only if traffic gains a large COLD working set that the device tier
+#   cannot hold — that is the workload HiCache is for.
+#
+# Phase 1 tuning — APPLIED TO BOTH REPLICAS 2026-07-31.
+#
+#   The A/B that produced this configuration is finished. r0 and r1 are
+#   byte-identical again apart from port / GPU / cpuset; that rule is back in
+#   force. Full measurements: tuning/docs/RESULTS.md.
+#
+#   What changed, and why each part is here:
+#
+#   --max-running-requests 4 (was 2), --cuda-graph-max-bs-decode 4 (was 2)
+#       The pair's admission cap was 4, so every concurrency above 4 ran as
+#       WAVES of 4 — wall(n) tracked ceil(n/4) x wall(4) and aggregate sat flat
+#       at ~250 tok/s from c=2 to c=12. It was never GPU saturation.
+#       Measured effect, r1 direct (no router), mean of 2 passes:
+#         c=4  128.78 -> 231.81 tok/s  (1.80x)
+#         c=8  126.08 -> 241.08 tok/s  (1.91x)
+#         c=12 124.25 -> 233.85 tok/s  (1.88x)
+#       c=1 and c=2 unchanged, as they must be — they sit below the old cap.
+#       The graph flag MUST move with the request cap; it clamps to it, and
+#       leaving it at 2 silently caps the benefit.
+#
+#   HiCache removed (5 flags)
+#       Served 0.43% of cache hits for 253 GiB RSS per replica and ~4 min of
+#       boot. The device radix tree is a separate mechanism and is untouched.
+#
+#   --cuda-graph-max-bs-prefill 2048
+#       Capturing 74 buckets up to 16384 tokens cost 5.49 GB and 222 s of boot.
+#       Cold TTFT on a novel ~42K prompt is IDENTICAL with and without those
+#       large buckets: 22.681 s at max_bs 16384 vs 22.717 s at 2048, two seeds
+#       each. At that prompt size prefill is compute-bound, so eliminating
+#       kernel-launch overhead buys nothing. Now 1.21 GB and 58 s.
+#       NOTE: an apparent 12.4 -> 13.9 s TTFT regression was measured first and
+#       was WRONG — the baseline container had prior traffic. Always compare
+#       cold-to-cold, with text neither replica has seen.
+#
+#   --mem-fraction-static 0.92 (was 0.90)
+#       Raising max-running-requests enlarged the scheduler's per-request
+#       working-space reserve, which is subtracted BEFORE the KV pool is sized.
+#       max_total_num_tokens fell 160768 -> 151168, BELOW the served
+#       --context-length 160000. That was user-visible: a 154,997-token request
+#       returned 200 on the old config and 400 on the new one
+#       ("exceeds the maximum allowed length (151162 tokens)"). Under
+#       round-robin routing that is a coin-flip failure — worse than a
+#       consistently lower limit.
+#       Trimming the prefill graph did NOT fix it: the pool is sized from a
+#       static mem-fraction budget and does not account for actual graph
+#       consumption, so the freed 4.28 GB simply went unused. What it did buy
+#       was the headroom to raise mem-fraction safely.
+#       Result: max_total_num_tokens = 169792 — 9,024 ABOVE the original —
+#       with 8.37 GB still free.
+#
+#   --enable-forward-pass-metrics
+#       Per-pass timing into Prometheus, for the next tuning phase.
+#
+#   Verified unchanged: single-stream decode (68.32 -> 68.56 tok/s), cold TTFT,
+#   and greedy output — the determinism probe returns a byte-identical string
+#   and an identical 1071-char reasoning trace.
+#
+#   Boot to healthy is now ~181 s, down from ~345 s and from ~9 min originally.
+# <<<
 #
 # Speculative decoding:
 #   EAGLE against the model's bundled MTP head (mtp.safetensors), per the
@@ -40,9 +118,14 @@
 #   http://qwen36-27b-router:8000
 # =============================================================================
 
-# PIN BY DIGEST before production (guide §2):
+# PINNED BY DIGEST 2026-07-28. Both replicas + the router must run the SAME
+# engine build; the floating :dev-cu13 tag silently moved r0 onto a new build
+# mid-session while r1 stayed on the old one. Digest pinning makes that
+# impossible — `docker compose up -d` can no longer change the engine.
+# To bump: pull the tag, re-read the digest, paste it here, roll ONE replica
+# at a time, and re-run benchmarks/run_worker.sh against both.
 #   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:dev-cu13
-x-sglang-image: &sglang-image lmsysorg/sglang:dev-cu13   # -> dev-cu13@sha256:...
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:647d7bb04632b49ff12a9716856f087cfb8171f4f42d9d11f8f06b5c1c3399b4
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -108,32 +191,116 @@ services:
   # Flag-group rationale (applies to both replicas) — VERIFIED 2026-07-28
   # against the live process (/get_server_info) and the boot log, not assumed.
   #
-  #   context/tokens : --context-length 184320 is a guard against the
-  #                    ~244K-token requests seen in the outage.
-  #                    CAVEAT: --max-total-tokens 190000 is NOT what the
-  #                    engine uses. Memory profiling wins, and the real pool
-  #                    is max_total_num_tokens=117760 — 66,560 SHORT of the
-  #                    declared context window. A request between 117,760 and
-  #                    184,320 tokens passes the length check and then cannot
-  #                    be allocated. Closing that gap needs a higher
-  #                    --mem-fraction-static, not a bigger --max-total-tokens
-  #                    (which the docs call a debugging knob / ceiling).
+  #   context/tokens : --context-length 169000 (was 160000, raised 2026-07-31b).
+  #                    It sits just under the measured 169,792-token KV pool,
+  #                    which is memory ALREADY PAID FOR — Phase 1 grew the pool
+  #                    to 169,792 but left the flag at 160,000, so ~9,800 tokens
+  #                    per replica were bought and never advertised. Raising the
+  #                    flag costs zero VRAM: the pool is preallocated at boot
+  #                    from --mem-fraction-static and does not move with this
+  #                    flag. Page size is 64 and 169,792 = 64 x 2,653, so 169,000
+  #                    leaves 792 tokens of slack for the EAGLE draft tokens that
+  #                    also occupy pool slots.
+  #
+  #                    --max-total-tokens REMOVED 2026-07-31b. It was 190000 and
+  #                    inert only by coincidence (169,792 < 190,000). It is a
+  #                    documented DEBUGGING ceiling, not a capacity knob, and it
+  #                    would have silently capped the pool the moment any future
+  #                    change pushed it past 190,000. Memory profiling governs
+  #                    pool size; there is no reason for a second, weaker ceiling
+  #                    that fails quietly. Do not reintroduce it.
+  #
+  #                    WHY NOT HIGHER (measured 2026-07-31b, corrects an earlier
+  #                    assumption): the boot log's "available_gpu_mem = 8.37 GB"
+  #                    is NOT spendable — it is sampled BEFORE the CUDA graphs
+  #                    (1.55 GiB) and the FlashInfer workspaces + CUDA context
+  #                    (~1.2 GiB) are allocated. True free VRAM at steady state
+  #                    is ~4.4 GiB (nvidia-smi: 4,469 MiB, both GPUs identical).
+  #                    The static budget is fully consumed and closes exactly:
+  #                      0.92 x 79.27 GiB = 72.93 GiB budget
+  #                      weights 56.58 + mamba 5.46 + KV 11.00 = 73.04 GiB
+  #                    That remaining ~4.4 GiB is also the runtime working space
+  #                    for chunked prefill, so it cannot all be spent. Each +0.01
+  #                    of --mem-fraction-static buys ~12,500 tokens and costs
+  #                    ~0.79 GiB of it. The model's native 262,144 would need
+  #                    +5.98 GiB of KV at BF16 and is therefore NOT reachable on
+  #                    this footprint — see tuning/next-session/CONTEXT_262144.md,
+  #                    whose arithmetic assumed the 8.37 GB figure was real.
+  #
+  #                    Previously it advertised
+  #                    184320 while the pool held only 117760, so a request
+  #                    in between passed the length check and then failed to
+  #                    allocate. A client managing its own context budget was
+  #                    managing to a number 63% too large, which defeats the
+  #                    context management coding agents already do.
+  #                    Measured at --mem-fraction-static 0.90 (2026-07-28):
+  #                      max_total_num_tokens = 160768, free VRAM 5.73 GB
+  #                    vs 0.85: 112960 tokens, free 9.87 GB. Decode speed is
+  #                    IDENTICAL (68.97 vs 68.50 tok/s) — 0.90 buys capacity,
+  #                    not throughput. Stress at 2x 117,624-token prompts hit
+  #                    78,758/81,920 MiB = 96.1% with zero OOM; the pool is
+  #                    preallocated at boot and runtime demand is bounded by
+  #                    --chunked-prefill-size and --max-running-requests, so
+  #                    that 96% is mostly static, not a live high-water mark.
+  #                    NOTE: 160,768 tokens is the pool shared by ALL in-flight
+  #                    requests. Two concurrent 160K requests do not fit; the
+  #                    scheduler serialises/retracts rather than erroring. The
+  #                    practical concurrent ceiling is ~80K each.
+  #                    --max-total-tokens 190000 is inert (memory profiling
+  #                    wins, and 160768 < 190000). Docs call it a debugging
+  #                    ceiling. Left in place; do not tune capacity with it.
+  #
+  #   over-length    : --allow-auto-truncate stays OFF (default). Truncation is
+  #                    SILENT and lossy — the caller is never told part of the
+  #                    prompt was dropped, so an agent can lose its system
+  #                    prompt or tool definitions and still get a confident
+  #                    answer. A hard 400 is also what the cloud APIs this
+  #                    team already uses return for an over-long request, so
+  #                    the loud failure is the FAMILIAR behaviour, not the
+  #                    surprising one. Error text is clear and actionable:
+  #                    "Input length (N tokens) exceeds the maximum allowed
+  #                     length (M tokens)."
   #
   #   prefill/decode : chunked-prefill and max-prefill aligned at 16384
   #                    (previous 32768/16384 split meant the effective
   #                    chunk was 16384 anyway — one number, stated once).
-  #                    --max-running-requests 2 (raised from 1 on 2026-07-28):
-  #                    at ~65 KB/token, two concurrent 36K-token requests use
-  #                    72K of the 117,760-token pool and leave ~46K for the
-  #                    prefix cache. THREE would leave only ~10K and thrash
-  #                    the cache — do not raise past 2 without more KV.
+  #                    --max-running-requests 4 (1 -> 2 on 2026-07-28,
+  #                    2 -> 4 on 2026-07-31). Four concurrent 36K-token
+  #                    requests use 144K of the 160,768-token pool; the Mamba
+  #                    state pool costs 4 slots per running request out of 48,
+  #                    so 16/48 — KV is the tighter of the two, not Mamba.
+  #
+  #                    Why 2 was too low: re-reading ladder.py, split_r0/r1 are
+  #                    spec_verify_calls deltas counted PER REQUEST, and
+  #                    aggregate_tok_s is tokens/wall. With 2 per replica the
+  #                    admission cap is 4 across the pair, so every ladder rung
+  #                    above 4 ran as WAVES of 4. Modelling wall as
+  #                    ceil(c/4) x 3.057s predicts 6.114 / 6.114 / 9.171 s at
+  #                    c=6/8/12 vs measured 5.951 / 6.560 / 9.961 — and c=6
+  #                    is visibly bimodal (p50 3.232 = one wave, max 5.948 =
+  #                    two). The ~240 tok/s "plateau" was never GPU saturation;
+  #                    it was c=4 replayed. See benchmarks/TUNING_PLAN.md.
+  #
+  #                    Headroom check: at c=4, r0 did 123 verify calls in
+  #                    3.057 s with 2 concurrent requests = 20.12 BATCHED
+  #                    forwards/s. 54 GB of BF16 weights x 20.12 = 1086 GB/s,
+  #                    56.1% of A100 HBM peak. Decode GEMMs at batch 2-4 have
+  #                    arithmetic intensity ~2-4 FLOP/byte against A100's BF16
+  #                    balance point of ~156, so a wider batch divides the same
+  #                    forward rate across more streams rather than slowing it.
+  #                    Accept length was flat under load (3.23 at c=1 ->
+  #                    3.21 at c=6), so batching does not cost speculation.
   #
   #   cuda graph     : --cuda-graph-max-bs-decode is CLAMPED to
-  #                    max-running-requests. At max-running-requests 1 the boot
-  #                    log captured bs=[1] for target-verify, draft-decode and
-  #                    draft-extend despite this flag saying 2 — so there was
-  #                    never any "pre-paid headroom". It becomes real only now
-  #                    that max-running-requests is 2.
+  #                    max-running-requests, so it MUST move with it or the
+  #                    raise is silently capped. At max-running-requests 1 the
+  #                    boot log captured bs=[1] for target-verify, draft-decode
+  #                    and draft-extend despite this flag saying 2 — there was
+  #                    never any "pre-paid headroom". Live server_args at
+  #                    max-running-requests 2 showed decode bs=[1, 2]; after
+  #                    this change expect bs=[1, 2, 3, 4]. VERIFY in the boot
+  #                    log — if it still reads [1, 2], the clamp did not lift
+  #                    and the concurrency raise bought nothing.
   #
   #   queueing       : --max-queued-requests 32 is the ONLY admission control
   #                    in the stack (the router's token bucket was removed —
@@ -194,9 +361,8 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 184320
-      --max-total-tokens 190000
-      --mem-fraction-static 0.85
+      --context-length 169000
+      --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mamba-radix-cache-strategy extra_buffer
@@ -205,9 +371,10 @@ services:
       --page-size 64
       --chunked-prefill-size 16384
       --max-prefill-tokens 16384
-      --max-running-requests 2
+      --max-running-requests 4
       --max-queued-requests 32
-      --cuda-graph-max-bs-decode 2
+      --cuda-graph-max-bs-decode 4
+      --cuda-graph-max-bs-prefill 2048
       --schedule-policy lpm
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
@@ -215,15 +382,13 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
+      --enable-forward-pass-metrics
+      --log-requests
+      --log-requests-level 1
       --speculative-algorithm EAGLE
       --speculative-num-draft-tokens 4
       --speculative-num-steps 3
       --speculative-eagle-topk 1
-      --enable-hierarchical-cache
-      --hicache-size 128
-      --hicache-io-backend direct
-      --hicache-mem-layout page_first_direct
-      --hicache-write-policy write_through
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
@@ -247,9 +412,35 @@ services:
 
     cpuset: "28-47"
 
-    depends_on:
-      qwen36-27b-r0:
-        condition: service_healthy
+    # NO depends_on — REMOVED 2026-07-28. r0 and r1 are interchangeable peers,
+    # not layers. `depends_on: qwen36-27b-r0: condition: service_healthy` used
+    # to live here and was a single point of failure:
+    #
+    #   - r1 could not START while r0 was unhealthy, so losing r0 left ZERO
+    #     serving replicas instead of one — the opposite of what two are for.
+    #   - `docker compose up -d qwen36-27b-r1` silently pulled r0 in and
+    #     recreated BOTH at once (double outage, 2026-07-28), then serialised
+    #     the boots, turning a ~9 min roll into ~18 min.
+    #
+    # It also bought less than it looked like: depends_on only orders `up`, and
+    # `restart: unless-stopped` bypasses it entirely on a host reboot — so the
+    # ordering evaporated exactly when it would have mattered.
+    #
+    # Parallel boot is safe: separate GPUs, and with HiCache gone the host-RAM
+    # question is moot. (The old note here read "831 GB free against 128 GB of
+    # --hicache-size per replica" and was wrong by ~2x anyway: --hicache-size
+    # sizes the KV tier ONLY. The Mamba tier (128.02 GB) and draft tier (8 GB)
+    # were allocated on top, for 264 GB per replica, not 128.)
+    #
+    # STILL roll one replica at a time, so the other keeps serving:
+    #     docker compose up -d --no-deps qwen36-27b-r1
+    #     # wait for healthy (~9 min), then
+    #     docker compose up -d --no-deps qwen36-27b-r0
+    #     docker compose restart qwen36-27b-router   # see router block
+    # Keep --no-deps: it is still what stops a shared-anchor config change
+    # (e.g. the image digest) from recreating both replicas at once.
+    # NEVER pass --remove-orphans here: it would DELETE qwen3-emb, grafana,
+    # prometheus and dcgm, which are not part of this compose project.
 
     expose:
       - "8002"
@@ -275,9 +466,8 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 184320
-      --max-total-tokens 190000
-      --mem-fraction-static 0.85
+      --context-length 169000
+      --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mamba-radix-cache-strategy extra_buffer
@@ -286,9 +476,10 @@ services:
       --page-size 64
       --chunked-prefill-size 16384
       --max-prefill-tokens 16384
-      --max-running-requests 2
+      --max-running-requests 4
       --max-queued-requests 32
-      --cuda-graph-max-bs-decode 2
+      --cuda-graph-max-bs-decode 4
+      --cuda-graph-max-bs-prefill 2048
       --schedule-policy lpm
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
@@ -296,15 +487,13 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
+      --enable-forward-pass-metrics
+      --log-requests
+      --log-requests-level 1
       --speculative-algorithm EAGLE
       --speculative-num-draft-tokens 4
       --speculative-num-steps 3
       --speculative-eagle-topk 1
-      --enable-hierarchical-cache
-      --hicache-size 128
-      --hicache-io-backend direct
-      --hicache-mem-layout page_first_direct
-      --hicache-write-policy write_through
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
