@@ -1,0 +1,84 @@
+{
+  "budget_sweep": [
+    {
+      "status": 200,
+      "max_tokens": 256,
+      "completion_tokens": 256,
+      "finish_reason": "length",
+      "content_chars": 0,
+      "reasoning_chars": 924,
+      "content_empty": true,
+      "content_head": ""
+    },
+    {
+      "status": 200,
+      "max_tokens": 512,
+      "completion_tokens": 512,
+      "finish_reason": "length",
+      "content_chars": 0,
+      "reasoning_chars": 1799,
+      "content_empty": true,
+      "content_head": ""
+    },
+    {
+      "status": 200,
+      "max_tokens": 1024,
+      "completion_tokens": 984,
+      "finish_reason": "stop",
+      "content_chars": 506,
+      "reasoning_chars": 3026,
+      "content_empty": false,
+      "content_head": "\n\nHere's the refactored version:\n\n```python\ndef dupes(a, b):\n    set_b = set(b)\n    return [x for x in a if x in set_b]\n```\n\n**Why:**\n- **Performance:** The ori"
+    },
+    {
+      "status": 200,
+      "max_tokens": 2048,
+      "completion_tokens": 984,
+      "finish_reason": "stop",
+      "content_chars": 506,
+      "reasoning_chars": 3026,
+      "content_empty": false,
+      "content_head": "\n\nHere's the refactored version:\n\n```python\ndef dupes(a, b):\n    set_b = set(b)\n    return [x for x in a if x in set_b]\n```\n\n**Why:**\n- **Performance:** The ori"
+    },
+    {
+      "status": 200,
+      "max_tokens": 4096,
+      "completion_tokens": 984,
+      "finish_reason": "stop",
+      "content_chars": 506,
+      "reasoning_chars": 3026,
+      "content_empty": false,
+      "content_head": "\n\nHere's the refactored version:\n\n```python\ndef dupes(a, b):\n    set_b = set(b)\n    return [x for x in a if x in set_b]\n```\n\n**Why:**\n- **Performance:** The ori"
+    }
+  ],
+  "enable_thinking_false": {
+    "status": 200,
+    "max_tokens": 512,
+    "completion_tokens": 111,
+    "finish_reason": "stop",
+    "content_chars": 383,
+    "reasoning_chars": 0,
+    "content_empty": false,
+    "content_head": "```python\ndef dupes(a, b):\n    b_set = set(b)\n    return [x for x in a if x in b_set]\n```\n\n**Why:** Converting `b` to a set reduces the lookup time from O(n) to"
+  },
+  "no_think_suffix": {
+    "status": 200,
+    "max_tokens": 512,
+    "completion_tokens": 512,
+    "finish_reason": "length",
+    "content_chars": 0,
+    "reasoning_chars": 2001,
+    "content_empty": true,
+    "content_head": ""
+  },
+  "separate_reasoning_false": {
+    "status": 200,
+    "max_tokens": 1024,
+    "completion_tokens": 984,
+    "finish_reason": "stop",
+    "content_chars": 3540,
+    "reasoning_chars": 0,
+    "content_empty": false,
+    "content_head": "Here's a thinking process:\n\n1.  **Analyze the User Request:**\n   - **Input Function:** `dupes(a, b)` finds common elements between two lists `a` and `b` using n"
+  }
+}

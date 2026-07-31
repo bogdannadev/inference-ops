@@ -83,6 +83,34 @@ services:
     cap_add:
       - SYS_ADMIN
 
+    # -------------------------------------------------------------------
+    # Custom counter set, added 2026-07-31 for the kernel-tuning campaign.
+    #
+    # Until now this exporter ran on the image default counter file, which
+    # exposes ONLY DCGM_FI_DEV_* fields — 19 of them, none from the DCP
+    # profiling group. That means the stack could report power, clocks and
+    # framebuffer, but could NOT report SM occupancy, memory-interface
+    # activity, or tensor-pipe activity: precisely the three things the
+    # tuning work needs. DCGM_FI_DEV_GPU_UTIL is sample-based and reads
+    # ~100% under any load, so it answers nothing.
+    #
+    # The image's bundled dcp-metrics-included.csv is also insufficient —
+    # it is dated Feb 2022 and omits SM_ACTIVE (1002) and SM_OCCUPANCY
+    # (1003). Hence the custom file. See its header for the CUPTI/nsys
+    # counter-contention warning, which matters before any profiling run.
+    # -------------------------------------------------------------------
+    volumes:
+      - ./tuning/prometheus/dcgm-counters.csv:/etc/dcgm-exporter/tuning-counters.csv:ro
+
+    command:
+      - -f
+      - /etc/dcgm-exporter/tuning-counters.csv
+      # Collection interval in ms. Default 30000 is far coarser than a
+      # benchmark rung (3-10 s) and would return one sample per run, or
+      # none. 1000 ms costs nothing measurable on a 108-SM part.
+      - --collect-interval
+      - "1000"
+
     deploy:
       resources:
         reservations:

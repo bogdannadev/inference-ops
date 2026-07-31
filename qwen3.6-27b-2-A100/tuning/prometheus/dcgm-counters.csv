@@ -1,0 +1,42 @@
+# DCGM exporter counter set - qwen36-27b A100 tuning campaign,,
+# Format: DCGM_FIELD_NAME | prometheus type | help text,,
+#,,
+# PARSER RULES - dcgm-exporter uses a strict Go CSV reader that counts,,
+# fields on EVERY line including comments. A comment must therefore have,,
+# exactly 3 fields: end each one with a trailing double comma. Never put,,
+# a comma or a double-quote character inside comment text - a comma gives,,
+# a wrong-number-of-fields fatal and a quote gives a bare-quote parse,,
+# error. Either one crash-loops the container. Rationale and the,,
+# nsys/CUPTI conflict warning live in README.md next to this file.,,
+
+# --- Profiling / DCP group ---,,
+DCGM_FI_PROF_GR_ENGINE_ACTIVE,     gauge, Ratio of time the graphics engine is active
+DCGM_FI_PROF_SM_ACTIVE,            gauge, Fraction of SMs with at least one active warp
+DCGM_FI_PROF_SM_OCCUPANCY,         gauge, Resident warps as fraction of hardware maximum
+DCGM_FI_PROF_DRAM_ACTIVE,          gauge, Ratio of cycles the device memory interface is active
+DCGM_FI_PROF_PIPE_TENSOR_ACTIVE,   gauge, Ratio of cycles the tensor HMMA pipe is active
+DCGM_FI_PROF_PIPE_FP32_ACTIVE,     gauge, Ratio of cycles the fp32 FMA pipe is active
+DCGM_FI_PROF_PIPE_FP16_ACTIVE,     gauge, Ratio of cycles the fp16 HMMA pipe is active
+DCGM_FI_PROF_PCIE_TX_BYTES,        counter, PCIe TX bytes header plus payload
+DCGM_FI_PROF_PCIE_RX_BYTES,        counter, PCIe RX bytes header plus payload
+
+# --- Clock power thermal - confounder detection ---,,
+DCGM_FI_DEV_SM_CLOCK,              gauge, SM clock frequency in MHz
+DCGM_FI_DEV_MEM_CLOCK,             gauge, Memory clock frequency in MHz
+DCGM_FI_DEV_POWER_USAGE,           gauge, Power draw in W
+DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, Total energy consumption since boot in mJ
+DCGM_FI_DEV_GPU_TEMP,              gauge, GPU temperature in C
+DCGM_FI_DEV_MEMORY_TEMP,           gauge, HBM temperature in C
+
+# --- Memory and utilisation baseline ---,,
+DCGM_FI_DEV_FB_FREE,               gauge, Framebuffer memory free in MiB
+DCGM_FI_DEV_FB_USED,               gauge, Framebuffer memory used in MiB
+DCGM_FI_DEV_GPU_UTIL,              gauge, GPU utilization sample based
+DCGM_FI_DEV_MEM_COPY_UTIL,         gauge, Memory copy utilization
+
+# --- Health - a change here invalidates a run ---,,
+DCGM_FI_DEV_XID_ERRORS,            gauge, XID error code
+DCGM_FI_DEV_PCIE_REPLAY_COUNTER,   counter, PCIe replay counter
+DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS,   counter, Correctable remapped rows
+DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Uncorrectable remapped rows
+DCGM_FI_DEV_ROW_REMAP_FAILURE,     gauge, Row remap failure flag

@@ -18,6 +18,11 @@ scrape_configs:
   # ---------------------------------------------------------------------------
   - job_name: sglang-workers
     metrics_path: /metrics
+    # 5s, not the 15s global. A benchmark rung runs 3-10 s; at 15s a whole
+    # rung can fall between two scrapes. This is still too coarse for
+    # per-rung attribution — tuning/bench/capture.py polls /metrics directly
+    # for that. 5s is for dashboards and for spotting drift across a run.
+    scrape_interval: 5s
     static_configs:
       - targets:
           - qwen36-27b-r0:8001
@@ -44,6 +49,12 @@ scrape_configs:
   # DCGM — per-GPU hardware telemetry
   # ---------------------------------------------------------------------------
   - job_name: dcgm
+    # 5s to match the workers, so GPU-side and engine-side series line up on
+    # the same timeline. The exporter itself samples at 1000ms
+    # (--collect-interval in docker-compose.metrics.yml), so a 5s scrape
+    # reports the most recent 1s sample rather than a 5s average — enough to
+    # catch a clock drop or a power cap during a run.
+    scrape_interval: 5s
     static_configs:
       - targets:
           - dcgm-exporter:9400

@@ -1,0 +1,117 @@
+{"concurrency": 1, "wall_time_s": 2.854, "success": 1, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 70.09, "latency_mean_s": 2.852, "latency_p50_s": 2.852, "latency_max_s": 2.852, "split_r0": 0.0, "split_r1": 62.0}
+{"concurrency": 2, "wall_time_s": 2.891, "success": 2, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 138.34, "latency_mean_s": 2.864, "latency_p50_s": 2.89, "latency_max_s": 2.89, "split_r0": 62.0, "split_r1": 63.0}
+{"concurrency": 4, "wall_time_s": 3.818, "success": 4, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 209.56, "latency_mean_s": 3.365, "latency_p50_s": 3.593, "latency_max_s": 3.815, "split_r0": 123.0, "split_r1": 125.0}
+{"concurrency": 6, "wall_time_s": 3.774, "success": 6, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 317.98, "latency_mean_s": 3.36, "latency_p50_s": 3.545, "latency_max_s": 3.769, "split_r0": 195.0, "split_r1": 185.0}
+{"concurrency": 8, "wall_time_s": 3.713, "success": 8, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 430.91, "latency_mean_s": 3.28, "latency_p50_s": 3.259, "latency_max_s": 3.707, "split_r0": 263.0, "split_r1": 251.0}
+{"concurrency": 12, "wall_time_s": 6.576, "success": 12, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 364.97, "latency_mean_s": 4.326, "latency_p50_s": 3.427, "latency_max_s": 6.565, "split_r0": 401.0, "split_r1": 381.0}
+{"concurrency": 16, "wall_time_s": 6.856, "success": 16, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 466.73, "latency_mean_s": 4.907, "latency_p50_s": 6.268, "latency_max_s": 6.836, "split_r0": 517.0, "split_r1": 512.0}
+{"concurrency": 24, "wall_time_s": 10.841, "success": 24, "failed": 0, "failure_status_counts": {}, "aggregate_tok_s": 442.78, "latency_mean_s": 6.647, "latency_p50_s": 6.774, "latency_max_s": 10.82, "split_r0": 779.0, "split_r1": 773.0}
+
+{
+  "rungs": [
+    {
+      "concurrency": 1,
+      "wall_time_s": 2.854,
+      "success": 1,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 70.09,
+      "latency_mean_s": 2.852,
+      "latency_p50_s": 2.852,
+      "latency_max_s": 2.852,
+      "split_r0": 0.0,
+      "split_r1": 62.0
+    },
+    {
+      "concurrency": 2,
+      "wall_time_s": 2.891,
+      "success": 2,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 138.34,
+      "latency_mean_s": 2.864,
+      "latency_p50_s": 2.89,
+      "latency_max_s": 2.89,
+      "split_r0": 62.0,
+      "split_r1": 63.0
+    },
+    {
+      "concurrency": 4,
+      "wall_time_s": 3.818,
+      "success": 4,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 209.56,
+      "latency_mean_s": 3.365,
+      "latency_p50_s": 3.593,
+      "latency_max_s": 3.815,
+      "split_r0": 123.0,
+      "split_r1": 125.0
+    },
+    {
+      "concurrency": 6,
+      "wall_time_s": 3.774,
+      "success": 6,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 317.98,
+      "latency_mean_s": 3.36,
+      "latency_p50_s": 3.545,
+      "latency_max_s": 3.769,
+      "split_r0": 195.0,
+      "split_r1": 185.0
+    },
+    {
+      "concurrency": 8,
+      "wall_time_s": 3.713,
+      "success": 8,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 430.91,
+      "latency_mean_s": 3.28,
+      "latency_p50_s": 3.259,
+      "latency_max_s": 3.707,
+      "split_r0": 263.0,
+      "split_r1": 251.0
+    },
+    {
+      "concurrency": 12,
+      "wall_time_s": 6.576,
+      "success": 12,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 364.97,
+      "latency_mean_s": 4.326,
+      "latency_p50_s": 3.427,
+      "latency_max_s": 6.565,
+      "split_r0": 401.0,
+      "split_r1": 381.0
+    },
+    {
+      "concurrency": 16,
+      "wall_time_s": 6.856,
+      "success": 16,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 466.73,
+      "latency_mean_s": 4.907,
+      "latency_p50_s": 6.268,
+      "latency_max_s": 6.836,
+      "split_r0": 517.0,
+      "split_r1": 512.0
+    },
+    {
+      "concurrency": 24,
+      "wall_time_s": 10.841,
+      "success": 24,
+      "failed": 0,
+      "failure_status_counts": {},
+      "aggregate_tok_s": 442.78,
+      "latency_mean_s": 6.647,
+      "latency_p50_s": 6.774,
+      "latency_max_s": 10.82,
+      "split_r0": 779.0,
+      "split_r1": 773.0
+    }
+  ]
+}
