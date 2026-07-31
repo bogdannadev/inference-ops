@@ -368,3 +368,146 @@ Both replicas: `max-running-requests 4`, `cuda-graph-max-bs-decode 4`,
 `cuda-graph-max-bs-prefill 2048`, `mem-fraction-static 0.92`, HiCache removed,
 `--enable-forward-pass-metrics` on. Peak **466.73 tok/s** against ~250 before.
 Latency, single-stream decode, cold TTFT and greedy output all unchanged.
+
+---
+
+## 2026-07-31c — S1 profile: GDN is 2.49% of decode. Kernel sweep vetoed.
+
+Method: torch profiler via `/start_profile` on r1, output to
+`logs/r1/profile_s1/`. r1 drained from the router via REST (`DELETE /workers`),
+DCGM exporter stopped for the duration (counter contention), both restored
+after. Load: 4 concurrent greedy streams, disjoint short prompts (21–25
+tokens), 400 completion tokens each → 8.5 s of pure batch-4 decode/verify,
+188 tok/s under profiler overhead. Clock lock was NOT applied (needs root;
+`sudo` requires a password) — acceptable here because the S1 question is a
+*share*, a ratio robust to clock drift. Lock clocks before any A/B timing run.
+
+Of **6.661 s** total GPU kernel time (118 distinct kernels):
+
+| bucket | share |
+|---|---|
+| GEMM (`ampere_bf16_s16816gemm_*`, cublasLt) | **87.7%** |
+| elementwise / norm (at::native, rmsnorm) | ~4.5% |
+| FlashInfer attention (16 full-attn layers) | 2.54% |
+| **GDN recurrent (`fused_sigmoid_gating_delta_rule_update_kernel`)** | **2.49%** |
+| causal conv1d | 0.79% |
+| GDN chunk_/gating/l2norm | 0.09% |
+
+Decode is weight streaming through GEMMs, full stop. The
+`KERNEL_TUNING_SPEC.md` §S1 gate (GDN ≥ 15%) fails by 6×;
+**S2/S3 Triton kernel work is off** — a perfect GDN kernel would buy <2.5%.
+The Phase 1 occupancy hint (batch 2→4 moved whole-GPU occupancy only +13%
+relative) pointed the right way.
+
+Two collateral findings:
+
+1. `_fused_qk_rmsnorm_rope_gate_kernel` already runs with
+   `enable_fused_qk_norm_rope False` — the GDN path fuses its own norm/gate.
+   The flag therefore targets only what remains; ceiling ~1–2% (the
+   elementwise bucket), not the "all 64 layers" estimate in
+   `NVIDIA_KERNEL_TUNING.md` §6.3.
+2. Accept length under profiler load read 2.92–3.13 on short technical
+   prompts, vs 3.48 production mean — accept length is prompt-dependent, so
+   Phase 2 sweeps must use a fixed prompt set.
+
+Remaining campaign per the 2026-07-31 selection: `--enable-fused-qk-norm-rope`
+(one roll, measured alone, tempered expectations) and EAGLE depth (Phase 2) —
+now carrying the entire upside.
+
+---
+
+## 2026-07-31c — `--enable-fused-qk-norm-rope` rolled to both replicas. Kept.
+
+One-flag A/B on r1 per the campaign selection, then r0 rolled to match.
+Files: `ladder_r1_qknorm_pre.json`, `ladder_r1_qknorm_post.json`,
+`ladder_r0_qknorm_control.json`.
+
+- **Correctness: byte-identical.** Greedy probe (fixed prompt, temp 0,
+  reasoning+content hashed) returns the same sha256 on r1-pre, r1-post and
+  r0-post: `5cf9345f…9022a5`. The fusion preserves numerics on this path.
+- **Boot gates unchanged**: pool 169,792, decode graph bs [1,2,3,4],
+  available_gpu_mem 8.35 GB, boot 181 s.
+- **Throughput: no resolvable change.** Post/pre mean of 2 passes:
+  +1.4 / +2.3 / −4.3 / +0.7 / +4.6 / +2.2 % at c=1/2/4/6/8/12 — mixed signs,
+  inside the clock-noise band (SM clock spread 1298–1376 MHz across ladders;
+  clocks not locked — needs root). The r0 control showed the same first-pass
+  c=4 dip, confirming thermal/noise. This matches the S1-trace prediction:
+  the GDN path already runs `_fused_qk_rmsnorm_rope_gate_kernel`, so the
+  flag's ceiling was the ~4.5% elementwise bucket.
+- **Kept** because it is provably numerics-preserving here, reduces kernel
+  launches, and is upstream's intended path for QK-norm models. Identical-
+  replicas rule back in force (`docker compose config` differs only by port).
+
+Also settled: `max_mamba_cache_size` is **54** (boot log; the 48 in
+`KERNEL_TUNING_SPEC.md` S4 is stale). Intermediate SSM verify cache is
+1.41 GB at draft=4.
+
+---
+
+## 2026-08-01 — Phase 2 (EAGLE depth 3/4 → 5/6) rolled to both replicas. Campaign closed.
+
+A/B on r1 against `ladder_r1_qknorm_post.json`, then r0 promoted.
+File: `ladder_r1_eagle_s5d6.json`.
+
+### Worker-level (r1, mean of 2 passes)
+
+| c | 3/4 | 5/6 | gain | accept 3/4 | accept 5/6 |
+|---|---|---|---|---|---|
+| 1 | 69.44 | **76.81** | **+10.6%** | 3.18 | 3.57 |
+| 2 | 129.86 | 139.07 | +7.1% | 3.20 | 3.91 |
+| 4 | 232.70 | 250.23 | +7.5% | 3.28 | **4.11** |
+| 8 | 240.72 | 237.16 | −1.5% | 3.19 | 3.96 |
+| 12 | 231.93 | 235.90 | +1.7% | 3.12 | 3.80 |
+
+Accept length +22–25% across the board; the single-stream gain is smaller
+(+10.6%) because 5 draft forwards instead of 3 reclaim part of it. At
+saturation throughput is neutral but p50 improves (6.22 → 5.66–5.90 s at
+c=8): deeper speculation pays at low concurrency and costs nothing at high.
+steps=4/draft=5 was not measured — it can only land between two
+already-similar endpoints.
+
+### Boot-state deltas (both replicas, identical)
+
+- `max_total_num_tokens` 169,792 → **171,008** (pool grew; Mamba pool
+  rebalanced 54 → 43 slots, intermediate SSM verify cache 1.41 → 2.11 GB,
+  conv window 0.03 → 0.04 GB). Still clears `--context-length 169000` with
+  page alignment (171,008 = 64 × 2,672).
+- 43 Mamba slots ÷ ~6 per running request covers max-running-requests 4.
+
+### Correctness — a rule refinement, learned here
+
+The greedy probe is **deterministic within a config** (two runs, identical
+sha256, both replicas identical) but **NOT byte-identical across spec
+depths**: one near-tie token flips at char 498 and the text follows a
+different, coherent path. This is expected — draft depth changes the verify
+GEMM shapes, so logits differ at ulp level and greedy argmax can flip on
+near-ties. Speculative decoding's acceptance rule guarantees equivalence to
+the target model's greedy path *for the logits as computed*; bit-identity
+across different tensor shapes was never on offer. **Byte-identity stays the
+gate for same-shape changes (kernel configs); cross-shape changes gate on
+determinism-within-config + coherence + accept-rate sanity instead.**
+
+### Deployment-level ladder through the router (final config, balanced splits, 0 failures)
+
+| c | Phase 1 final | now | gain |
+|---|---|---|---|
+| 1 | 70.09 | 76.01 | 1.08× |
+| 2 | 138.34 | 152.06 | 1.10× |
+| 4 | 259.40 | **284.10** | 1.10× |
+| 8 | 444.93 | 439.83 | 0.99× |
+| 16 | 466.73 | **472.49** | 1.01× |
+| 24 | 442.78 | 462.41 | 1.04× |
+
+### Campaign summary (2026-07-31 → 2026-08-01)
+
+1. **S1 profile**: GDN kernel is 2.49% of decode GPU time; GEMMs 87.7%.
+   Kernel sweep (S2/S3) permanently vetoed by the 15% stop rule.
+2. **`--enable-fused-qk-norm-rope`**: kept; byte-identical, no measurable
+   throughput change (predicted ≤2%, unresolvable without clock lock).
+3. **EAGLE 5/6**: the win. +8–10% at c≤4, latency down, neutral at
+   saturation.
+
+Not pursued, still open for future sessions: HiCache re-evaluation for
+long-context cold-prefix traffic (best ratio on the board per
+`NVIDIA_KERNEL_TUNING.md` §6.1), NUMA pinning validation, clock locking for
+any future sub-5% A/B, topk>1 tree speculation.
