@@ -62,8 +62,22 @@ QKV/MLP GEMMs, versus the draft model.
 | 15–30% | Do S2.1 and S2.2 only (launch-config sweeps). Skip S3. |
 | > 30% | Full S2 + S3 justified. |
 
-Record the number in this file when measured. Until then, S2 below is a
-*conditional* plan, not an instruction.
+**MEASURED 2026-07-31c: GDN share is 2.49% — S2/S3 are OFF.** Torch profiler
+via `/start_profile` on r1 (drained from router, DCGM stopped), 8.5 s of
+batch-4 greedy decode, 4 disjoint short-prompt streams, 1600 tokens. Of 6.661 s
+total GPU kernel time: `fused_sigmoid_gating_delta_rule_update_kernel` 2.49%,
+all GDN-path kernels (recurrent + chunk_ + gating/norm + conv1d) 3.37%,
+FlashInfer 2.54%, elementwise/norm ~4.5%, **GEMMs 87.7%** — five
+`ampere_bf16_s16816gemm` variants alone are 85.5%. Decode time is weight
+streaming, as the roofline predicted. Amdahl caps all S2+S3 work below ~3.4%;
+per the decision rule above, **stop — do not do S2**. Raw trace:
+`logs/r1/profile_s1/1785522444.5702512-TP-0.trace.json.gz`; parser:
+scratchpad `parse_trace.py` (bucket shares by kernel-name regex).
+
+Note for the fused-qk-norm-rope item in S4: the trace shows
+`_fused_qk_rmsnorm_rope_gate_kernel` already present (the GDN path fuses its
+own norm/gate), so the flag's ceiling is the remaining ~4.5% elementwise/norm
+bucket — expect ~1–2%, not more.
 
 ---
 
