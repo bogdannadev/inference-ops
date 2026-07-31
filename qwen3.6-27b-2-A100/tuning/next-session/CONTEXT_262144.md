@@ -311,8 +311,9 @@ That last item is a live trap. It is inert today purely by coincidence.
 ## Method (unchanged from Phase 1 — it worked)
 
 - One replica at a time; the other stays on the known-good config as a live
-  control. `docker compose up -d --no-deps qwen36-27b-r<n>`, then
-  `docker compose restart qwen36-27b-router`.
+  control. Use `./deploy/roll-replica.sh <r0|r1>`. The
+  `docker compose restart qwen36-27b-router` step this document originally
+  prescribed is **obsolete** — see `next-session/README.md`.
 - Never `--remove-orphans`.
 - Keep the image digest pinned.
 - Measure with `tuning/bench/run_ab.sh <r0|r1> <label>` (direct to the worker,
