@@ -103,9 +103,15 @@ drift, and infers the effective admission cap from wall-time scaling.
 
 ## Rules that still apply
 
-- **One replica at a time.** `docker compose up -d --no-deps qwen36-27b-r<n>`,
-  wait healthy, then the other, then
-  `docker compose restart qwen36-27b-router`.
+- **One replica at a time — now use `./deploy/roll-replica.sh <r0|r1>`.**
+  It preflights (refuses to roll if the peer is unhealthy), deregisters the
+  replica from the router, recreates it, waits for health, and re-registers it.
+  **The old `docker compose restart qwen36-27b-router` step is obsolete —
+  do not do it.** Measured 2026-07-31b: the router self-heals by itself, but a
+  naive roll routes to a *dead* worker for ~159 s (health-check-interval 60 s x
+  failure-threshold 3) and then wastes ~71 s before re-adding it. Draining
+  first removes both windows; restarting the router fixed neither and drops
+  in-flight requests on both replicas.
 - **Never `--remove-orphans`** — it would delete `qwen3-emb`, `grafana`,
   `prometheus`, `dcgm`. Compose warns about orphans on nearly every command
   here; ignore the warning.
