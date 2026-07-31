@@ -379,6 +379,7 @@ services:
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
+      --enable-fused-qk-norm-rope
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
@@ -386,8 +387,8 @@ services:
       --log-requests
       --log-requests-level 1
       --speculative-algorithm EAGLE
-      --speculative-num-draft-tokens 4
-      --speculative-num-steps 3
+      --speculative-num-draft-tokens 6
+      --speculative-num-steps 5
       --speculative-eagle-topk 1
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
@@ -406,6 +407,28 @@ services:
   # Internal endpoint: http://qwen36-27b-r1:8002
   # Starts after r0 so one container populates the shared HF cache.
   # ---------------------------------------------------------------------------
+  # PHASE 2 (EAGLE depth) APPLIED TO BOTH REPLICAS 2026-08-01:
+  # --speculative-num-steps 5 / --speculative-num-draft-tokens 6 (chain rule
+  # draft = steps + 1 at topk 1; was 3/4, the docs' OOM-recovery recipe).
+  # Measured on r1 vs ladder_r1_qknorm_post.json (mean of 2 passes):
+  #   accept_length 3.2 -> 3.9-4.1; single-stream 69.4 -> 76.8 tok/s (+10.6%);
+  #   c=2 +7%, c=4 +7.5%, c=8/12 throughput-neutral but p50 improved
+  #   (6.22 -> 5.66-5.90 s at c=8). Deeper drafts pay at low concurrency and
+  #   cost nothing at saturation on this workload.
+  # Boot-state deltas at 6/5 (BOTH replicas, verified in boot log):
+  #   max_total_num_tokens 169792 -> 171008 (pool GREW; mamba pool rebalanced
+  #   54 -> 43 slots, intermediate SSM verify cache 1.41 -> 2.11 GB).
+  # NOTE the greedy probe is NOT byte-identical across spec depths (one
+  # near-tie token flips at char 498; runs are deterministic within a config).
+  # Expected: draft depth changes verify GEMM shapes -> ulp-level logit
+  # differences. Byte-identity remains the gate only for same-shape changes.
+  #
+  # --enable-fused-qk-norm-rope ADDED TO BOTH REPLICAS 2026-07-31c. A/B on r1:
+  # greedy output byte-identical (sha256 match on reasoning+content), boot
+  # gates unchanged (pool 169792, decode bs [1,2,3,4]), ladder delta within
+  # clock noise — the S1 profile caps its upside at ~1-2% (elementwise bucket;
+  # the GDN path already runs its own fused norm/gate kernel). Kept because it
+  # is numerics-preserving here and reduces launches. tuning/docs/RESULTS.md.
   qwen36-27b-r1:
     <<: *replica-common
     container_name: qwen36-27b-r1
@@ -484,6 +507,7 @@ services:
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
+      --enable-fused-qk-norm-rope
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
@@ -491,8 +515,8 @@ services:
       --log-requests
       --log-requests-level 1
       --speculative-algorithm EAGLE
-      --speculative-num-draft-tokens 4
-      --speculative-num-steps 3
+      --speculative-num-draft-tokens 6
+      --speculative-num-steps 5
       --speculative-eagle-topk 1
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
