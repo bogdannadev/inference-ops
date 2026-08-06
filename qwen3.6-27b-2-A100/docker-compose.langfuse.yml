@@ -1,0 +1,361 @@
+# =============================================================================
+# LANGFUSE OVERLAY — LLM application observability
+# Postgres + Redis + ClickHouse + MinIO + Langfuse Web + Langfuse Worker
+#
+# Usage — all three files, one compose project:
+#   docker compose -f docker-compose.yml `
+#                  -f docker-compose.metrics.yml `
+#                  -f docker-compose.langfuse.yml up -d
+#
+# Access: SSH tunnel only. No published host ports beyond 127.0.0.1.
+#   ssh -L 3000:127.0.0.1:3000 `
+#       -L 3030:127.0.0.1:3030 `
+#       -L 9090:127.0.0.1:9090 `
+#       -L 9091:127.0.0.1:9091 <host>
+#
+# Secrets: all LANGFUSE_* vars read from .env with :? fail-fast.
+# Generate before first run:
+#   LANGFUSE_POSTGRES_PASSWORD=$(openssl rand -base64 32)
+#   LANGFUSE_CLICKHOUSE_PASSWORD=$(openssl rand -base64 32)
+#   LANGFUSE_REDIS_PASSWORD=$(openssl rand -base64 32)
+#   LANGFUSE_MINIO_PASSWORD=$(openssl rand -base64 32)
+#   LANGFUSE_SALT=$(openssl rand -base64 32)
+#   LANGFUSE_ENCRYPTION_KEY=$(openssl rand -hex 32)
+#   LANGFUSE_NEXTAUTH_SECRET=$(openssl rand -base64 32)
+#   LANGFUSE_INIT_USER_PASSWORD=$(openssl rand -base64 32)
+#
+# Timezone: Postgres and ClickHouse MUST run UTC. Non-UTC breaks queries.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres — OLTP: users, projects, API keys, prompts, scores metadata
+  # ---------------------------------------------------------------------------
+  langfuse-postgres:
+    image: docker.io/postgres:17
+    container_name: qwen36-27b-langfuse-postgres
+
+    cpuset: "48-55"
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:?set LANGFUSE_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      TZ: UTC
+      PGTZ: UTC
+
+    volumes:
+      - ./langfuse-data/postgres:/var/lib/postgresql/data
+
+    ports:
+      - "127.0.0.1:5432:5432"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # Redis — cache + BullMQ async queue
+  # ---------------------------------------------------------------------------
+  langfuse-redis:
+    image: docker.io/redis:7
+    container_name: qwen36-27b-langfuse-redis
+
+    cpuset: "48-55"
+
+    command: >
+      --requirepass ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
+      --maxmemory-policy noeviction
+
+    volumes:
+      - ./langfuse-data/redis:/data
+
+    ports:
+      - "127.0.0.1:6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse — OLAP: traces, observations, scores (high-volume analytics)
+  # ---------------------------------------------------------------------------
+  langfuse-clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    container_name: qwen36-27b-langfuse-clickhouse
+
+    cpuset: "48-55"
+
+    user: "101:101"
+
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+      TZ: UTC
+
+    volumes:
+      - ./langfuse-data/clickhouse:/var/lib/clickhouse
+      - ./langfuse-data/clickhouse-logs:/var/log/clickhouse-server
+
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible blob storage: raw events, multi-modal media
+  # Auto-creates the `langfuse` bucket on boot.
+  # ---------------------------------------------------------------------------
+  langfuse-minio:
+    image: cgr.dev/chainguard/minio
+    container_name: qwen36-27b-langfuse-minio
+
+    cpuset: "48-55"
+
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in .env}
+
+    volumes:
+      - ./langfuse-data/minio:/data
+
+    ports:
+      - "127.0.0.1:9090:9000"
+      - "127.0.0.1:9091:9001"
+
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # Langfuse Web — UI + ingestion API
+  # Receives traces from clients, writes events to S3, persists refs to Redis.
+  # ---------------------------------------------------------------------------
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:4
+    container_name: qwen36-27b-langfuse-web
+
+    cpuset: "48-55"
+
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+
+    environment:
+      # Auth
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env}
+
+      # Database
+      DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/postgres
+
+      # Encryption
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env}
+
+      # Telemetry — off for self-hosted
+      TELEMETRY_ENABLED: "false"
+
+      # ClickHouse
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+      # S3 — event upload
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in .env}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+      # S3 — media upload
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+      # Redis
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
+
+      # Headless initialization — creates first org, project, user
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Default}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-qwen36-27b}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@bnna.dev}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # Langfuse Worker — async event processing
+  # Picks up events from S3, ingests into ClickHouse.
+  # ---------------------------------------------------------------------------
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:4
+    container_name: qwen36-27b-langfuse-worker
+
+    cpuset: "48-55"
+
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+
+    environment:
+      # Auth
+      NEXTAUTH_URL: http://localhost:3000
+
+      # Database
+      DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/postgres
+
+      # Encryption
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env}
+
+      # Telemetry
+      TELEMETRY_ENABLED: "false"
+
+      # ClickHouse
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+      # S3 — event upload
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in .env}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+      # S3 — media upload
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+      # Redis
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
+
+    ports:
+      - "127.0.0.1:3030:3030"
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+networks:
+  # References the existing backend network from docker-compose.yml.
+  # Do NOT set external: true — compose will create it if it doesn't exist,
+  # but it already exists from the main stack.
+  qwen36-27b-backend:
+    name: qwen36-27b-backend
+    external: false
