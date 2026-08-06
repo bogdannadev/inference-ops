@@ -50,11 +50,50 @@ services:
 
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
 
     # Loopback bind only — not reachable from outside the host.
     ports:
       - "127.0.0.1:9090:9090"
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter — host-level hardware telemetry on :9100
+  # (CPU, RAM, swap, disk space, disk I/O, network I/O, load, file descriptors)
+  # Runs on the loopback + backend network only; Prometheus scrapes it there.
+  # ---------------------------------------------------------------------------
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    container_name: qwen36-27b-node-exporter
+
+    cpuset: "48-55"
+
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host
+      # Ignore bind-mount noise; keep only real filesystems in disk panels.
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run)(/|$)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$
+
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro,rslave
+
+    expose:
+      - "9100"
 
     restart: unless-stopped
 
@@ -152,10 +191,39 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER in .env}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       - GF_USERS_ALLOW_SIGN_UP=false
+      # ---- production hardening -------------------------------------------------
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_USERS_AUTO_ASSIGN_ORG=true
+      - GF_USERS_AUTO_ASSIGN_ORG_ROLE=Viewer
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_BASIC_ENABLED=true
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_SECURITY_COOKIE_SECURE=false
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      - GF_SECURITY_ALLOW_EMBEDDING=false
+      - GF_SERVER_ENFORCE_DOMAIN=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_READ_TIMEOUT=60
+      - GF_SERVER_WRITE_TIMEOUT=60
+      - GF_SNAPSHOTS_EXTERNAL_ENABLED=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+      - GF_ALERTING_ENABLED=true
+      - GF_UNIFIED_ALERTING_ENABLED=true
+      - GF_UNIFIED_ALERTING_DEFAULT_EVALUATION_INTERVAL=15s
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/overview/qwen36-27b-overview.json
+      - GF_LOG_LEVEL=info
+      - GF_LOG_MODE=console
+      - GF_USERS_DEFAULT_THEME=dark
 
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - ./grafana/provisioning/plugins:/etc/grafana/provisioning/plugins:ro
 
     # Loopback bind only — SSH tunnel access.
     ports:

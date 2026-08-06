@@ -1,0 +1,77 @@
+# =============================================================================
+# Prometheus alerting rules — qwen36-27b A100 node
+# Location in repo: ./prometheus/alerts.yml
+# Mounted read-only into the prometheus container by compose.metrics.yml.
+#
+# Scope: infra / endpoint liveness + GPU hardware health. Application-level
+# SLO alerts (TTFT/ITL/E2E latency, KV-pool pressure, radix hit rate) live in
+# Grafana Unified Alerting so they share the dashboard thresholds and the
+# Grafana notification pipeline.
+# =============================================================================
+
+groups:
+  - name: endpoints
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up{job!~"prometheus"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "Scrape target {{ $labels.job }}/{{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }} for job {{ $labels.job }} for over 2 minutes."
+
+  - name: gpu
+    rules:
+      - alert: GpuHighTemperature
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        for: 5m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "GPU {{ $labels.gpu }} temperature {{ $value }}C"
+          description: "GPU {{ $labels.gpu }} has been above 85C for 5 minutes. Check airflow/fan curve."
+
+      - alert: GpuMemoryPressure
+        expr: DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) > 0.95
+        for: 5m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "GPU {{ $labels.gpu }} framebuffer at {{ $value | humanizePercentage }}"
+          description: "GPU {{ $labels.gpu }} framebuffer usage above 95%. OOM risk on next request burst."
+
+      - alert: GpuXidError
+        expr: increase(DCGM_FI_DEV_XID_ERRORS[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "XID error on GPU {{ $labels.gpu }}"
+          description: "GPU {{ $labels.gpu }} reported a CUDA XID error in the last 5 minutes."
+
+  - name: host
+    rules:
+      - alert: HostLowDiskSpace
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Root filesystem below 10% free"
+          description: "Root filesystem has {{ $value | humanizePercentage }} free. Log/Docker growth risk."
+
+      - alert: HostMemoryPressure
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.95
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Host memory above 95%"
+          description: "Host RAM is {{ $value | humanizePercentage }} utilised for 10 minutes."
