@@ -8,10 +8,15 @@
 #                  -f docker-compose.langfuse.yml up -d
 #
 # Access: SSH tunnel only. No published host ports beyond 127.0.0.1.
-#   ssh -L 3000:127.0.0.1:3000 `
+#   ssh -L 3001:127.0.0.1:3001 `
 #       -L 3030:127.0.0.1:3030 `
-#       -L 9090:127.0.0.1:9090 `
-#       -L 9091:127.0.0.1:9091 <host>
+#       -L 9092:127.0.0.1:9092 `
+#       -L 9093:127.0.0.1:9093 <host>
+#
+# Port rationale (avoids conflicts with metrics overlay):
+#   3000 -> Grafana          3001 -> Langfuse Web
+#   9090 -> Prometheus       9092 -> MinIO API
+#   9091 -> (free)           9093 -> MinIO Console
 #
 # Secrets: all LANGFUSE_* vars read from .env with :? fail-fast.
 # Generate before first run:
@@ -167,8 +172,8 @@ services:
       - ./langfuse-data/minio:/data
 
     ports:
-      - "127.0.0.1:9090:9000"
-      - "127.0.0.1:9091:9001"
+      - "127.0.0.1:9092:9000"
+      - "127.0.0.1:9093:9001"
 
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
@@ -210,7 +215,7 @@ services:
 
     environment:
       # Auth
-      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_URL: http://localhost:3001
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env}
 
       # Database
@@ -261,7 +266,7 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
 
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3000"
 
     restart: unless-stopped
 
@@ -296,7 +301,7 @@ services:
 
     environment:
       # Auth
-      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_URL: http://localhost:3001
 
       # Database
       DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/postgres

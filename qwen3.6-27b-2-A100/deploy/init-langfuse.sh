@@ -10,8 +10,8 @@
 #   ./deploy/init-langfuse.sh
 #
 # After first run, access the UI via SSH tunnel:
-#   ssh -L 3000:127.0.0.1:3000 <host>
-#   http://localhost:3000
+#   ssh -L 3001:127.0.0.1:3001 <host>
+#   http://localhost:3001
 
 set -euo pipefail
 
@@ -179,9 +179,9 @@ fi
 say "Langfuse is ready"
 echo ""
 echo "SSH tunnel:"
-echo "  ssh -L 3000:127.0.0.1:3000 <host>"
+echo "  ssh -L 3001:127.0.0.1:3001 <host>"
 echo ""
-echo "UI: http://localhost:3000"
+echo "UI: http://localhost:3001"
 echo ""
 echo "Headless init credentials:"
 echo "  email:    $(grep '^LANGFUSE_INIT_USER_EMAIL=' "$ENV_FILE" | cut -d= -f2)"
@@ -194,7 +194,7 @@ echo "  import os"
 echo "  from langfuse import Langfuse"
 echo ""
 echo "  langfuse = Langfuse("
-echo "      host=\"http://localhost:3000\","
+echo "      host=\"http://localhost:3001\","
 echo "      public_key=\"<project-public-key>\","
 echo "      secret_key=\"<project-secret-key>\","
 echo "  )"
