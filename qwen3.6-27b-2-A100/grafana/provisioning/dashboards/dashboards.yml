@@ -1,0 +1,32 @@
+# =============================================================================
+# Grafana dashboard provisioning — qwen36-27b A100 node
+# Location in repo: ./grafana/provisioning/dashboards/dashboards.yml
+# Auto-loads every *.json below at Grafana boot.
+#
+# Organisation (production best practice):
+#   foldersFromFilesStructure: true  — each subdirectory of this folder maps to
+#   a Grafana folder (Overview / SGLang Engine / Router Proxy / GPU Hardware /
+#   Host Hardware), so dashboards are grouped by concern instead of dumped in
+#   one flat "Inference" folder.
+#
+#   allowUiUpdates: false   — dashboards are declared in this repo; UI edits
+#     are allowed to be overwritten by provisioning on next scan, keeping the
+#     checked-in JSON the source of truth.
+#   disableDeletion: true   — protect provisioned dashboards from accidental
+#     UI deletion.
+#   updateIntervalSeconds: 10 — re-scan the folder every 10s (not the default
+#     10s is already fine; kept explicit for visibility).
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: "qwen36-27b inference"
+    orgId: 1
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true
