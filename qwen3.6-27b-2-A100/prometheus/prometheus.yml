@@ -8,6 +8,11 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Prometheus-native alerting rules (infra-level: endpoint up, GPU health).
+# Grafana owns the app-level SLO alerts (latency, KV pool, radix hit rate).
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # ---------------------------------------------------------------------------
   # SGLang workers — engine-level metrics (--enable-metrics / --enable-mfu-metrics)
@@ -58,6 +63,17 @@ scrape_configs:
     static_configs:
       - targets:
           - dcgm-exporter:9400
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter — host hardware (CPU/RAM/disk/network/load)
+  # ---------------------------------------------------------------------------
+  - job_name: node
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - qwen36-27b-node-exporter:9100
         labels:
           node: a100
 

@@ -2,14 +2,31 @@
 # Grafana datasource provisioning — qwen36-27b A100 node
 # Location in repo: ./grafana/provisioning/datasources/datasources.yml
 # Auto-loaded at Grafana boot; no manual datasource setup needed.
+#
+# Best practices applied:
+#   - uid: prometheus — stable UID so Grafana alert rules and dashboards can
+#     reference the datasource deterministically (auto-generated UIDs change
+#     across volume resets and break alert rules).
+#   - httpMethod: POST  — bounded request bodies for long PromQL expressions
+#   - timeInterval: 5s  — matches the Prometheus worker/DCGM scrape interval
+#   - manageAlerts: true — Grafana Unified Alerting can back alert rules
+#     against this datasource
+#   - editable: false    — config owned by this repo, not the UI
 # =============================================================================
 
 apiVersion: 1
 
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
     editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 5s
+      queryTimeout: 60s
+      manageAlerts: true
+      prometheusType: Prometheus

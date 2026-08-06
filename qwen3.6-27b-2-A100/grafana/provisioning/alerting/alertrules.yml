@@ -1,0 +1,336 @@
+# =============================================================================
+# Grafana Unified Alerting — SLO alert rules (evaluation only)
+# Location in repo: ./grafana/provisioning/alerting/alertrules.yml
+#
+# These rules EVALUATE against the Prometheus datasource and surface in the
+# Grafana Alerting UI only. No external notification delivery is configured —
+# the Prometheus-native alerts (prometheus/alerts.yml) remain the operational
+# signal for page-worthy events. To add delivery later: create a contact
+# point in Contact Points, set it on the default notification policy, and
+# remove the per-rule notification_settings below.
+#
+# Scope: application-level SLOs that share threshold semantics with the
+# dashboards. Thresholds mirror the dashboard stat panels.
+# =============================================================================
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: qwen36-27b SLO
+    folder: SLO
+    interval: 30s
+    rules:
+      # ------------------------------------------------------------------
+      # Latency SLOs
+      # ------------------------------------------------------------------
+      - uid: qwen36-27b-ttft-p95
+        title: "TTFT p95 above 5s"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >-
+                histogram_quantile(0.95,
+                  sum(rate(sglang:time_to_first_token_seconds_bucket[5m])) by (le))
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [5]
+        noDataState: NoData
+        execErrState: Error
+        for: 2m
+        labels:
+          severity: critical
+          slo: ttft
+        annotations:
+          summary: "TTFT p95 {{ $values.B }}s exceeds 5s SLO"
+
+      - uid: qwen36-27b-itl-p95
+        title: "ITL p95 above 50ms"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >-
+                histogram_quantile(0.95,
+                  sum(rate(sglang:inter_token_latency_seconds_bucket[5m])) by (le))
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.05]
+        noDataState: NoData
+        execErrState: Error
+        for: 2m
+        labels:
+          severity: critical
+          slo: itl
+        annotations:
+          summary: "ITL p95 {{ $values.B }}s exceeds 50ms SLO"
+
+      - uid: qwen36-27b-e2e-p95
+        title: "E2E p95 above 30s"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >-
+                histogram_quantile(0.95,
+                  sum(rate(sglang:e2e_request_latency_seconds_bucket[5m])) by (le))
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [30]
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+          slo: e2e
+        annotations:
+          summary: "E2E p95 {{ $values.B }}s exceeds 30s SLO"
+
+      # ------------------------------------------------------------------
+      # Capacity SLOs
+      # ------------------------------------------------------------------
+      - uid: qwen36-27b-kv-pool-pressure
+        title: "KV pool utilization above 95%"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >-
+                max((sglang:kv_used_tokens / sglang:kv_available_tokens)) * 100
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [95]
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+          slo: capacity
+        annotations:
+          summary: "KV pool utilization {{ $values.B }}% — OOM/eviction pressure"
+
+      - uid: qwen36-27b-full-token-pressure
+        title: "Full token usage above 95%"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: "max(sglang:full_token_usage)"
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.95]
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+          slo: capacity
+        annotations:
+          summary: "Full token usage {{ $values.B }} — all memory pools near full"
+
+      - uid: qwen36-27b-radix-hit-rate
+        title: "Radix cache hit rate below 20%"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: "max(sglang:cache_hit_rate)"
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [0.2]
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        labels:
+          severity: info
+          slo: cache
+        annotations:
+          summary: "Radix cache hit rate {{ $values.B }} below 20%"
+
+      - uid: qwen36-27b-spec-accept-rate
+        title: "Speculative accept rate below 40%"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: "max(sglang:spec_accept_rate)"
+              instant: true
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              format: table
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              refId: C
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [0.4]
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        labels:
+          severity: info
+          slo: efficiency
+        annotations:
+          summary: "EAGLE accept rate {{ $values.B }} below 40%"
