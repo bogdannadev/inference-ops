@@ -33,7 +33,6 @@ The deployment is assembled from **four compose files** in one project:
 ./deploy/init-langfuse.sh
 
 # 3. verify
-./test.sh
 docker compose -f docker-compose.yml -f docker-compose.metrics.yml ps
 ```
 
@@ -47,7 +46,7 @@ The in-repo `docs/` directory is the operational manual for this node:
   config, Grafana dashboards, alert rules (Prometheus-native + Grafana SLO),
   SSH-tunnel access
 - **[docs/OPERATIONS.md](docs/OPERATIONS.md)** — daily ops: health checks,
-  rolling a replica, `test.sh`, logs, rollback, troubleshooting
+  rolling a replica, logs, rollback, troubleshooting
 - **[docs/LANGFUSE.md](docs/LANGFUSE.md)** — Langfuse trace overlay: services,
   secrets, headless init, SDK access
 
@@ -74,7 +73,6 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 ├── docs/                         # this node's operational manual
 ├── benchmarks/                   # latency/throughput harnesses
 ├── tuning/                       # kernel/flag tuning campaign
-├── test.sh                       # full deployment test suite
 ├── logs/                         # runtime log bind mounts (gitignored)
 └── langfuse-data/                # Langfuse DB object storage (gitignored)
 ```

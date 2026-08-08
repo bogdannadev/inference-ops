@@ -118,14 +118,25 @@
 #   http://qwen36-27b-router:8000
 # =============================================================================
 
-# PINNED BY DIGEST 2026-07-28. Both replicas + the router must run the SAME
-# engine build; the floating :dev-cu13 tag silently moved r0 onto a new build
-# mid-session while r1 stayed on the old one. Digest pinning makes that
-# impossible — `docker compose up -d` can no longer change the engine.
-# To bump: pull the tag, re-read the digest, paste it here, roll ONE replica
-# at a time, and re-run benchmarks/run_worker.sh against both.
-#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:dev-cu13
-x-sglang-image: &sglang-image lmsysorg/sglang@sha256:647d7bb04632b49ff12a9716856f087cfb8171f4f42d9d11f8f06b5c1c3399b4
+# PINNED BY DIGEST. Both replicas + the router must run the SAME engine build;
+# a floating tag once silently moved r0 onto a new build mid-session while r1
+# stayed on the old one. Digest pinning makes that impossible — `docker compose
+# up -d` can no longer change the engine.
+#
+# 2026-08-08: bumped to v0.5.17-cu130 (sglang 0.5.17, rev 2948168), replacing
+# the old dev build 0.0.0.dev1+ga358374ae (= v0.5.16 + 2 days of main). We are
+# now on a RELEASE tag rather than the floating :dev-cu13 — the previous digest
+# told nobody what was actually in it. Upgrade was output-identical and
+# performance-neutral; see tuning/docs/UPGRADE_v0.5.17.md for the measurements
+# and for the --mm-feature-transport trap it exposed.
+#
+# To bump: pull the tag, re-read the digest, paste it here, roll ONE replica at
+# a time, and re-run benchmarks/run_worker.sh against both. Also diff the
+# runtime server_args from /get_server_info between the two builds — `--help`
+# does NOT show defaults that are resolved at startup, which is exactly how
+# v0.5.17 flipped mm_feature_transport underneath us.
+#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.17-cu130
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -342,17 +353,41 @@ services:
     # argv text, not a comment, and compose rejects the file. Keep annotations
     # out here, above the key.
     #
-    # REJECTED 2026-07-28: --enable-gdn-replayssm-spec (RFC #28511 Part B).
-    # Preconditions looked right (GDN model, --speculative-eagle-topk 1), but
-    # the build refuses it outright:
+    # REJECTED 2026-07-28, STILL REJECTED 2026-08-08 for a DIFFERENT reason:
+    # --enable-gdn-replayssm-spec (RFC #28511 Part B), renamed in v0.5.17 to
+    # --enable-linear-replayssm-spec (#33102 generalised GDN -> linear).
+    #
+    # Original reason (v0.5.16): the build refused it outright —
     #   ValueError: --enable-gdn-replayssm-spec is not yet compatible with
     #   mamba extra_buffer (radix prefix caching); use --disable-radix-cache
     #   or --mamba-radix-cache-strategy no_buffer.
-    # Buying it means surrendering radix prefix caching, which is measured at
-    # 36x on this workload (16K-token prompt: 12.278s cold TTFT -> 0.338s
-    # warm). Coding-agent traffic shares a system prompt, so the cache is the
-    # single largest lever we have. Do not re-enable until upstream makes the
-    # kernel compatible with extra_buffer.
+    # Taking it meant surrendering radix prefix caching, measured at 36x on this
+    # workload (16K-token prompt: 12.278s cold TTFT -> 0.338s warm). Coding-agent
+    # traffic shares a system prompt, so that cache is our single largest lever.
+    #
+    # That incompatibility is GONE — #32692 and #33102 made replayssm work with
+    # extra_buffer. We still decline it, now by choice: PR #32219's fused
+    # `_replay_metadata` fast path (5-7 dispatches collapsed to one Triton
+    # launch) is gated on replayssm being OFF. Enabling replayssm gives back
+    # part of what v0.5.17 bought. Never benchmark the two together — if you
+    # test replayssm, you are also silently disabling the fused replay path.
+    #
+    # --mm-feature-transport cpu is PINNED DELIBERATELY (added 2026-08-08).
+    # This model is Qwen3_5ForConditionalGeneration, so SGLang auto-enables the
+    # multimodal path even though we only ever serve text. In v0.5.16 the
+    # transport auto-resolved to `cpu`; v0.5.17 changed the auto-resolution to
+    # `cuda_ipc` for single-node CUDA, which broke the server two ways:
+    #   1. cuda_ipc moves feature tensors between the mm-processor process and
+    #      the scheduler with pidfd_getfd(2), which needs CAP_SYS_PTRACE. We
+    #      only grant SYS_NICE, so Docker's default profile denies it and the
+    #      scheduler dies on the very first request -- its own warmup:
+    #      "RuntimeError: pidfd_getfd: Operation not permitted".
+    #   2. It reserves SGLANG_MM_FEATURE_CACHE_MB (1024 MiB default) of VRAM,
+    #      shrinking the KV pool.
+    # Pinning it explicitly restores v0.5.16 behaviour without granting a new
+    # capability, and stops the value from flipping under us again. The
+    # alternative fix (cap_add: SYS_PTRACE) buys a capability we do not need
+    # for a code path we never use. Do not remove without re-reading this.
     command: >
       --model-path Qwen/Qwen3.6-27B
       --served-model-name qwen36-27b
@@ -365,6 +400,7 @@ services:
       --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
+      --mm-feature-transport cpu
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
@@ -493,6 +529,7 @@ services:
       --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
+      --mm-feature-transport cpu
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64

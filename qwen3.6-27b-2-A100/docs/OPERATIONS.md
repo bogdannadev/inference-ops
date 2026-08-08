@@ -76,17 +76,20 @@ an orphan; ignore it.
 
 ## Full test suite
 
+Removed 2026-08-08. The old `test.sh` had drifted (it still looked for a
+network renamed long ago) and is being replaced by proper CI pipelines.
+
+Until those land, verify a deployment with the benchmark harnesses, which are
+maintained and were used to gate the v0.5.17 upgrade:
+
 ```bash
-./test.sh
+./benchmarks/run_worker.sh r0 <label>     # per-replica smoke + decode/TTFT
+./benchmarks/byte_identity.py --help      # greedy byte-identity gate
+./benchmarks/worker_ladder.py --help      # per-worker concurrency ladder
 ```
 
-`test.sh` (POSIX sh) exercises: network existence, no published ports on
-workers/router, `/health` and `/model_info` on both workers + router,
-direct worker chat, router chat, auth-negative (wrong key → 401/403/404),
-streaming, long-prompt prefill, 8 concurrent requests, tool-call smoke,
-`/metrics` availability, known-warning scan, severe-error log scan, and GPU
-placement. Overrides via env (`NETWORK`, `MODEL`, `R0_HOST`, `R1_HOST`,
-`ROUTER_HOST`, ports). Needs `.env` sourced.
+See `tuning/docs/UPGRADE_v0.5.17.md` for how those were combined into an
+A/B gate across two builds.
 
 ## Logs
 
