@@ -1,0 +1,71 @@
+{
+  "label": "prefix_hash",
+  "results": [
+    {
+      "workload": "shared_prefix",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 1.3,
+      "ok": 0,
+      "failed": 12,
+      "lat_p50": null,
+      "lat_max": null,
+      "cached_tokens_reported": 0,
+      "prompt_tokens_reported": 0,
+      "per_replica": {
+        "r0": {
+          "reqs": 0.0,
+          "prompt_tokens": 0.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 0.0,
+          "prompt_tokens": 0.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "0%",
+        "r1": "0%"
+      },
+      "errors": [
+        "HTTP Error 503: Service Unavailable",
+        "HTTP Error 503: Service Unavailable",
+        "HTTP Error 503: Service Unavailable"
+      ]
+    },
+    {
+      "workload": "disjoint",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 1.28,
+      "ok": 0,
+      "failed": 12,
+      "lat_p50": null,
+      "lat_max": null,
+      "cached_tokens_reported": 0,
+      "prompt_tokens_reported": 0,
+      "per_replica": {
+        "r0": {
+          "reqs": 0.0,
+          "prompt_tokens": 0.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 0.0,
+          "prompt_tokens": 0.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "0%",
+        "r1": "0%"
+      },
+      "errors": [
+        "HTTP Error 503: Service Unavailable",
+        "HTTP Error 503: Service Unavailable",
+        "HTTP Error 503: Service Unavailable"
+      ]
+    }
+  ]
+}

@@ -129,6 +129,41 @@ identical wall time (3.05 s vs 3.04 s for 200 tokens) — there is **no** stream
 penalty, only a counting difference. Comparisons between two workers measured
 with that script are still valid.
 
+## Router `prefix_hash` — tested and rejected (2026-08-08)
+
+Motivation was sound and is now quantified. With `round_robin` and two TP=1
+replicas that share no cache, 12 requests sharing a ~1200-token system prompt
+(the OpenCode shape) split 6/6 and reached only **48.2% cache hit rate**
+(10,752 cached of 22,303 prompt tokens) — each replica pays for the shared
+prefix separately. Disjoint prompts hit 0%, as expected.
+
+`prefix_hash` routes on a hash of the first 256 **tokens**, so it should pin a
+conversation to one replica. It does not work here:
+
+1. The router must tokenize to hash tokens, and ours had no tokenizer —
+   `No tokenizer_path or model_path found for model unknown`. Every request
+   503'd. Fixable by adding `--model-path`, the HF cache mount, and `HF_TOKEN`.
+2. With the tokenizer loaded, requests still 503 with
+   `no_available_workers ("all circuits open or unhealthy")` while
+   `GET /workers` reports both replicas `is_healthy: true`. Workers register
+   with `model_id: "unknown"`, and the router assigns the policy per model
+   (`Assigning policy prefix_hash to new model unknown`), so a request naming
+   `qwen36-27b` matches no worker.
+
+Isolation: `round_robin` **with** `--model-path` serves 200s normally, so the
+tokenizer addition is not the cause — the policy is. Everything was reverted;
+the router is back on `round_robin` with no tokenizer, verified 0/24 failures
+and a 50/50 split afterwards.
+
+Note this means the standing "routing caps every cache feature at ~50%" problem
+is **still open**, and it gates any session-affinity work. `cache_aware` remains
+available but starved r0 in July. Worth re-testing `prefix_hash` only once
+workers register a real `model_id`.
+
+Test harness: `benchmarks/routing_test.py` (shared-prefix vs disjoint workloads,
+diffs per-replica metrics to show the split). Note `benchmarks/ladder.py`
+deliberately uses disjoint prompts, so it cannot see this effect at all.
+
 ## Artifacts
 
 ```
