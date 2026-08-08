@@ -372,6 +372,35 @@ services:
     # part of what v0.5.17 bought. Never benchmark the two together — if you
     # test replayssm, you are also silently disabling the fused replay path.
     #
+    # --enable-session-radix-cache (added 2026-08-08, BOTH replicas).
+    # Enabled deliberately WITHOUT a controlled A/B — it is inert today and
+    # costs nothing, so it is on and ready rather than pending a test.
+    #
+    # What it does: makes UnifiedRadixCache order eviction by
+    # (is_referenced, session_ref_count, base_priority), so KV belonging to a
+    # live session is evicted last. Soft protection, not pinning — referenced
+    # KV is still evictable if unreferenced KV runs out. Implemented ONLY by
+    # UnifiedRadixCache, which is what we run (boot log: "Init Unified RadixTree
+    # with components (FULL, MAMBA)").
+    #
+    # Why it is inert: it only does anything (a) under real eviction pressure,
+    # and (b) when callers pass a stable top-level `session_id`. Neither holds.
+    # The node has ~137 non-healthcheck requests ever, and OpenCode sends no
+    # session_id (verified null across all 5,475 logged requests). The plumbing
+    # exists on our side — `session_id` is carried by /v1/chat/completions
+    # (serving_chat.py passes it straight through) and /close_session is a real
+    # route taking {"session_id": str} — so a shim between Caddy and the router
+    # could start sending it.
+    #
+    # NOTE it was NOT in the old build: the flag parsed, but the implementation
+    # was absent (zero matches for session_ref_count / register_session_ref).
+    # v0.5.17 ships mem_cache/unified_cache/session_ref_tracker.py.
+    #
+    # Blocked upstream of this flag: session affinity needs the router to send a
+    # conversation to the SAME replica, and prefix_hash was tested and rejected
+    # 2026-08-08 (see the router block). Under round_robin a conversation
+    # alternates GPUs, so sessions fragment regardless of eviction order.
+    #
     # --mm-feature-transport cpu is PINNED DELIBERATELY (added 2026-08-08).
     # This model is Qwen3_5ForConditionalGeneration, so SGLang auto-enables the
     # multimodal path even though we only ever serve text. In v0.5.16 the
@@ -401,6 +430,7 @@ services:
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
+      --enable-session-radix-cache
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
@@ -530,6 +560,7 @@ services:
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
+      --enable-session-radix-cache
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
