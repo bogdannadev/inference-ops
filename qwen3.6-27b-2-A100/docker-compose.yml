@@ -609,6 +609,27 @@ services:
   # worker /health endpoint is a GENERATION probe costing ~1.0 s per call, so
   # tightening it to shrink the lag would spend real GPU time. Draining makes
   # the lag irrelevant instead.
+  #
+  # REJECTED 2026-08-08: --policy prefix_hash. The motivation was real —
+  # round_robin caps prefix-cache reuse at ~50% because two TP=1 replicas share
+  # no cache, measured here as 48.2% cache hit rate on 12 requests sharing a
+  # ~1200-token system prompt. prefix_hash routes on a hash of the first 256
+  # TOKENS, which should pin a conversation to one replica.
+  #
+  # It does not work on this deployment. Two separate failures:
+  #   1. The router must TOKENIZE to hash 256 tokens, and ours had no
+  #      tokenizer: "No tokenizer_path or model_path found for model unknown".
+  #      Fixable with --model-path + the HF cache mount + HF_TOKEN.
+  #   2. Even with the tokenizer loaded, every request 503s with
+  #      no_available_workers ("all circuits open or unhealthy") while
+  #      GET /workers reports both replicas is_healthy=true. Workers register
+  #      as model_id "unknown" (the router cannot infer the served model), and
+  #      prefix_hash assigns its policy per model — so requests naming
+  #      "qwen36-27b" match no worker.
+  # Isolated: round_robin WITH --model-path serves 200s normally, so the
+  # tokenizer addition is not the culprit — the policy is.
+  # Re-test only after workers register a real model_id; until then this is
+  # upstream's problem, not a tuning knob. See tuning/docs/UPGRADE_v0.5.17.md.
   qwen36-27b-router:
     image: *sglang-image
     container_name: qwen36-27b-router

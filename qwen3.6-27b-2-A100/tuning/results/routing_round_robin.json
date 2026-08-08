@@ -1,0 +1,61 @@
+{
+  "label": "round_robin",
+  "results": [
+    {
+      "workload": "shared_prefix",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 7.83,
+      "ok": 12,
+      "failed": 0,
+      "lat_p50": 2.437,
+      "lat_max": 3.99,
+      "cached_tokens_reported": 10752,
+      "prompt_tokens_reported": 22303,
+      "per_replica": {
+        "r0": {
+          "reqs": 6.0,
+          "prompt_tokens": 11152.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 6.0,
+          "prompt_tokens": 11151.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "50%",
+        "r1": "50%"
+      }
+    },
+    {
+      "workload": "disjoint",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 5.3,
+      "ok": 12,
+      "failed": 0,
+      "lat_p50": 1.706,
+      "lat_max": 1.844,
+      "cached_tokens_reported": 0,
+      "prompt_tokens_reported": 258,
+      "per_replica": {
+        "r0": {
+          "reqs": 6.0,
+          "prompt_tokens": 129.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 6.0,
+          "prompt_tokens": 129.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "50%",
+        "r1": "50%"
+      }
+    }
+  ]
+}
