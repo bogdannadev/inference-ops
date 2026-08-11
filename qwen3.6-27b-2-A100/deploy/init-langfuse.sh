@@ -95,78 +95,79 @@ else
 fi
 
 # --- 1b. trace-pipeline credentials ---------------------------------------
-# Added after the initial Langfuse rollout, so these live in their own
-# idempotent block: an install that already has the eight secrets above
-# still needs these three.
+# The OTel Collector authenticates to the Langfuse ingestion API with a PROJECT
+# key pair, not the admin user.
 #
-# The OTel Collector authenticates to the Langfuse ingestion API with a
-# PROJECT key pair, not the admin user. Seeding the pair here keeps the whole
-# credential chain reproducible from .env instead of depending on someone
-# clicking through Project Settings.
+# LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are the canonical Langfuse SDK
+# variable names — the ones the UI hands you as a copy-paste snippet, and
+# therefore the ones anyone will actually set. They are the single source of
+# truth here. LANGFUSE_OTEL_AUTH is DERIVED from them and never edited by hand.
+#
+# That derivation is the whole point of this block. Setting the key pair
+# without regenerating the base64 leaves the collector authenticating with a
+# stale credential, and the symptom — a 401 — is identical to a wrong key.
+# This block re-derives whenever the two disagree, so that trap cannot recur.
 say "Checking trace-pipeline credentials in $ENV_FILE"
 
-TRACE_VARS=(
-  LANGFUSE_INIT_PROJECT_PUBLIC_KEY
-  LANGFUSE_INIT_PROJECT_SECRET_KEY
-  LANGFUSE_OTEL_AUTH
-)
+env_get() { grep "^${1}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
-TRACE_MISSING=()
-for var in "${TRACE_VARS[@]}"; do
-  if ! grep -q "^${var}=" "$ENV_FILE" 2>/dev/null; then
-    TRACE_MISSING+=("$var")
-  fi
-done
+LF_PK="$(env_get LANGFUSE_PUBLIC_KEY)"
+LF_SK="$(env_get LANGFUSE_SECRET_KEY)"
 
-if [ ${#TRACE_MISSING[@]} -gt 0 ]; then
-  echo "Missing: ${TRACE_MISSING[*]}"
-
-  # LANGFUSE_INIT_PROJECT_* are honoured on FIRST boot only. If Postgres
-  # already holds a project, the seeded pair is inert and the collector will
-  # 401 until the real keys from the UI are pasted in.
+if [ -z "$LF_PK" ] || [ -z "$LF_SK" ]; then
+  # No pair yet. Generating one is only meaningful on a FIRST boot, where
+  # LANGFUSE_INIT_PROJECT_* seeds the project with exactly these keys.
   if [ -d "$DATA_DIR/postgres" ] && [ -n "$(ls -A "$DATA_DIR/postgres" 2>/dev/null)" ]; then
     cat >&2 <<'WARN'
 
-  !! Langfuse is already initialised — its project exists and keeps the keys
-     it was created with. The pair generated below will NOT take effect.
+  !! Langfuse is already initialised — its project keeps the keys it was
+     created with, and a generated pair would NOT take effect.
 
-     Create a key pair in the UI (Project Settings -> API Keys), then replace
-     the three generated values in .env:
+     Mint a pair in the UI (Project Settings -> API Keys) and add to .env:
 
-       LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-...
-       LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-...
-       LANGFUSE_OTEL_AUTH=$(printf '%s:%s' "$PUBLIC_KEY" "$SECRET_KEY" | base64 -w0)
+       LANGFUSE_PUBLIC_KEY=pk-lf-...
+       LANGFUSE_SECRET_KEY=sk-lf-...
 
-     Until then otel-collector will log 401s and drop spans; the inference
-     tier is unaffected.
+     Then re-run this script — it derives LANGFUSE_OTEL_AUTH for you.
+     Until then otel-collector logs 401s and drops spans; the inference tier
+     is unaffected.
 
 WARN
+    exit 1
   fi
 
   gen_uuid() {
-    if command -v uuidgen >/dev/null 2>&1; then
-      uuidgen
-    else
-      cat /proc/sys/kernel/random/uuid
-    fi
+    if command -v uuidgen >/dev/null 2>&1; then uuidgen; else cat /proc/sys/kernel/random/uuid; fi
   }
-
   LF_PK="pk-lf-$(gen_uuid)"
   LF_SK="sk-lf-$(gen_uuid)"
 
   {
     echo ""
-    echo "# --- Langfuse trace pipeline (generated $(date -u +%Y-%m-%dT%H:%M:%SZ)) ---"
-    echo "LANGFUSE_INIT_PROJECT_PUBLIC_KEY=${LF_PK}"
-    echo "LANGFUSE_INIT_PROJECT_SECRET_KEY=${LF_SK}"
-    echo "# Basic credential for the OTel Collector — base64(public:secret)."
-    echo "# Regenerate after changing either key above."
-    echo "LANGFUSE_OTEL_AUTH=$(printf '%s:%s' "$LF_PK" "$LF_SK" | base64 -w0)"
+    echo "# --- Langfuse project keys (generated $(date -u +%Y-%m-%dT%H:%M:%SZ)) ---"
+    echo "LANGFUSE_PUBLIC_KEY=${LF_PK}"
+    echo "LANGFUSE_SECRET_KEY=${LF_SK}"
   } >> "$ENV_FILE"
+  echo "Generated a project key pair (first boot — it will seed the project)."
+fi
 
-  echo "Done."
+# -w0 matters: a wrapped base64 makes an invalid Authorization header and
+# fails with the same 401 as a wrong key.
+WANT_AUTH="$(printf '%s:%s' "$LF_PK" "$LF_SK" | base64 -w0)"
+HAVE_AUTH="$(env_get LANGFUSE_OTEL_AUTH)"
+
+if [ "$WANT_AUTH" = "$HAVE_AUTH" ]; then
+  echo "LANGFUSE_OTEL_AUTH is consistent with the key pair. Skipping."
+elif [ -z "$HAVE_AUTH" ]; then
+  {
+    echo "# Derived from LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY — do not edit by hand."
+    echo "LANGFUSE_OTEL_AUTH=${WANT_AUTH}"
+  } >> "$ENV_FILE"
+  echo "Derived LANGFUSE_OTEL_AUTH from the key pair."
 else
-  echo "All trace-pipeline credentials present. Skipping."
+  cp "$ENV_FILE" "$ENV_FILE.bak"
+  sed -i "s|^LANGFUSE_OTEL_AUTH=.*|LANGFUSE_OTEL_AUTH=${WANT_AUTH}|" "$ENV_FILE"
+  echo "LANGFUSE_OTEL_AUTH was stale — re-derived from the key pair (backup: $ENV_FILE.bak)."
 fi
 
 # --- 2. create data directories -------------------------------------------
@@ -276,8 +277,10 @@ echo "      public_key=\"<project-public-key>\","
 echo "      secret_key=\"<project-secret-key>\","
 echo "  )"
 echo ""
-echo "Project keys are in .env (LANGFUSE_INIT_PROJECT_*); on an install that"
-echo "predates them, take the pair from the UI under Project Settings."
+echo "Project keys live in .env as LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY;"
+echo "LANGFUSE_OTEL_AUTH is derived from them by this script, never by hand."
+echo "On an install that predates them, mint the pair in the UI under Project"
+echo "Settings, put it in .env, and re-run this script."
 echo ""
 echo "Engine traces reach Langfuse without any SDK — SGLang exports OTLP to"
 echo "otel-collector, which forwards to the ingestion API. Verify with:"
