@@ -53,25 +53,26 @@ LANGFUSE_INIT_PROJECT_NAME=qwen36-27b
 LANGFUSE_INIT_USER_EMAIL=admin@example.com
 LANGFUSE_INIT_USER_NAME=admin
 
-LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-...
-LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-...
-LANGFUSE_OTEL_AUTH=<base64 of "public:secret">
+LANGFUSE_PUBLIC_KEY=pk-lf-...      # canonical SDK names — source of truth
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_OTEL_AUTH=<derived>       # base64(public:secret) — never edit by hand
 ```
 
 Headless init creates the first org/project/user on first boot.
 
-> **First boot only.** `LANGFUSE_INIT_*` is ignored once the project exists —
-> an install created before these vars were added keeps the keys it was born
-> with, and the seeded pair is inert. On such an install, mint a key pair in
-> the UI (Project Settings → API Keys) and replace all three values:
->
-> ```bash
-> printf '%s:%s' "$PUBLIC_KEY" "$SECRET_KEY" | base64 -w0   # LANGFUSE_OTEL_AUTH
-> ```
->
-> `init-langfuse.sh` detects this case and prints the same warning. Until the
-> keys are real, `otel-collector` logs 401s and drops spans — the inference
-> tier is unaffected.
+**The key pair is the single source of truth; `LANGFUSE_OTEL_AUTH` is derived
+from it.** Set the pair and re-run `init-langfuse.sh`, which regenerates the
+base64 whenever the two disagree. Editing the pair without regenerating leaves
+the collector on a stale credential, and the symptom — a `401` — is
+indistinguishable from a wrong key.
+
+> **First boot only.** `LANGFUSE_INIT_PROJECT_*` seeds the project with this
+> pair, but is ignored once a project exists. An install created before these
+> vars existed keeps the keys it was born with, so a generated pair is inert.
+> On such an install, mint a pair in the UI (Project Settings → API Keys), put
+> it in `.env` under the canonical names, and re-run the script. Until the keys
+> are real, `otel-collector` logs 401s and drops spans — the inference tier is
+> unaffected.
 
 ## Security
 

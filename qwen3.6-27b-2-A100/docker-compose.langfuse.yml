@@ -265,11 +265,18 @@ services:
       # Headless initialization — creates first org, project, user
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Default}
       LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-qwen36-27b}
-      # Project API keys are seeded here rather than clicked out of the UI, so
-      # the collector's Basic credential is reproducible from .env alone.
-      # Only honoured on FIRST boot — an existing project keeps its keys.
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
+      # Seeds the project key pair — FIRST BOOT ONLY. An already-initialised
+      # Langfuse keeps the keys its project was created with and ignores these
+      # entirely, so they are optional rather than fail-fast: making them
+      # required would break every compose command on an existing install in
+      # exchange for nothing.
+      #
+      # Sourced from the canonical SDK variable names, which is what the
+      # Langfuse UI hands you and therefore what anyone will actually set.
+      # The credential the collector authenticates with at runtime is
+      # LANGFUSE_OTEL_AUTH, derived from this same pair by init-langfuse.sh.
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
