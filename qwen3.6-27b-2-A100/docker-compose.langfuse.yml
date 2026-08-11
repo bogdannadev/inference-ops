@@ -130,9 +130,25 @@ services:
       - ./langfuse-data/clickhouse:/var/lib/clickhouse
       - ./langfuse-data/clickhouse-logs:/var/log/clickhouse-server
 
+      # Overrides are mounted FILE BY FILE, never as a directory.
+      #
+      # The image ships /etc/clickhouse-server/config.d/docker_related_config.xml,
+      # which is what sets `listen_host` to the wildcards. Bind-mounting our own
+      # directory onto config.d masks it, ClickHouse falls back to listening on
+      # 127.0.0.1 inside its own namespace, and langfuse-web/worker lose the
+      # database with a connection error that points nowhere near this file.
+      - ./clickhouse/config.d/logging.xml:/etc/clickhouse-server/config.d/logging.xml:ro
+      - ./clickhouse/config.d/system-log-ttl.xml:/etc/clickhouse-server/config.d/system-log-ttl.xml:ro
+      - ./clickhouse/config.d/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
+
     ports:
       - "127.0.0.1:8123:8123"
       - "127.0.0.1:9000:9000"
+
+    # Prometheus exposition, enabled by config.d/prometheus.xml. Internal only —
+    # `expose`, not `ports`, so it exists on qwen36-27b-backend and nowhere else.
+    expose:
+      - "9363"
 
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
@@ -284,6 +300,29 @@ services:
     ports:
       - "127.0.0.1:3001:3000"
 
+    # The four infra services below this tier all had healthchecks; the two
+    # application services did not, so `docker compose ps` reported them
+    # `running` whether or not they could serve. /api/public/ready is the
+    # readiness probe (checks DB + ClickHouse + Redis reachability), not the
+    # liveness one — a web container that is up but cannot reach ClickHouse is
+    # exactly the state worth surfacing here.
+    #
+    # wget, not curl: the image has wget only (verified in the image, not
+    # assumed). start_period covers Prisma migrations on first boot.
+    #
+    # $$HOSTNAME, not localhost — and this is not interchangeable. Docker sets
+    # HOSTNAME to the container ID, and the Next.js standalone server binds to
+    # exactly that interface, so nothing is listening on 127.0.0.1 or ::1
+    # inside the container. A localhost probe fails with "Connection refused"
+    # against a service that is serving perfectly well to every real client.
+    # The doubled $$ escapes compose interpolation so the shell expands it.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://$$HOSTNAME:3000/api/public/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
     restart: unless-stopped
 
     logging:
@@ -365,6 +404,19 @@ services:
     ports:
       - "127.0.0.1:3030:3030"
 
+    # The worker is where trace ingestion actually happens: spans that reach
+    # langfuse-web but never appear in the UI are almost always a stalled
+    # worker. Without a healthcheck that failure mode is invisible until
+    # someone opens the UI and finds it empty.
+    # $$HOSTNAME rather than localhost — same binding behaviour as the web
+    # container; see the note there.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://$$HOSTNAME:3030/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
     restart: unless-stopped
 
     logging:
@@ -417,6 +469,13 @@ services:
       - "4318"
       - "8888"
 
+    # No healthcheck, deliberately. The core collector image is distroless —
+    # no shell, no wget — so CMD-SHELL cannot run, and the `health_check`
+    # extension that would answer an HTTP probe lives in the contrib
+    # distribution, not this one. Liveness is covered instead by the Prometheus
+    # job on :8888: `up{job="otel-collector"}` is the same signal, and
+    # otelcol_exporter_send_failed_spans catches the more interesting failure
+    # where the process is alive but nothing is reaching Langfuse.
     restart: unless-stopped
 
     logging:

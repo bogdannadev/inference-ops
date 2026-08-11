@@ -18,7 +18,7 @@ aware tracing exists.
 | worker | `qwen36-27b-langfuse-worker` | `127.0.0.1:3030` | background processing |
 | postgres | `qwen36-27b-langfuse-postgres` | `127.0.0.1:5432` | metadata store |
 | redis | `qwen36-27b-langfuse-redis` | `127.0.0.1:6379` | queues |
-| clickhouse | `qwen36-27b-langfuse-clickhouse` | `127.0.0.1:8123`/`9000` | trace/event store |
+| clickhouse | `qwen36-27b-langfuse-clickhouse` | `127.0.0.1:8123`/`9000` | trace/event store; Prometheus metrics on internal `:9363` |
 | minio | `qwen36-27b-langfuse-minio` | `127.0.0.1:9092`/`9093` | S3 object storage |
 | otel-collector | `qwen36-27b-otel-collector` | none | OTLP ingest `:4317`/`:4318`, self-metrics `:8888` |
 
@@ -29,7 +29,8 @@ ssh -L 3001:127.0.0.1:3001 <host>
 # http://localhost:3001
 ```
 
-Data lives in `./langfuse-data/` (gitignored).
+Data lives in `./langfuse-data/` (gitignored). ClickHouse server config
+overrides live in `./clickhouse/config.d/` — see **Storage and retention**.
 
 ## Bootstrap
 
@@ -110,7 +111,8 @@ completions: SGLang traces the request lifecycle, not its content. That makes
 this pipeline excellent for "where did those 400ms go" and useless for evals
 or LLM-as-judge, which would need a gateway in the request path instead.
 
-**Verbosity.** `SGLANG_TRACE_LEVEL` (default `1` here, upstream default `3`):
+**Verbosity.** `SGLANG_TRACE_LEVEL` (set to `3` here, matching the upstream
+default):
 
 | Level | Emits |
 |---|---|
@@ -119,15 +121,98 @@ or LLM-as-judge, which would need a gateway in the request path instead.
 | 2 | all slices except nested |
 | 3 | all slices |
 
-We default to 1 deliberately. Level 3 creates a span per nested slice on the
-host-side threads, and on a node whose decode is bandwidth-bound at roughly
-50ms per forward pass there is no host-side headroom worth donating to span
-construction. Raise it temporarily during an investigation — no restart
-needed:
+Level 3 was measured before being adopted, because the initial assumption was
+that per-slice span construction would be too expensive to leave on:
+
+| | level 1 | level 3 |
+|---|---|---|
+| span rate | 0.551/s | 0.691/s |
+| failed exports | 0 | 0 |
+| export queue | 0 | 0 |
+| collector CPU | — | 0.03% of one core |
+
+Storage came out at **~410 bytes per span** across `events_full` and
+`events_core` — roughly 24 MB/day at the observed rate, against 1.2 TB free.
+The caution was misplaced: this node's decode is bandwidth-bound at ~50ms per
+forward pass, so host-side span construction is invisible, and the downstream
+cost is four hundred bytes.
+
+One caveat on that table: spans/sec conflates trace level with *request* rate
+and the two windows saw different traffic, so treat `0.551 → 0.691` as
+indicative rather than a clean delta. The robust figure is the per-span cost;
+multiply it by peak request rate and it stays negligible.
+
+Change it at runtime on a live replica — no restart, but the endpoint sits
+behind `--api-key`:
 
 ```bash
-curl "http://qwen36-27b-r0:8001/set_trace_level?level=3"
+curl -H "Authorization: Bearer $SGLANG_API_KEY" \
+     "http://127.0.0.1:8001/set_trace_level?level=1"
 ```
+
+`.env` carries `SGLANG_TRACE_LEVEL` so the setting survives a replica roll.
+
+## Storage and retention
+
+ClickHouse backs the traces, and left at stock settings it spends far more on
+observing itself than on storing data. Measured five days after first boot:
+
+| | |
+|---|---|
+| `system.trace_log` | 546 MiB (26.8M rows) |
+| `system.text_log` | 184 MiB |
+| `part_log` + `metric_log` + `asynchronous_metric_log` | 219 MiB |
+| `clickhouse-server.log` (one unrotated file) | 830 MiB |
+| **`default.*` — the actual traces** | **396 KiB** |
+
+Two independent stock defaults caused it, and neither is Langfuse's doing:
+
+- **The file logger** runs at `trace` with `1000M × 10` rotation — a 10 GB
+  ceiling, filling at ~166 MB/day here. Docker's `max-size` never applied:
+  ClickHouse writes these files itself, inside the bind mount.
+- **Every system log table ships with its `ttl` commented out**, so they grow
+  without bound. `trace_log` dominates because the query profiler samples on a
+  wall-clock timer — an idle server still fills it.
+
+Both are now bounded by `clickhouse/config.d/`:
+
+| File | Effect |
+|---|---|
+| `logging.xml` | level `information`, `100M × 3`, archives gzipped — ~130 MB steady state |
+| `system-log-ttl.xml` | 3-day TTL on high-churn diagnostics, 7-day on audit tables |
+| `prometheus.xml` | enables the `:9363` metrics endpoint (stock ships it commented out) |
+
+Applying the TTLs to an **existing** install takes a second step, because
+ClickHouse reads `ttl` only when it *creates* a table:
+
+```bash
+./deploy/apply-clickhouse-retention.sh                 # set TTLs
+./deploy/apply-clickhouse-retention.sh --drop-renamed  # reclaim orphans
+```
+
+> **Expect a one-time rename.** When a system log table's configured definition
+> stops matching the table on disk — exactly what happens the first time
+> `system-log-ttl.xml` lands — ClickHouse does not migrate it. It renames the
+> existing table to `<name>_0` and creates a fresh empty one. Those orphans
+> inherit no TTL and are referenced by nothing, so they sit on disk forever
+> until dropped. `--drop-renamed` is that cleanup, opt-in because `DROP TABLE`
+> is irreversible. Once the tables match config, later restarts reuse them and
+> no further renames occur.
+
+Two mounting rules worth not relearning:
+
+- **Mount the XML files individually, never the `config.d` directory.** The
+  image ships its own `docker_related_config.xml` there, and that file is what
+  sets `listen_host` to the wildcards. Masking it makes ClickHouse listen on
+  loopback inside its own namespace, and `langfuse-web`/`worker` lose the
+  database with an error that points nowhere near the mount.
+- **`opentelemetry_span_log` cannot take a `ttl` element.** It is the one
+  system log whose stock block specifies an explicit `engine`, and ClickHouse
+  rejects the combination with `Code: 36 ... 'ttl' setting doesn't make sense`
+  — thrown during system-log init, before any port opens, so the container
+  crash-loops with nothing on stdout and the trace only in
+  `clickhouse-server.err.log`. Its retention is set by ALTER in the script
+  instead.
 
 **Operational coupling.** SGLang raises on exporter *initialisation* failure
 rather than logging and continuing, so bringing the inference tier up without
@@ -137,7 +222,17 @@ Either keep the overlays together (the documented rule anyway) or set
 `deploy/roll-replica.sh` one replica at a time rather than a full restart.
 
 **Health.** The collector is scraped by Prometheus on `:8888`; watch
-`otelcol_exporter_send_failed_spans` and `otelcol_exporter_queue_size`.
+`otelcol_exporter_send_failed_spans` and `otelcol_exporter_queue_size`. The
+**Trace Pipeline** Grafana dashboard (folder `pipeline/`) panels all of it,
+and the `tracing` alert group in `prometheus/alerts.yml` covers export
+failures, queue fill, and receiver refusals.
+
+The collector has no container healthcheck, deliberately: the core image is
+distroless — no shell, so `CMD-SHELL` cannot run — and the `health_check`
+extension that would answer an HTTP probe lives in the contrib distribution,
+not this one. `up{job="otel-collector"}` is the equivalent signal, and the
+failed-span counter catches the more interesting case where the process is
+alive but nothing is reaching Langfuse.
 
 ## Sending traces from a client
 
@@ -170,7 +265,13 @@ docker compose -f docker-compose.yml -f docker-compose.metrics.yml \
 docker logs -f qwen36-27b-langfuse-worker
 ```
 
-All seven services must report `running`; infra ones also report `(healthy)`.
+All seven services must report `running`. Six of them also report `(healthy)`:
+`langfuse-web` and `langfuse-worker` gained healthchecks in 2026-08 (web on
+`/api/public/ready`, worker on `/api/health`) — before that they reported
+`running` whether or not they could serve, and a web container that was up but
+unable to reach ClickHouse looked identical to a working one. `otel-collector`
+is the sole exception, for the distroless reason given above.
+
 The worker is where background trace processing happens — check its logs if
 traces show up in the UI but stay unprocessed.
 

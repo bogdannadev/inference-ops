@@ -22,6 +22,109 @@ The deployment is assembled from **four compose files** in one project:
 > The overlays share the project network and volumes; running compose with a
 > single file lets them be treated as orphans.
 
+## How it fits together
+
+Three layers, each a loop. The request loop runs per request, the model loop
+runs per forward pass inside it, and the observability loop runs on human
+timescales and feeds back into the settings the other two obey.
+
+```text
+┌─ LAYER 1 ─ EDGE & ROUTING ───────────────────── one pass per request ──────┐
+│                                                                            │
+│   client                                                                   │
+│     │  HTTPS + edge key                                                    │
+│     ▼                                                                      │
+│   caddy :443            TLS · 8MB body cap · 401 guard · key swap          │
+│     │                   ── rejects here never reach SGLang ──┐             │
+│     ▼                                                        │             │
+│   sgl-router :8000      round_robin · injects `traceparent`  │             │
+│     │                                                        │             │
+│     ├──────────────┬───────────────────────────────────┐     │             │
+│     ▼              ▼                                   │     │             │
+│   r0 (GPU0)      r1 (GPU1)      TP=1 each, no P2P      │     │             │
+│     │              │                                   │     │             │
+└─────┼──────────────┼───────────────────────────────────┼─────┼─────────────┘
+      │              │                                   │     │
+      ▼              ▼                                   │     │
+┌─ LAYER 2 ─ MODEL WORK ────────────────── one pass per token step ──────────┐
+│                                                                       │    │
+│   ┌──────────────────────────────────────────────────────────────┐    │    │
+│   │  SCHEDULE      max-running-requests 4                        │    │    │
+│   │     │          continuous batching                           │    │    │
+│   │     ▼                                                        │    │    │
+│   │  PREFILL ──────► radix prefix cache ──► reuse or compute     │    │    │
+│   │     │            (mamba extra_buffer)   cached tokens skip   │    │    │
+│   │     ▼                                   prefill entirely     │    │    │
+│   │  DECODE LOOP ◄───────────────────────────────────┐           │    │    │
+│   │     │  EAGLE draft head: 6 tokens / 5 steps      │           │    │    │
+│   │     │  verify in ONE forward pass ───────────────┘           │    │    │
+│   │     │  accepted ≈ N tokens for the cost of 1 pass            │    │    │
+│   │     ▼                                                        │    │    │
+│   │  KV POOL       171,008 tokens · mem-fraction-static 0.92     │    │    │
+│   │     │          flashinfer attention · CUDA graph bs 1-4      │    │    │
+│   │     ▼                                                        │    │    │
+│   │  STREAM ───► SSE tokens back up through router and Caddy     │    │    │
+│   └──────────────────────────────────────────────────────────────┘    │    │
+│                                                                       │    │
+│   Bandwidth-bound: ~50ms per forward pass is weight movement, not     │    │
+│   math. Only bytes-moved-per-pass changes the number — which is why   │    │
+│   EAGLE (fewer passes) won and host-side scheduling tweaks did not.   │    │
+└───────────────────────────────────────────────────────────────────────┼────┘
+                                                                        │
+        metrics (pull, 5-30s)          traces (push, async) ────────────┘
+              │                              │
+              ▼                              ▼
+┌─ LAYER 3 ─ OBSERVABILITY ─────────────── the loop that changes things ─────┐
+│                                                                            │
+│   prometheus ◄── scrapes ── workers · router · caddy · dcgm · node         │
+│      │                      clickhouse · otel-collector · self             │
+│      │                                                                     │
+│      │              otel-collector ◄── OTLP/gRPC ── engine + router spans  │
+│      │                    │  protocol bridge + buffer                      │
+│      │                    ▼  OTLP/HTTP + Basic auth                        │
+│      │              langfuse ──► clickhouse   per-request span timings     │
+│      ▼                    │                                                │
+│   grafana ◄───────────────┘                                                │
+│      │   7 dashboards: overview · sglang · router · gpu · host             │
+│      │                 edge · pipeline                                     │
+│      │   17 prometheus alerts + 7 grafana SLO rules                        │
+│      ▼                                                                     │
+│   a human reads a regression                                               │
+│      │                                                                     │
+│      ▼                                                                     │
+│   change a setting in docker-compose.yml / Caddyfile / config.d            │
+│      │                                                                     │
+│      ▼                                                                     │
+│   deploy/roll-replica.sh  ── one replica at a time, peer stays serving     │
+│      │                                                                     │
+│      └────────────────► back into LAYER 1 and LAYER 2 ─────────────────────┘
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Reading the three loops**
+
+| Loop | Period | Closes when |
+|---|---|---|
+| Request | ms–minutes | tokens finish streaming back to the client |
+| Model work | ~50 ms | a forward pass verifies its draft tokens and appends to the KV pool |
+| Observability | hours–weeks | a measurement changes a setting, and a rolled replica proves it |
+
+The third loop is the reason the other two are worth instrumenting: every entry
+in *Current optimization state* below arrived through it, and the tuning
+campaign under `tuning/` is that loop run deliberately.
+
+Each layer has exactly one blind spot the layer below cannot see, which is why
+all three are instrumented separately:
+
+- **Caddy** sees requests that never reach SGLang — TLS failures, 401s from a
+  wrong edge key, 413s from the body cap. On the engine dashboards those look
+  like *silence*.
+- **The engine** sees queueing, prefill, decode and cache behaviour per
+  request, which no edge metric can decompose.
+- **The trace pipeline** stitches router and worker spans into one distributed
+  trace via `traceparent`, answering "where did those 400 ms go" across a hop
+  neither side can see alone.
+
 ## Quick start
 
 ```bash
@@ -64,7 +167,8 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 ├── Caddyfile                     # edge gateway: TLS, auth, body cap
 ├── deploy/
 │   ├── roll-replica.sh           # zero-downtime single-replica roll
-│   └── init-langfuse.sh          # one-shot Langfuse bootstrap
+│   ├── init-langfuse.sh          # one-shot Langfuse bootstrap
+│   └── apply-clickhouse-retention.sh   # one-time system-log TTLs
 ├── grafana/
 │   └── provisioning/             # datasource, dashboards, alert rules
 ├── prometheus/
@@ -72,6 +176,8 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 │   └── alerts.yml                # Prometheus-native alert rules
 ├── otel/
 │   └── collector.yaml            # OTLP gRPC -> Langfuse HTTP bridge
+├── clickhouse/
+│   └── config.d/                 # log rotation, system-log TTLs, :9363 metrics
 ├── docs/                         # this node's operational manual
 ├── benchmarks/                   # latency/throughput harnesses
 ├── tuning/                       # kernel/flag tuning campaign
@@ -85,8 +191,8 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
   EAGLE speculative decoding, Mamba radix prefix caching
 - `qwen36-27b-router` — SGLang model-gateway, `round_robin`, OpenAI API, :8000
 - `caddy` — TLS termination, edge-auth key swap, 8 MB body cap (only host ports)
-- `prometheus` — 15s scrape of all tiers, 30d retention, rule evaluation
-- `grafana` — dashboards (overview/sglang/router/gpu/host), SLO alert rules
+- `prometheus` — 9 scrape targets, 30d/20GB retention, 17 alert rules, hot reload
+- `grafana` — 7 dashboards (overview/sglang/router/gpu/host/edge/pipeline), SLO rules
 - `node-exporter` — host CPU/RAM/disk/network
 - `dcgm-exporter` — per-GPU utilisation/memory/power/occupancy
 - `qwen36-27b-langfuse-*` — Postgres, Redis, ClickHouse, MinIO, web, worker
@@ -106,7 +212,9 @@ prefix caching              radix tree, mamba extra_buffer (HiCache removed)
 router policy               round_robin (cache_aware starved r0)
 only host ports             80/443     Caddy; everything else loopback-only
 HiCache                     disabled   device radix tree unaffected
-request tracing             OTLP -> collector -> Langfuse, level 1
+request tracing             OTLP -> collector -> Langfuse, level 3
+trace cost                  ~410 B/span, ~24 MB/day — measured, not assumed
+clickhouse retention        3d diagnostics / 7d audit, logs capped at ~130 MB
 ```
 
 ## External access

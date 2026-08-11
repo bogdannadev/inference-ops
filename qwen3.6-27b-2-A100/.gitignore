@@ -1,4 +1,9 @@
+# Secrets. The glob matters: deploy/init-langfuse.sh and
+# apply-clickhouse-retention.sh both write .env.bak before editing in place,
+# and `.env` alone does not cover it — a backup full of live credentials was
+# sitting untracked-but-committable until this was widened.
 .env
+.env.*
 merged.yml
 
 # Runtime data — never commit

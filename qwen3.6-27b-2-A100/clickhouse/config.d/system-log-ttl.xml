@@ -1,0 +1,130 @@
+<?xml version="1.0"?>
+<!--
+  =============================================================================
+  ClickHouse system-log retention — qwen36-27b A100 node
+  Location in repo: ./clickhouse/config.d/system-log-ttl.xml
+  Mounted read-only at /etc/clickhouse-server/config.d/system-log-ttl.xml
+
+  WHY THIS FILE EXISTS
+    Every system log block in the stock config ships with its ttl element
+    commented out, so system log tables grow without bound. Measured on this
+    node after five days of near-idle Langfuse traffic:
+
+        system.trace_log                546 MiB   (26,861,951 rows)
+        system.text_log                 184 MiB
+        system.part_log                  74 MiB
+        system.metric_log                73 MiB
+        system.asynchronous_metric_log   72 MiB
+        =====================================================
+        default.*  (the actual payload)  396 KiB
+
+    ~1.0 GB of self-observation for 396 KiB of traces. trace_log dominates
+    because the query profiler samples stacks on a wall-clock timer, which
+    runs whether or not anyone is querying: an idle server still fills it.
+
+  RETENTION TIERS
+    3 days — high-churn diagnostics. Useful while an incident is live,
+             worthless a week later.
+    7 days — audit/forensics: what ran, what merged, what errored. This is
+             the window you actually walk back through after "Langfuse looked
+             wrong on Tuesday".
+
+  COLUMN NAMES ARE NOT UNIFORM
+    Most system log tables partition on event_date, but opentelemetry_span_log
+    has no such column: it uses finish_date. A blanket event_date TTL would
+    leave that one table silently unmanaged (or erroring, depending on
+    version), so it is spelled out separately below. Verify with:
+      SELECT name FROM system.columns
+       WHERE database='system' AND table='<t>' AND type='Date'
+
+  APPLIES TO NEW TABLES ONLY
+    ClickHouse reads the ttl element when it CREATES a system log table.
+    Tables that already exist keep the definition they were born with, so this
+    file alone does nothing to the gigabyte already on disk.
+    deploy/apply-clickhouse-retention.sh issues the matching one-time
+    ALTER TABLE ... MODIFY TTL, and this file makes the setting survive a
+    volume reset.
+
+  Not hot-reloadable. Changing this file needs a ClickHouse restart.
+  =============================================================================
+-->
+<clickhouse>
+    <!-- ===================================================================
+         3 days — high-churn diagnostics
+         =================================================================== -->
+    <trace_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </trace_log>
+
+    <text_log>
+        <!-- Same content as clickhouse-server.log, stored as a table. Its
+             level is independent of the logger element, so capping the file
+             in logging.xml does not cap this: set it here too, or text_log
+             keeps ingesting trace-level lines after the file stops recording
+             them. -->
+        <level>information</level>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </text_log>
+
+    <metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </metric_log>
+
+    <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </asynchronous_metric_log>
+
+    <processors_profile_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </processors_profile_log>
+
+    <background_schedule_pool_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </background_schedule_pool_log>
+
+    <!-- opentelemetry_span_log is deliberately NOT configured here.
+         It is the one system log whose stock block specifies an explicit
+         engine element, and ClickHouse refuses that combination outright:
+
+           Code: 36. DB::Exception: If 'engine' is specified for system table,
+           TTL parameters should be specified directly inside 'engine' and
+           'ttl' setting doesn't make sense. (BAD_ARGUMENTS)
+
+         That exception is thrown while initialising system logs, before the
+         server opens a port, so the container crash-loops with nothing on
+         stdout: the trace only appears in clickhouse-server.err.log inside the
+         bind mount. Verified the hard way.
+
+         Restating the whole engine expression with a TTL clause appended would
+         work, but changing the engine of an existing system table makes
+         ClickHouse rename the old one aside and start fresh, which trades a
+         bounded table for an orphaned one. The table holds 2.8 MiB and only
+         grows when ClickHouse's own OTel tracing is enabled (it is not), so
+         retention for it is handled by ALTER in
+         deploy/apply-clickhouse-retention.sh instead, where no engine
+         conflict arises.
+    -->
+
+    <!-- ===================================================================
+         7 days — audit / forensics
+         =================================================================== -->
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+
+    <query_views_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_views_log>
+
+    <part_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </part_log>
+
+    <error_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </error_log>
+
+    <asynchronous_insert_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </asynchronous_insert_log>
+</clickhouse>

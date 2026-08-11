@@ -4,18 +4,25 @@
 # Auto-loads every *.json below at Grafana boot.
 #
 # Organisation (production best practice):
-#   foldersFromFilesStructure: true  — each subdirectory of this folder maps to
-#   a Grafana folder (Overview / SGLang Engine / Router Proxy / GPU Hardware /
-#   Host Hardware), so dashboards are grouped by concern instead of dumped in
-#   one flat "Inference" folder.
+#   foldersFromFilesStructure: true — each subdirectory of this folder maps to
+#     a Grafana folder, so dashboards are grouped by concern instead of dumped
+#     in one flat list. Current folders:
+#       overview/  Overview          — cross-tier SLO summary, the home board
+#       sglang/    SGLang Engine     — per-replica engine internals
+#       router/    Router Proxy      — dispatch, worker health, circuit breaker
+#       gpu/       GPU Hardware      — DCGM telemetry
+#       host/      Host Hardware     — node-exporter
+#       edge/      Edge Gateway      — Caddy: the tier in front of everything
+#       pipeline/  Trace Pipeline    — OTel Collector -> Langfuse ingest health
 #
-#   allowUiUpdates: false   — dashboards are declared in this repo; UI edits
-#     are allowed to be overwritten by provisioning on next scan, keeping the
-#     checked-in JSON the source of truth.
+#   allowUiUpdates: false   — the checked-in JSON is the source of truth. UI
+#     edits are NOT saved back to these files and are overwritten on the next
+#     scan. Edit the JSON in this repo, not the browser.
 #   disableDeletion: true   — protect provisioned dashboards from accidental
 #     UI deletion.
-#   updateIntervalSeconds: 10 — re-scan the folder every 10s (not the default
-#     10s is already fine; kept explicit for visibility).
+#   updateIntervalSeconds: 10 — re-scan interval. Matches the Grafana default;
+#     stated explicitly so the reload cadence is visible when editing JSON by
+#     hand, which is the workflow this repo uses.
 # =============================================================================
 
 apiVersion: 1

@@ -30,3 +30,15 @@ datasources:
       queryTimeout: 60s
       manageAlerts: true
       prometheusType: Prometheus
+      # prometheusVersion belongs with prometheusType — Grafana gates PromQL
+      # features on it, and left unset it assumes an old server and hides
+      # newer functions from the query builder. Keep in step with the pinned
+      # image in docker-compose.metrics.yml.
+      prometheusVersion: "3.13.1"
+      # Re-query only the newly elapsed window on dashboard refresh instead of
+      # the whole range. These dashboards refresh at 10s over 1-6h windows, so
+      # this is the difference between re-reading six hours of samples every
+      # ten seconds and reading ten seconds of them.
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: 10m
+      cacheLevel: Low

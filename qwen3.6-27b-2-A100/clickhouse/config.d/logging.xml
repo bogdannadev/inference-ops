@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!--
+  =============================================================================
+  ClickHouse file logging — qwen36-27b A100 node
+  Location in repo: ./clickhouse/config.d/logging.xml
+  Mounted read-only at /etc/clickhouse-server/config.d/logging.xml
+
+  WHY THIS FILE EXISTS
+    The stock image logs at `trace` with <size>1000M</size><count>10</count>.
+    On this node that produced an 830 MB clickhouse-server.log in five days
+    (~166 MB/day) and would have settled at a 10 GB steady-state ceiling — to
+    serve a Langfuse dataset measured in hundreds of kilobytes. Docker's
+    per-container json-file rotation does NOT apply: ClickHouse writes these
+    files itself, inside the bind mount, so `max-size` in compose never sees
+    them.
+
+  LEVEL CHOICE
+    `information`, not `warning`. Startup, config reload, migration and merge
+    decisions are logged at information, and those are exactly the lines that
+    matter when Langfuse fails to migrate or a mount comes up wrong. `trace`
+    logs every part read and every scheduling decision — the 166 MB/day.
+
+  CEILING
+    100M live + 3 archives. Poco rotates on size and gzips each archive, and
+    ClickHouse log text compresses roughly 10x — the first rotation here turned
+    a 835 MB file into a 78 MB .0.gz — so the real steady state is ~130 MB
+    rather than the 400 MB the raw numbers suggest.
+
+  This section is reloadable — ClickHouse picks up level changes without a
+  restart. The system-log TTLs in system-log-ttl.xml are NOT; see that file.
+  =============================================================================
+-->
+<clickhouse>
+    <logger>
+        <level>information</level>
+        <size>100M</size>
+        <count>3</count>
+
+        <!-- `stream_compress` is deliberately left off. Archives are already
+             gzipped by the rotation policy; this option additionally LZ4s the
+             LIVE stream, so clickhouse-server.log stops being readable with
+             tail/grep and needs clickhouse-compressor to open. The extra
+             saving is small and the cost lands during an incident. -->
+    </logger>
+</clickhouse>

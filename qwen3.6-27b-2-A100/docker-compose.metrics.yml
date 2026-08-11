@@ -23,11 +23,14 @@
 #     `qwen36-27b-backend` below with `qwen36-27b-a100-network`.
 #
 # Image pinning:
-#   - Tags below are FLOATING PLACEHOLDERS. Resolve real tags (NGC tags for
-#     dcgm-exporter are versioned, e.g. X.Y.Z-A.B.C-ubuntu22.04 — use the
-#     registry API, not the rendered page), then pin digests:
-#       docker pull <image:tag>
-#       docker inspect --format='{{index .RepoDigests 0}}' <image:tag>
+#   - All three images are pinned tag@digest. The digests are the ones that
+#     were running when they were pinned, so this freezes a known-good state
+#     rather than adopting whatever `latest` resolves to on the next `up`.
+#     Docker resolves by digest and treats the tag as documentation.
+#   - To move one forward deliberately:
+#       docker pull <image:newtag>
+#       docker inspect --format='{{index .RepoDigests 0}}' <image:newtag>
+#     then update BOTH halves here.
 # =============================================================================
 
 services:
@@ -36,7 +39,7 @@ services:
   # Scrape config lives in ./prometheus/prometheus.yml
   # ---------------------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:latest   # PLACEHOLDER — resolve tag, pin digest
+    image: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
     container_name: qwen36-27b-prometheus
 
     # Observability CPU load is in the noise; park it on the NUMA-node-1
@@ -46,11 +49,45 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=30d
+      # Second retention bound, on size. `retention.time` alone is open-ended
+      # in bytes: a cardinality mistake — a new label with unbounded values —
+      # fills the disk long before 30 days elapse. Whichever limit trips first
+      # wins. 20 GiB is generous against the current ~5k series.
+      - --storage.tsdb.retention.size=20GB
       - --web.listen-address=0.0.0.0:9090
+      # Lets `curl -X POST http://127.0.0.1:9090/-/reload` apply scrape and
+      # rule changes in place. Without it, editing prometheus.yml means either
+      # SIGHUP via docker or recreating the container, and recreating is what
+      # people reach for — losing the WAL-backed head block for no reason.
+      # Safe here: the listener is loopback-bound and the admin API (which can
+      # delete series) stays off.
+      - --web.enable-lifecycle
 
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # The DIRECTORY is mounted, not the two files individually — and that
+    # distinction is load-bearing, not cosmetic.
+    #
+    # A single-file bind mount resolves to an inode at container start. Most
+    # editors (and sed -i, and any write-to-temp-then-rename) replace the file
+    # rather than truncating it, which leaves the container bound to the old,
+    # now-unlinked inode. The host file changes; the container never sees it.
+    #
+    # That failure is silent and actively misleading: `curl -X POST /-/reload`
+    # returns 200 and prometheus_config_last_reload_successful stays 1, because
+    # Prometheus really did reload — the stale file it can see. Hit here while
+    # adding the edge/tracing/storage rule groups: promtool validated 17 rules
+    # on the host while the container kept evaluating the original 6.
+    #
+    # Mounting the directory removes the class of bug entirely: lookups go
+    # through the live directory entry, so renames are picked up.
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
 
     # Loopback bind only — not reachable from outside the host.
@@ -106,6 +143,13 @@ services:
     expose:
       - "9100"
 
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9100/metrics || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
     restart: unless-stopped
 
     logging:
@@ -122,7 +166,15 @@ services:
   # (utilisation, memory, SM clocks, throttling, XID errors, NVLink/PCIe)
   # ---------------------------------------------------------------------------
   dcgm-exporter:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter:latest   # PLACEHOLDER — see header
+    # NOTE: this digest is a February 2022 image. NVIDIA stopped publishing
+    # `latest` on NGC, so the tag has been frozen there for years — which is
+    # also why the bundled dcp-metrics-included.csv predates SM_ACTIVE and
+    # SM_OCCUPANCY and why the custom counter file below exists. Pinning the
+    # digest at least makes that explicit instead of implying it is current.
+    # Moving to a real versioned NGC tag (X.Y.Z-A.B.C-ubuntu22.04) is a
+    # worthwhile upgrade, but it changes GPU profiling behaviour under
+    # SYS_ADMIN on a live serving node, so it belongs in its own change.
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:a1d913783fd185d78ed8b725334f75adc86eb594afe82961a73aa63c5d0ef423
     container_name: qwen36-27b-dcgm
 
     cpuset: "48-55"
@@ -193,7 +245,7 @@ services:
   #   GRAFANA_ADMIN_PASSWORD=...
   # ---------------------------------------------------------------------------
   grafana:
-    image: grafana/grafana-oss:latest   # PLACEHOLDER — resolve tag, pin digest
+    image: grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
     container_name: qwen36-27b-grafana
 
     cpuset: "48-55"
@@ -240,8 +292,20 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
 
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+    # service_healthy, not the bare list form. Grafana provisions its alert
+    # rules against the Prometheus datasource at boot; if Prometheus is merely
+    # *started* and not yet serving, those rules land in an error state that
+    # persists until someone notices and reloads them.
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
 
     restart: unless-stopped
 
