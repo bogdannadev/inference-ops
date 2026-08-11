@@ -78,6 +78,43 @@ scrape_configs:
           node: a100
 
   # ---------------------------------------------------------------------------
+  # Caddy — the edge itself
+  #
+  # The only job that sees requests which never reach SGLang: TLS handshake
+  # failures, 401s from a wrong edge key, and 413s from the 8MB body cap all
+  # terminate at Caddy, so they are invisible everywhere else in this file.
+  # A client-side outage that looks like "no traffic" on the engine dashboards
+  # shows up here as a 401 rate.
+  #
+  # Reached over the `edge` network (Prometheus is attached to both). Requires
+  # `servers { metrics }` in the Caddyfile global options — without it this
+  # target is up but serves only process and config gauges.
+  # ---------------------------------------------------------------------------
+  - job_name: caddy
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - caddy:2020
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector — trace pipeline self-telemetry
+  #
+  # Watch `otelcol_exporter_send_failed_spans` and `otelcol_exporter_queue_size`
+  # here: a Langfuse outage or a stale LANGFUSE_OTEL_AUTH shows up as failed
+  # spans and a filling queue long before anyone notices the UI is empty.
+  # Dropped spans are also the signal that the batch settings need widening.
+  # ---------------------------------------------------------------------------
+  - job_name: otel-collector
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - otel-collector:8888
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
   # Prometheus self-scrape
   # ---------------------------------------------------------------------------
   - job_name: prometheus

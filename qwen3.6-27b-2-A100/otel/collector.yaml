@@ -1,0 +1,90 @@
+# =============================================================================
+# OpenTelemetry Collector — SGLang trace pipeline
+# Location in repo: ./otel/collector.yaml
+# Mounted read-only into the otel-collector container by compose.langfuse.yml
+#
+# Why this process exists at all:
+#   SGLang's span exporter defaults to OTLP/gRPC (srt/observability/trace.py,
+#   OTEL_EXPORTER_OTLP_TRACES_PROTOCOL defaults to "grpc"). Langfuse accepts
+#   OTLP over HTTP only — HTTP/protobuf or HTTP/JSON — and explicitly does not
+#   support gRPC. The collector is the protocol bridge; without it the two ends
+#   cannot talk. It is not an optional convenience.
+#
+# It also earns its keep as a buffer. SGLang's exporter is in-process on the
+# tokenizer and scheduler threads, so a Langfuse restart would otherwise push
+# backpressure into the inference tier. The sending_queue absorbs that.
+# =============================================================================
+
+receivers:
+  # gRPC is what the SGLang engine and the router both use by default.
+  # HTTP stays open so a client SDK or the embedder can ship to the same
+  # collector later without adding another moving part.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Hard ceiling before the Go heap can grow into the inference tier's RAM.
+  # Must be FIRST in the pipeline so it rejects at the front door rather than
+  # after batching has already allocated.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Langfuse ingestion is one REST call per batch; batching is what stops that
+  # becoming one HTTP round-trip per span. 5s matches the tolerance here —
+  # these spans are for post-hoc latency forensics, not live alerting.
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+exporters:
+  # `otlp_http`, not the older `otlphttp` alias — the alias still resolves but
+  # logs a deprecation warning on every start.
+  otlp_http/langfuse:
+    # Base path only — the collector appends /v1/traces itself.
+    endpoint: http://langfuse-web:3000/api/public/otel
+
+    headers:
+      # Basic base64(public_key:secret_key) for the Langfuse PROJECT, not the
+      # admin user:
+      #   printf '%s:%s' "$PUBLIC_KEY" "$SECRET_KEY" | base64 -w0
+      Authorization: "Basic ${env:LANGFUSE_OTEL_AUTH}"
+      # Required by Langfuse v4 for real-time ingestion; without it the batch
+      # is accepted but handled on the legacy path.
+      x-langfuse-ingestion-version: "4"
+
+    # Survive a Langfuse/ClickHouse restart without losing the window.
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 300s
+
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+
+service:
+  telemetry:
+    metrics:
+      # `service.telemetry.metrics.address` is ignored as of collector v0.123;
+      # `readers` replaced it. The default binds 127.0.0.1, which Prometheus
+      # cannot reach from its own container — hence the explicit 0.0.0.0.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/langfuse]

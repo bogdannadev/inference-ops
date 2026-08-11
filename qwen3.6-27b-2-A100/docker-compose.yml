@@ -170,6 +170,23 @@ x-replica-common: &replica-common
     # edge key for this one — clients never see it)
     - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
 
+    # Request-trace verbosity (srt/observability/trace.py):
+    #   0 = off   1 = important slices   2 = all but nested   3 = all
+    # Upstream default is 3. We default to 1 because level 3 emits a span per
+    # nested slice on the tokenizer and scheduler threads — on a node whose
+    # decode budget is ~50ms of bandwidth-bound forward pass, per-slice span
+    # creation is host-side work we have no headroom to donate.
+    #
+    # This is the trace kill-switch: set 0 to stop emission without editing
+    # the command block. Level is also settable at runtime, no restart:
+    #   curl "http://qwen36-27b-r0:8001/set_trace_level?level=2"
+    - SGLANG_TRACE_LEVEL=${SGLANG_TRACE_LEVEL:-1}
+
+    # Batch the OTLP exporter so span export never becomes a per-request
+    # syscall. Defaults are 500ms / 64 spans.
+    - SGLANG_OTLP_EXPORTER_SCHEDULE_DELAY_MILLIS=${SGLANG_OTLP_SCHEDULE_DELAY_MS:-1000}
+    - SGLANG_OTLP_EXPORTER_MAX_EXPORT_BATCH_SIZE=${SGLANG_OTLP_MAX_BATCH:-256}
+
   entrypoint: sglang serve
 
   restart: unless-stopped
@@ -450,6 +467,8 @@ services:
       --enable-mfu-metrics
       --enable-cache-report
       --enable-forward-pass-metrics
+      --enable-trace
+      --otlp-traces-endpoint otel-collector:4317
       --log-requests
       --log-requests-level 1
       --speculative-algorithm EAGLE
@@ -580,6 +599,8 @@ services:
       --enable-mfu-metrics
       --enable-cache-report
       --enable-forward-pass-metrics
+      --enable-trace
+      --otlp-traces-endpoint otel-collector:4317
       --log-requests
       --log-requests-level 1
       --speculative-algorithm EAGLE
@@ -684,6 +705,8 @@ services:
       --request-timeout-secs 900
       --prometheus-host 0.0.0.0
       --prometheus-port 29000
+      --enable-trace
+      --otlp-traces-endpoint otel-collector:4317
 
     depends_on:
       qwen36-27b-r0:
@@ -725,6 +748,12 @@ services:
     ports:
       - "443:443"
       - "80:80"
+
+    # Metrics site from the Caddyfile. NOT in `ports:` — it stays on the edge
+    # docker network, where Prometheus scrapes it. Publishing it would put an
+    # unauthenticated endpoint on the host's public interface.
+    expose:
+      - "2020"
 
     stop_grace_period: 30s
 
