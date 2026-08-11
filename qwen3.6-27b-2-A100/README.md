@@ -11,7 +11,7 @@ The deployment is assembled from **four compose files** in one project:
 |---|---|
 | `docker-compose.yml` | inference tier: 2 workers, router, Caddy |
 | `docker-compose.metrics.yml` | observability: Prometheus, Grafana, node-exporter, DCGM |
-| `docker-compose.langfuse.yml` | LLM trace observability: Langfuse v4 + Postgres/ClickHouse/MinIO/Redis |
+| `docker-compose.langfuse.yml` | LLM trace observability: Langfuse v4 + Postgres/ClickHouse/MinIO/Redis + OTel Collector |
 | `docker-compose.embedder.yml` | **separate project** — TEI CPU embedding co-tenant |
 
 > **Compose rule — always pass the project files together:**
@@ -70,6 +70,8 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 ├── prometheus/
 │   ├── prometheus.yml            # scrape config
 │   └── alerts.yml                # Prometheus-native alert rules
+├── otel/
+│   └── collector.yaml            # OTLP gRPC -> Langfuse HTTP bridge
 ├── docs/                         # this node's operational manual
 ├── benchmarks/                   # latency/throughput harnesses
 ├── tuning/                       # kernel/flag tuning campaign
@@ -88,6 +90,7 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 - `node-exporter` — host CPU/RAM/disk/network
 - `dcgm-exporter` — per-GPU utilisation/memory/power/occupancy
 - `qwen36-27b-langfuse-*` — Postgres, Redis, ClickHouse, MinIO, web, worker
+- `qwen36-27b-otel-collector` — OTLP bridge: SGLang gRPC spans → Langfuse HTTP
 - `qwen3-emb` — TEI CPU embeddings (separate project, joins `edge` only)
 
 ## Current optimization state (2026-08)
@@ -103,6 +106,7 @@ prefix caching              radix tree, mamba extra_buffer (HiCache removed)
 router policy               round_robin (cache_aware starved r0)
 only host ports             80/443     Caddy; everything else loopback-only
 HiCache                     disabled   device radix tree unaffected
+request tracing             OTLP -> collector -> Langfuse, level 1
 ```
 
 ## External access

@@ -94,6 +94,81 @@ else
   echo "All secrets present. Skipping."
 fi
 
+# --- 1b. trace-pipeline credentials ---------------------------------------
+# Added after the initial Langfuse rollout, so these live in their own
+# idempotent block: an install that already has the eight secrets above
+# still needs these three.
+#
+# The OTel Collector authenticates to the Langfuse ingestion API with a
+# PROJECT key pair, not the admin user. Seeding the pair here keeps the whole
+# credential chain reproducible from .env instead of depending on someone
+# clicking through Project Settings.
+say "Checking trace-pipeline credentials in $ENV_FILE"
+
+TRACE_VARS=(
+  LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+  LANGFUSE_INIT_PROJECT_SECRET_KEY
+  LANGFUSE_OTEL_AUTH
+)
+
+TRACE_MISSING=()
+for var in "${TRACE_VARS[@]}"; do
+  if ! grep -q "^${var}=" "$ENV_FILE" 2>/dev/null; then
+    TRACE_MISSING+=("$var")
+  fi
+done
+
+if [ ${#TRACE_MISSING[@]} -gt 0 ]; then
+  echo "Missing: ${TRACE_MISSING[*]}"
+
+  # LANGFUSE_INIT_PROJECT_* are honoured on FIRST boot only. If Postgres
+  # already holds a project, the seeded pair is inert and the collector will
+  # 401 until the real keys from the UI are pasted in.
+  if [ -d "$DATA_DIR/postgres" ] && [ -n "$(ls -A "$DATA_DIR/postgres" 2>/dev/null)" ]; then
+    cat >&2 <<'WARN'
+
+  !! Langfuse is already initialised — its project exists and keeps the keys
+     it was created with. The pair generated below will NOT take effect.
+
+     Create a key pair in the UI (Project Settings -> API Keys), then replace
+     the three generated values in .env:
+
+       LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-...
+       LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-...
+       LANGFUSE_OTEL_AUTH=$(printf '%s:%s' "$PUBLIC_KEY" "$SECRET_KEY" | base64 -w0)
+
+     Until then otel-collector will log 401s and drop spans; the inference
+     tier is unaffected.
+
+WARN
+  fi
+
+  gen_uuid() {
+    if command -v uuidgen >/dev/null 2>&1; then
+      uuidgen
+    else
+      cat /proc/sys/kernel/random/uuid
+    fi
+  }
+
+  LF_PK="pk-lf-$(gen_uuid)"
+  LF_SK="sk-lf-$(gen_uuid)"
+
+  {
+    echo ""
+    echo "# --- Langfuse trace pipeline (generated $(date -u +%Y-%m-%dT%H:%M:%SZ)) ---"
+    echo "LANGFUSE_INIT_PROJECT_PUBLIC_KEY=${LF_PK}"
+    echo "LANGFUSE_INIT_PROJECT_SECRET_KEY=${LF_SK}"
+    echo "# Basic credential for the OTel Collector — base64(public:secret)."
+    echo "# Regenerate after changing either key above."
+    echo "LANGFUSE_OTEL_AUTH=$(printf '%s:%s' "$LF_PK" "$LF_SK" | base64 -w0)"
+  } >> "$ENV_FILE"
+
+  echo "Done."
+else
+  echo "All trace-pipeline credentials present. Skipping."
+fi
+
 # --- 2. create data directories -------------------------------------------
 say "Creating data directories under $DATA_DIR"
 
@@ -113,7 +188,8 @@ docker compose "${COMPOSE_FILES[@]}" pull \
   langfuse-clickhouse \
   langfuse-minio \
   langfuse-web \
-  langfuse-worker
+  langfuse-worker \
+  otel-collector
 
 # --- 4. start the stack ---------------------------------------------------
 say "Starting full stack (inference + metrics + langfuse)"
@@ -145,7 +221,7 @@ while :; do
   sleep 3
 done
 
-# --- 6. verify all 6 services are running ---------------------------------
+# --- 6. verify all 7 services are running ---------------------------------
 say "Service status"
 
 LANGFUSE_SVCS=(
@@ -155,6 +231,7 @@ LANGFUSE_SVCS=(
   qwen36-27b-langfuse-minio
   qwen36-27b-langfuse-web
   qwen36-27b-langfuse-worker
+  qwen36-27b-otel-collector
 )
 
 ALL_OK=true
@@ -199,4 +276,9 @@ echo "      public_key=\"<project-public-key>\","
 echo "      secret_key=\"<project-secret-key>\","
 echo "  )"
 echo ""
-echo "Project keys are available in the Langfuse UI under Project Settings."
+echo "Project keys are in .env (LANGFUSE_INIT_PROJECT_*); on an install that"
+echo "predates them, take the pair from the UI under Project Settings."
+echo ""
+echo "Engine traces reach Langfuse without any SDK — SGLang exports OTLP to"
+echo "otel-collector, which forwards to the ingestion API. Verify with:"
+echo "  docker logs qwen36-27b-otel-collector | grep -i 'traces\\|401'"
