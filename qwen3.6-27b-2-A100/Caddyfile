@@ -19,6 +19,32 @@
 #     import argument.
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# Global options
+#
+# The global `metrics` option turns on Prometheus instrumentation for the HTTP
+# servers. Without it the only thing on /metrics is Caddy's own process and
+# config gauges — no request counts, no status codes, no latency histograms.
+# (The nested `servers { metrics }` spelling is deprecated and disappears in
+# the next major version — use this one.)
+#
+# `per_host` adds a host label, which is what separates inference traffic from
+# embedder traffic in the same series. It is off by default because an
+# arbitrary Host header would otherwise mint unbounded label values; Caddy
+# guards that by only recording configured hosts and bucketing everything else
+# under `_other`. Both our sites are HTTPS with real certificates, so the
+# label set is bounded by this file: two hosts plus `_other`.
+#
+# The admin API is deliberately left at its default — localhost:2019, inside
+# the container only. It can rewrite Caddy's whole config, so it must not be
+# reachable from a docker network. Metrics are served separately below.
+# -----------------------------------------------------------------------------
+{
+	metrics {
+		per_host
+	}
+}
+
 (edge_auth) {
 	# ACME registration contact for certificate issuance
 	tls contact@bogdanna.dev
@@ -59,4 +85,25 @@ qw3-emb.bnna.dev {
 	import edge_auth 8MB
 
 	reverse_proxy qwen3-emb:80
+}
+
+# -----------------------------------------------------------------------------
+# Metrics exposition — internal only
+#
+# A port-only site address means plain HTTP with no automatic TLS and no
+# hostname matching, so this never appears as a public endpoint: port 2020 is
+# not in the compose `ports:` list, so it exists only on the `edge` docker
+# network where Prometheus scrapes it.
+#
+# Deliberately NOT importing edge_auth: that snippet asserts a Bearer header
+# and would 401 the scraper, and the edge key has no business being in
+# prometheus.yml. Network isolation is the control here, same as every other
+# exporter in this stack.
+#
+# This is the only telemetry that sees the edge itself — TLS handshake
+# failures, 401s from bad edge keys, and body-cap rejections are all invisible
+# to the SGLang and router metrics, because those requests never reach them.
+# -----------------------------------------------------------------------------
+:2020 {
+	metrics
 }

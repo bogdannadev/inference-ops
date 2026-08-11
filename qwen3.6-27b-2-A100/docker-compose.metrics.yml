@@ -65,8 +65,19 @@ services:
         max-size: "50m"
         max-file: "5"
 
+    # Prometheus joins `edge` in ADDITION to the backend network, purely to
+    # scrape Caddy's :2020 metrics site. Caddy cannot be pulled onto the
+    # backend network instead: that would let the internet-facing proxy reach
+    # the worker ports and ZMQ sockets, which is exactly the lateral-movement
+    # path the network split was created to close (see docs/ARCHITECTURE.md).
+    #
+    # This direction is the safe one. Scrapes are outbound from Prometheus,
+    # and the edge members it becomes reachable to — Caddy and the TEI
+    # embedder — are both fixed-upstream proxies with no fetch primitive an
+    # attacker could aim at :9090.
     networks:
       - qwen36-27b-backend
+      - edge
 
   # ---------------------------------------------------------------------------
   # Node Exporter — host-level hardware telemetry on :9100
@@ -242,6 +253,14 @@ services:
 
     networks:
       - qwen36-27b-backend
+
+networks:
+  # Declared here so the Prometheus service above can attach to it. Created
+  # once outside compose (`docker network create edge`) and shared with the
+  # embedder project, hence external.
+  edge:
+    name: edge
+    external: true
 
 volumes:
   prometheus_data:

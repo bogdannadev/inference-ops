@@ -1,6 +1,7 @@
 # =============================================================================
 # LANGFUSE OVERLAY — LLM application observability
 # Postgres + Redis + ClickHouse + MinIO + Langfuse Web + Langfuse Worker
+#                  + OpenTelemetry Collector (SGLang gRPC -> Langfuse HTTP)
 #
 # Usage — all three files, one compose project:
 #   docker compose -f docker-compose.yml `
@@ -258,9 +259,17 @@ services:
       REDIS_PORT: "6379"
       REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
 
+      # LLM gateway upstream allowlist (SSRF guard) — docker-internal router
+      LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: ${LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST:-}
+
       # Headless initialization — creates first org, project, user
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Default}
       LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-qwen36-27b}
+      # Project API keys are seeded here rather than clicked out of the UI, so
+      # the collector's Basic credential is reproducible from .env alone.
+      # Only honoured on FIRST boot — an existing project keeps its keys.
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@bnna.dev}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
@@ -343,8 +352,63 @@ services:
       REDIS_PORT: "6379"
       REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
 
+      # LLM gateway upstream allowlist (SSRF guard) — docker-internal router
+      LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: ${LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST:-}
+
     ports:
       - "127.0.0.1:3030:3030"
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector — protocol bridge, SGLang gRPC -> Langfuse HTTP
+  #
+  # Lives in THIS overlay, not the metrics overlay, because its only exporter
+  # targets langfuse-web: it cannot do useful work without Langfuse, while
+  # Langfuse is perfectly useful without it. Overlays split on lifecycle.
+  #
+  # Consequence to know: the workers and router in docker-compose.yml point
+  # their --otlp-traces-endpoint at this service. SGLang raises on exporter
+  # INITIALISATION failure, so bringing the inference tier up without this
+  # overlay is not a supported combination while tracing is enabled — see
+  # docs/LANGFUSE.md for the SGLANG_TRACE_LEVEL=0 escape hatch.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector:0.158.0@sha256:5b97e6e3550ec6e48a71dba6f6304d349a293af8df4ee1f51da67be94fce2ecd
+    container_name: qwen36-27b-otel-collector
+
+    cpuset: "48-55"
+
+    command:
+      - --config=/etc/otelcol/config.yaml
+
+    depends_on:
+      langfuse-web:
+        condition: service_started
+
+    environment:
+      # Basic base64(project_public_key:project_secret_key). Project keys are
+      # created by the headless init below; see docs/LANGFUSE.md.
+      LANGFUSE_OTEL_AUTH: ${LANGFUSE_OTEL_AUTH:?set LANGFUSE_OTEL_AUTH in .env}
+
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/config.yaml:ro
+
+    # No published host ports. Traces arrive over the backend network; the
+    # :8888 self-telemetry endpoint is scraped by Prometheus on that network.
+    expose:
+      - "4317"
+      - "4318"
+      - "8888"
 
     restart: unless-stopped
 
