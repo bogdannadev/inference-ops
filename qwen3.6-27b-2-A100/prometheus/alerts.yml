@@ -75,3 +75,179 @@ groups:
         annotations:
           summary: "Host memory above 95%"
           description: "Host RAM is {{ $value | humanizePercentage }} utilised for 10 minutes."
+
+  # ---------------------------------------------------------------------------
+  # Edge (Caddy)
+  #
+  # Everything here is invisible to the SGLang and router jobs by construction:
+  # these requests terminate at the edge and never reach an upstream, so no
+  # engine-side metric can report them. A client-side outage that looks like
+  # "no traffic" on the engine dashboards shows up in this group as a 401 rate.
+  # ---------------------------------------------------------------------------
+  - name: edge
+    rules:
+      - alert: EdgeUpstreamUnhealthy
+        expr: caddy_reverse_proxy_upstreams_healthy == 0
+        for: 2m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "Caddy cannot reach upstream {{ $labels.upstream }}"
+          description: >-
+            Caddy has marked {{ $labels.upstream }} unhealthy for 2 minutes.
+            Distinct from the router's own worker health-checks: this fires
+            when Caddy cannot reach the router at all, which is exactly the
+            case where router metrics stop arriving and cannot report it.
+
+      - alert: EdgeAuthRejectionRate
+        expr: sum(rate(caddy_http_request_duration_seconds_count{code="401"}[5m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Edge rejecting {{ $value | printf \"%.2f\" }} req/s with 401"
+          description: >-
+            Sustained 401s at the edge: either a client is deployed with a
+            stale EDGE_API_KEY, or something is probing the endpoint. Ten
+            minutes of tolerance so a single misconfigured client restart does
+            not page.
+
+      - alert: EdgeBodyCapRejections
+        expr: sum(rate(caddy_http_request_duration_seconds_count{code="413"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Requests exceeding the 8MB edge body cap"
+          description: >-
+            A client is sending payloads past the cap. The cap exists because
+            the production outage began with a ~244K-token request, so this is
+            an early warning that a caller is building prompts that would
+            destabilise the engine if they got through.
+
+      - alert: EdgeServerErrors
+        expr: sum(rate(caddy_http_request_duration_seconds_count{code=~"5.."}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "Edge serving 5xx at {{ $value | printf \"%.2f\" }} req/s"
+          description: "502/503/504 at Caddy means the router or workers are failing or timing out, seen from the client's side."
+
+      - alert: EdgeConfigReloadFailed
+        expr: caddy_config_last_reload_successful == 0
+        for: 1m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Caddy config reload failed"
+          description: >-
+            Caddy is still serving its previous configuration; the running
+            edge has silently diverged from the Caddyfile in this repo.
+
+  # ---------------------------------------------------------------------------
+  # Trace pipeline (OTel Collector -> Langfuse)
+  #
+  # The whole pipeline is asynchronous, which is the point — a Langfuse outage
+  # must never apply backpressure to a generation. The cost of that design is
+  # that it fails silently: nothing in the request path degrades when traces
+  # stop arriving, so without these rules the first symptom is someone opening
+  # the UI days later and finding it empty.
+  # ---------------------------------------------------------------------------
+  - name: tracing
+    rules:
+      - alert: TraceExportFailing
+        expr: sum(rate(otelcol_exporter_send_failed_spans[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Collector failing to export spans to Langfuse"
+          description: >-
+            Sustained export failures are almost always LANGFUSE_OTEL_AUTH no
+            longer matching a live project key pair — a 401 indistinguishable
+            from a wrong key. Re-derive it with deploy/init-langfuse.sh; see
+            docs/LANGFUSE.md.
+
+      - alert: TraceQueueFilling
+        expr: >-
+          sum(otelcol_exporter_queue_size)
+            / clamp_min(sum(otelcol_exporter_queue_capacity), 1) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Collector export queue {{ $value | humanizePercentage }} full"
+          description: >-
+            Langfuse is not draining spans as fast as they arrive. The queue is
+            the buffer that makes a Langfuse restart free; once it fills, spans
+            are dropped and cannot be recovered.
+
+      - alert: TraceSpansRefused
+        expr: sum(rate(otelcol_receiver_refused_spans[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Collector refusing incoming spans"
+          description: >-
+            memory_limiter hit its 512 MiB soft limit and is rejecting spans at
+            the receiver. Raise the limit or widen the batch settings in
+            otel/collector.yaml.
+
+  # ---------------------------------------------------------------------------
+  # Storage (ClickHouse)
+  #
+  # Added after an audit found ~1.0 GB of untenanted system log tables and an
+  # 830 MB unrotated server log backing 396 KiB of real traces. node-exporter
+  # reports host disk in aggregate only, so nothing attributed that growth to
+  # ClickHouse until it was looked for deliberately. Retention is now bounded
+  # by clickhouse/config.d; these rules catch a regression.
+  # ---------------------------------------------------------------------------
+  - name: storage
+    rules:
+      - alert: ClickHouseDiskFilling
+        expr: >-
+          ClickHouseAsyncMetrics_DiskUsed_default
+            / clamp_min(ClickHouseAsyncMetrics_DiskTotal_default
+                        + ClickHouseAsyncMetrics_DiskUsed_default, 1) > 0.85
+        for: 15m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "ClickHouse data disk {{ $value | humanizePercentage }} used"
+          description: "Trace storage is running out of room. Check retention with deploy/apply-clickhouse-retention.sh."
+
+      - alert: ClickHouseSelfObservationDominates
+        expr: >-
+          ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTablesSystem > 5e9
+        for: 30m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "ClickHouse system tables above 5 GB"
+          description: >-
+            system.* has outgrown its retention envelope — the failure mode
+            this node already hit once, where trace_log and text_log held a
+            gigabyte to back a few hundred kilobytes of traces. Confirm the
+            TTLs survived with deploy/apply-clickhouse-retention.sh.
+
+      - alert: ClickHouseQueryFailures
+        expr: rate(ClickHouseProfileEvents_FailedQuery[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "ClickHouse failing {{ $value | printf \"%.2f\" }} queries/s"
+          description: "Langfuse surfaces ingestion errors slowly; this catches them at the database."

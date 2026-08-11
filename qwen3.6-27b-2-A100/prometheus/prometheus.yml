@@ -8,6 +8,23 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+  # Explicit rather than inherited. The default is also 10s, but two jobs below
+  # run a 5s scrape_interval, and a timeout longer than the interval is a
+  # config error in Prometheus. It currently survives only because Prometheus
+  # silently clamps the timeout down to the interval — stating it here means
+  # the next person to lower an interval sees the relationship instead of
+  # relying on that clamp.
+  scrape_timeout: 10s
+
+  # Stamped onto every series leaving this server (federation, remote-write,
+  # Alertmanager). This node runs one Prometheus today, but alerts already
+  # carry a hand-written `node: a100` label per rule; external_labels is the
+  # mechanism that keeps that identity correct if a second node ever ships
+  # metrics to a shared target, without editing every rule again.
+  external_labels:
+    node: a100
+    stack: qwen36-27b
+
 # Prometheus-native alerting rules (infra-level: endpoint up, GPU health).
 # Grafana owns the app-level SLO alerts (latency, KV pool, radix hit rate).
 rule_files:
@@ -115,9 +132,43 @@ scrape_configs:
           node: a100
 
   # ---------------------------------------------------------------------------
+  # ClickHouse — Langfuse's trace store, and the largest disk consumer on the
+  # node by a wide margin.
+  #
+  # Added after an audit found 1.0 GB of untenanted system log tables plus an
+  # 830 MB unrotated server log backing 396 KiB of actual traces. Nothing
+  # attributed that growth to ClickHouse: node-exporter reports host disk in
+  # aggregate only. Retention is now bounded by clickhouse/config.d, and this
+  # job is what makes a regression visible before it is measured in gigabytes.
+  #
+  # Series worth knowing:
+  #   ClickHouseAsyncMetrics_DiskUsed_default   — bytes on the data disk
+  #   ClickHouseAsyncMetrics_NumberOfTables     — table-count drift
+  #   ClickHouseMetrics_Query / _Merge          — live query and merge load
+  #   ClickHouseProfileEvents_FailedQuery       — cumulative failure counter
+  #
+  # Requires <prometheus> in clickhouse/config.d/prometheus.xml; the stock
+  # image ships that section commented out and exposes nothing.
+  # ---------------------------------------------------------------------------
+  - job_name: clickhouse
+    scrape_interval: 30s
+    # ClickHouse renders its whole async-metric set on every scrape, which is
+    # the slowest exposition in this file and the least time-sensitive. Disk
+    # and part counts move over hours, not seconds.
+    static_configs:
+      - targets:
+          - qwen36-27b-langfuse-clickhouse:9363
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
   # Prometheus self-scrape
   # ---------------------------------------------------------------------------
   - job_name: prometheus
     static_configs:
       - targets:
           - localhost:9090
+        labels:
+          # Every other job carries this; without it the self-scrape series
+          # drop out of any dashboard variable or query filtered on `node`.
+          node: a100

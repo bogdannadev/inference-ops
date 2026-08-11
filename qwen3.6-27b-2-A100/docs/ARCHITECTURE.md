@@ -96,8 +96,8 @@ shared prefix caches on both replicas.
 
 | Service | Endpoint | Notes |
 |---|---|---|
-| `prometheus` | host `127.0.0.1:9090` | 15s global scrape, 30d retention, `rule_files: /etc/prometheus/alerts.yml` |
-| `grafana` | host `127.0.0.1:3000` | 5 dashboards + SLO alert rules, auto-provisioned |
+| `prometheus` | host `127.0.0.1:9090` | 15s global scrape, 30d/20GB retention, hot reload via `--web.enable-lifecycle`, `./prometheus` mounted as a directory |
+| `grafana` | host `127.0.0.1:3000` | 7 dashboards + SLO alert rules, auto-provisioned |
 | `node-exporter` | `qwen36-27b-node-exporter:9100` | host CPU/RAM/disk/network |
 | `dcgm-exporter` | `dcgm-exporter:9400` | per-GPU telemetry, 1000ms sampling |
 
@@ -109,7 +109,7 @@ shared prefix caches on both replicas.
 | `qwen36-27b-langfuse-worker` | `127.0.0.1:3030` | background trace processing |
 | `qwen36-27b-langfuse-postgres` | `127.0.0.1:5432` | metadata |
 | `qwen36-27b-langfuse-redis` | `127.0.0.1:6379` | queues |
-| `qwen36-27b-langfuse-clickhouse` | `127.0.0.1:8123` / `9000` | trace/event storage |
+| `qwen36-27b-langfuse-clickhouse` | `127.0.0.1:8123` / `9000` | trace/event storage; Prometheus metrics on internal `:9363`; server config overrides from `./clickhouse/config.d/` |
 | `qwen36-27b-langfuse-minio` | `127.0.0.1:9092` / `9093` | object storage |
 | `qwen36-27b-otel-collector` | none (backend only) | OTLP `:4317`/`:4318` in, Langfuse HTTP out, `:8888` self-metrics |
 
@@ -139,14 +139,23 @@ if absent.
 The inference tier gained optional trace knobs, all with defaults:
 
 ```bash
-SGLANG_TRACE_LEVEL=1          # 0=off 1=important 2=all-but-nested 3=all
+SGLANG_TRACE_LEVEL=3          # 0=off 1=important 2=all-but-nested 3=all
 SGLANG_OTLP_SCHEDULE_DELAY_MS=1000
 SGLANG_OTLP_MAX_BATCH=256
 ```
 
+Level 3 was adopted after measurement, not by default — ~410 bytes per span
+and no measurable engine cost on a node whose decode is bandwidth-bound. See
+`docs/LANGFUSE.md` for the numbers.
+
 `SGLANG_TRACE_LEVEL=0` is the kill-switch — it stops span emission without
 editing the command blocks. The level is also settable at runtime with no
-restart: `curl "http://qwen36-27b-r0:8001/set_trace_level?level=2"`.
+restart, though the endpoint sits behind `--api-key`:
+
+```bash
+curl -H "Authorization: Bearer $SGLANG_API_KEY" \
+     "http://127.0.0.1:8001/set_trace_level?level=2"
+```
 
 ## Image pinning
 
