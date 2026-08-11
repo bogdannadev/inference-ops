@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+  =============================================================================
+  ClickHouse Prometheus exposition — qwen36-27b A100 node
+  Location in repo: ./clickhouse/config.d/prometheus.xml
+  Mounted read-only at /etc/clickhouse-server/config.d/prometheus.xml
+
+  The stock config ships this whole section commented out, so ClickHouse runs
+  unmonitored by default. That is how a 1 GB system-log pile and an 830 MB
+  unrotated server log accumulated here unnoticed for five days: node-exporter
+  reports host disk in aggregate, and nothing attributed the growth to
+  ClickHouse.
+
+  What this unlocks (job `clickhouse` in prometheus/prometheus.yml):
+    ClickHouseAsyncMetrics_*  — disk free, parts count, table sizes, uptime
+    ClickHouseMetrics_*       — live queries, merges, connections, mutations
+    ClickHouseProfileEvents_* — cumulative counters: inserts, merges, failures
+
+  No authentication: this port serves read-only gauges, exposes no query
+  interface, and is published to nothing — the container declares `expose`,
+  not `ports`, so it is reachable only from qwen36-27b-backend where
+  Prometheus lives. Same control as every other exporter in this stack.
+
+  Requires a restart; unlike <logger>, this section is not hot-reloadable.
+  =============================================================================
+-->
+<clickhouse>
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+</clickhouse>

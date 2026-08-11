@@ -29,7 +29,14 @@ ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <host>
 | `node` | `qwen36-27b-node-exporter:9100` | 15s | host CPU/RAM/disk/network |
 | `caddy` | `caddy:2020` | 15s | edge RED metrics — see below |
 | `otel-collector` | `otel-collector:8888` | 15s | trace-pipeline self-telemetry |
+| `clickhouse` | `qwen36-27b-langfuse-clickhouse:9363` | 30s | trace-store disk, parts, queries — see below |
 | `prometheus` | `localhost:9090` | 15s | self-scrape (`up{job="prometheus"}` exempted from the down alert) |
+
+`global` also sets `external_labels: {node: a100, stack: qwen36-27b}`, stamped
+onto every series leaving this server, and an explicit `scrape_timeout: 10s`.
+The explicit timeout matters because two jobs run a 5s `scrape_interval`, and a
+timeout longer than the interval is a config error — it currently survives only
+because Prometheus clamps it down silently.
 
 ### Caddy — the edge
 
@@ -64,6 +71,41 @@ two series that matter. A Langfuse outage or a stale `LANGFUSE_OTEL_AUTH`
 shows up as failed spans and a filling queue well before anyone notices the
 Langfuse UI has stopped filling in.
 
+### ClickHouse
+
+Added 2026-08-11 after an audit found ClickHouse spending ~1.85 GB on
+self-observation to back **396 KiB** of actual trace data:
+
+| | |
+|---|---|
+| `system.trace_log` | 546 MiB (26.8M rows) |
+| `system.text_log` | 184 MiB |
+| `part_log` + `metric_log` + `asynchronous_metric_log` | 219 MiB |
+| `clickhouse-server.log` (single unrotated file) | 830 MiB |
+| **`default.*` — the real payload** | **396 KiB** |
+
+Accumulated in five days. Nothing attributed it to ClickHouse: node-exporter
+reports host disk in aggregate, and the stock image ships its `<prometheus>`
+section commented out, so the database exposed no metrics at all. Retention is
+now bounded (see `clickhouse/config.d/`, and `docs/LANGFUSE.md` for the full
+account); this job is what makes a regression visible early.
+
+Series worth knowing:
+
+```
+ClickHouseAsyncMetrics_DiskUsed_default                  bytes on the data disk
+ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTables       all tables
+ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTablesSystem system.* only
+ClickHouseMetrics_PartsActive                            merge backlog
+ClickHouseProfileEvents_FailedQuery                      cumulative failures
+```
+
+The gap between the two `TotalBytesOfMergeTree*` series is the real payload. If
+the `System` line dominates again, the failure mode has returned.
+
+30s interval, not 15s: ClickHouse renders ~3,000 metrics per scrape — the
+heaviest exposition in this file and the least time-sensitive.
+
 ### DCGM
 
 `dcgm-exporter` runs a **custom counter file** (`tuning/prometheus/dcgm-counters.csv`,
@@ -79,7 +121,9 @@ Sampling is 1000 ms (`--collect-interval 1000`). The container needs
 ## Prometheus-native alerts — `prometheus/alerts.yml`
 
 Infra/GPU health rules. These are the **operational signal** (page-worthy
-events). Grouped by `endpoints`, `gpu`, `host`:
+events). 17 rules in six groups:
+
+**`endpoints` / `gpu` / `host`**
 
 - `PrometheusTargetDown` — any scrape target `up == 0` for 2m (critical)
 - `GpuHighTemperature` — DCGM temp > 85°C for 5m (critical)
@@ -88,9 +132,36 @@ events). Grouped by `endpoints`, `gpu`, `host`:
 - `HostLowDiskSpace` — root fs < 10% free for 10m (warning)
 - `HostMemoryPressure` — host RAM > 95% for 10m (warning)
 
+**`edge`** — failures that terminate at Caddy and reach no upstream, so no
+engine-side rule can see them:
+
+- `EdgeUpstreamUnhealthy` — `caddy_reverse_proxy_upstreams_healthy == 0` for 2m (critical)
+- `EdgeAuthRejectionRate` — 401s > 0.2/s for 10m (warning)
+- `EdgeBodyCapRejections` — any 413 for 5m (warning)
+- `EdgeServerErrors` — 5xx > 0.05/s for 5m (critical)
+- `EdgeConfigReloadFailed` — running edge diverged from the Caddyfile (warning)
+
+**`tracing`** — the pipeline is asynchronous end to end, which is the design
+goal (a Langfuse outage must not apply backpressure to a generation) and also
+why it fails silently:
+
+- `TraceExportFailing` — failed spans for 10m (warning); nearly always a stale `LANGFUSE_OTEL_AUTH`
+- `TraceQueueFilling` — export queue > 50% for 10m (warning)
+- `TraceSpansRefused` — `memory_limiter` rejecting at the receiver for 5m (warning)
+
+**`storage`**
+
+- `ClickHouseDiskFilling` — data disk > 85% for 15m (warning)
+- `ClickHouseSelfObservationDominates` — `system.*` above 5 GB for 30m (warning)
+- `ClickHouseQueryFailures` — > 0.1 failed queries/s for 10m (warning)
+
+Error-rate expressions use `... or vector(0)` and `clamp_min(...)` on
+denominators, so a healthy system renders `0` rather than "No data" and a
+traffic lull cannot produce a fake ratio spike.
+
 ## Grafana dashboards — `grafana/provisioning/dashboards/`
 
-Five dashboards, one per folder, auto-provisioned (read-only):
+Seven dashboards, one per folder, auto-provisioned (read-only):
 
 | Folder | File | Content |
 |---|---|---|
@@ -99,16 +170,41 @@ Five dashboards, one per folder, auto-provisioned (read-only):
 | `router` | `qwen36-27b-router.json` | router queue/dispatch, per-worker split |
 | `gpu` | `qwen36-27b-gpu-dcgm.json` | per-GPU util, power, clocks, occupancy, memory |
 | `host` | `qwen36-27b-host.json` | node-exporter: CPU, RAM, disk, network, load |
+| `edge` | `qwen36-27b-edge-caddy.json` | Caddy: traffic, 401/413/5xx, TTFB, body sizes, upstream health |
+| `pipeline` | `qwen36-27b-trace-pipeline.json` | collector span flow, backpressure, ClickHouse storage |
 
-The dashboard JSONs were originally generated by a script under `/tmp`, which
-has since been lost with the tmpfs. **The checked-in JSON is now the single
-source of truth** — edit it directly. There is no generator to regenerate
-from, and the previous instruction to "edit the generator, not the JSON"
-would silently discard your changes on the next Grafana restart.
+**The checked-in JSON is the single source of truth** — edit it directly.
+`allowUiUpdates: false`, so browser edits are overwritten on the next 10s scan
+and are never written back to these files. (An earlier note here pointed at a
+generator script under `/tmp`; it was lost with the tmpfs and following it
+would have silently discarded edits.)
 
-None of the five dashboards covers the two new targets yet: the edge (`caddy`)
-and the trace pipeline (`otel-collector`) are scraped and alertable but have
-no panels.
+### Edge Gateway dashboard
+
+Two panels carry most of the value and are easy to misread:
+
+- **Time to first byte** (`caddy_http_response_duration_seconds`) is the
+  meaningful edge latency number. For a streaming completion it is TTFT as the
+  client experiences it — queueing and prefill included, plus the edge hop no
+  engine metric can see.
+- **Full request duration** (`caddy_http_request_duration_seconds`) under SSE
+  covers the *entire generation*, so it tracks output length, not edge health.
+  The gap between the two is decode time.
+
+One label quirk worth knowing: `caddy_http_requests_total` carries **no `code`
+label**. Status-code breakdowns come from the duration histogram's `_count`
+series instead — same numerator, different series.
+
+### Trace Pipeline dashboard
+
+Span flow (accepted vs sent vs failed), export-queue backpressure, batch sizes,
+collector CPU/RSS, and the ClickHouse storage panels described above. Because
+the pipeline is asynchronous, nothing in the request path degrades when it
+breaks — this dashboard and the `tracing` alert group are the only signals.
+
+Stale `otlphttp/langfuse` series may appear beside `otlp_http/langfuse` in the
+queue panels: the exporter was renamed when the old alias began logging a
+deprecation warning, and the old series persist for the retention window.
 
 ## Grafana SLO alerts — `grafana/provisioning/alerting/alertrules.yml`
 
@@ -143,17 +239,78 @@ notification policy, and remove the per-rule `notification_settings`.
 datasource deterministically across volume resets. `editable: false`,
 `httpMethod: POST`, `timeInterval: 5s` matching the worker/DCGM scrape.
 
+`prometheusVersion` is pinned alongside `prometheusType` — Grafana gates PromQL
+features on it and assumes an old server when it is unset, hiding newer
+functions from the query builder. Keep it in step with the image pinned in
+`docker-compose.metrics.yml`.
+
+`incrementalQuerying: true` (10m overlap window) makes a dashboard refresh
+re-query only the newly elapsed slice instead of the whole range. These boards
+refresh at 10s over 1–6h windows, so it is the difference between re-reading
+six hours of samples every ten seconds and reading ten seconds of them.
+
 **Stale-datasource recovery:** if the Grafana DB volume holds a stale
 Prometheus row with an auto-UID, full provisioning fails with `data source
 not found`. Stop grafana, `DELETE FROM data_source WHERE id=1` in the sqlite
 DB (`/data/grafana.db` in the `grafana_data` volume), start again —
 provisioning recreates it with the pinned UID.
 
+## Changing config without restarting
+
+Prometheus runs with `--web.enable-lifecycle`, so scrape and rule changes apply
+in place:
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+Validate first — a bad rule file is rejected wholesale, not partially:
+
+```bash
+docker run --rm --entrypoint promtool \
+  -v "$PWD/prometheus:/etc/prometheus:ro" prom/prometheus:v3.13.1 \
+  check config /etc/prometheus/prometheus.yml
+```
+
+### Trap: single-file bind mounts go stale on edit
+
+`./prometheus` is mounted as a **directory**, deliberately. Mounting the two
+files individually breaks in a way that is silent and actively misleading.
+
+A single-file bind mount resolves to an inode when the container starts. Most
+editors — and `sed -i`, and anything that writes a temp file and renames it —
+replace the file rather than truncating it, leaving the container bound to the
+old, now-unlinked inode. The host file changes; the container never sees it.
+
+What makes it nasty is that every health signal says success. `/-/reload`
+returns `200` and `prometheus_config_last_reload_successful` stays `1`, because
+Prometheus genuinely did reload the stale file it can see. Hit while adding the
+`edge`/`tracing`/`storage` groups: `promtool` validated 17 rules on the host
+while the container kept evaluating the original 6.
+
+Confirm a suspected case by comparing inodes:
+
+```bash
+stat -c '%i %s' prometheus/alerts.yml
+docker exec qwen36-27b-prometheus stat -c '%i %s' /etc/prometheus/alerts.yml
+```
+
+Different inode means the mount is stale and only a container recreate fixes
+it. The same hazard applies to the remaining single-file mounts in this repo —
+`Caddyfile`, `otel/collector.yaml`, `clickhouse/config.d/*.xml`. Those are left
+as file mounts on purpose (mounting a directory over ClickHouse's `config.d`
+would mask the image's own `docker_related_config.xml` and break its listeners),
+and it is tolerable there because none of them is edited-and-hot-reloaded —
+each is applied by recreating its container, which rebinds the mount anyway.
+
 ## Verification
 
 ```bash
 # datasource healthy + readOnly
 curl -s http://localhost:9090/-/ready
+# every scrape target's health in one line each
+curl -s http://localhost:9090/api/v1/targets \
+  | python3 -c "import json,sys; [print(f\"{t['labels']['job']:16}{t['health']}\") for t in json.load(sys.stdin)['data']['activeTargets']]"
 # alert rule evaluation state (via Grafana API)
 curl -s -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" \
   http://localhost:3000/api/prometheus/grafana/api/v1/rules
