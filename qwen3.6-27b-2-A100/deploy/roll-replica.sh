@@ -43,8 +43,15 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 ROUTER="qwen36-27b-router"
-DRAIN_TIMEOUT=120     # seconds to wait for in-flight requests to finish
-HEALTH_TIMEOUT=900    # seconds to wait for the replica to come back healthy
+DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-120}     # seconds to wait for in-flight requests to finish
+# Seconds to wait for the replica to come back healthy. 900 fits a warm boot
+# (~181 s). Override it when the boot also has to FETCH WEIGHTS — a new
+# --model-path downloads ~52 GiB into the HF cache before the engine starts,
+# which at under ~100 MB/s overruns 900 s and aborts the roll after the
+# container is already recreated. Timing out here is safe (the replica is left
+# unregistered, so traffic stays on the peer) but it is a false failure:
+#   HEALTH_TIMEOUT=3600 ./deploy/roll-replica.sh r1
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-900}
 
 usage() { echo "usage: $0 <r0|r1> [--no-recreate]" >&2; exit 2; }
 
