@@ -241,12 +241,18 @@ Re-run against both workers directly on :8001/:8002, never through the router:
 - `xhigh` adds thinking tokens per request. Watch time-to-last-token, not just
   tok/s — throughput can be flat while answers take materially longer.
 
-## Measured — r1 rolled 2026-08-15 12:31–12:44
+## Measured — both replicas rolled 2026-08-15
 
-r1 is on 3.8 and re-registered; r0 is still on 3.6 at time of writing.
+`r1` 12:31–12:44, `r0` 12:53–12:56. Both on 3.8, both re-registered, service
+never dropped below one healthy replica.
 
-Boot, from a cold HF cache: weight fetch + load 591 s, total drain-to-healthy
-~13 min. Every gate reproduced the 3.6 baseline exactly:
+Boot on r1, from a cold HF cache: weight fetch + load 591 s, drain-to-healthy
+~13 min. On r0, with the cache warm: **weight load 13.26 s** — 45× faster,
+whole roll ~3 min, and the script's default 900 s timeout was ample. Only the
+first roll needs `HEALTH_TIMEOUT`.
+
+Every gate reproduced the 3.6 baseline exactly, and r0 and r1 are identical to
+the byte:
 
 | gate | 3.6 baseline | r1 on 3.8 |
 |---|---|---|
@@ -281,11 +287,31 @@ payload: the only diff is the injected system block, there are **zero** empty
 config at `reasoning_effort: medium` renders byte-identically to 3.6. Live
 `prompt_tokens` for that payload: r0 25, r1 67.
 
-`spec_accept_length` read 3.0 on r0 and 4.225 on r1 — **not a benchmark**.
-Both are last-value gauges over a handful of requests; 3.6's converged value
-under real load is 5.025. It shows EAGLE functioning against the retrained MTP
-head, and nothing about whether 5/6 is still the right depth. That A/B is
-still owed.
+End-to-end through Caddy on the real client path (TLS + edge key,
+`model.example.com`): chat completion correct, `reasoning_content` split, and
+auth still enforced (401 without a key). Clients continue to request model
+`qwen36-27b` and nothing at the edge changed.
+
+`/v1/models` still reports `unknown` — the pre-existing router `model_id` gap
+that blocked `--policy prefix_hash`, unrelated to this upgrade and unchanged
+by it.
+
+`spec_accept_length` read 3.0 on r0 (then still 3.6) and 4.225 on r1 — **not a
+benchmark**. Both are last-value gauges over a handful of requests; 3.6's
+converged value under real load is 5.025. It shows EAGLE functioning against
+the retrained MTP head, and nothing about whether 5/6 is still the right
+depth. That A/B is still owed.
+
+### Still open
+
+- **Re-run the EAGLE depth A/B.** 5/6 was tuned against 3.6's MTP head.
+- **Run the concurrency ladder** on the pair now that both are on 3.8, to
+  replace the 3.6 baselines in `tuning/results/`.
+- **Confirm whether OpenCode replays `reasoning_content`** (Langfuse, any
+  multi-turn trace). Only matters if `preserve_thinking: true` is
+  reconsidered.
+- **`xhigh` costs prompt tokens and reasoning tokens.** Watch
+  time-to-last-token in Grafana over real traffic before assuming it is free.
 
 ## Rollback
 
