@@ -1,7 +1,18 @@
 # =============================================================================
-# QWEN3.6-27B BF16 — SGLANG PATTERN A
+# QWEN3.8-27B BF16 — SGLANG PATTERN A
 # 2× TP=1 replicas + cache-aware router + EAGLE (MTP) speculative decoding
 # + HiCache + Caddy edge gateway + segmented networks
+#
+# NAMES ARE DELIBERATELY STALE. Containers, networks, the router, the Caddy
+# upstream and --served-model-name all still read `qwen36-27b` after the
+# 2026-08-15 move to Qwen3.8-27B. That is a choice, not an oversight: the name
+# has 194 references across compose, Caddyfile, grafana/, prometheus/ and
+# benchmarks/, and renaming the services makes a replica-by-replica roll
+# impossible (worker-urls and network aliases would have to change under a
+# live router). Clients keep asking for model "qwen36-27b" and nothing at the
+# edge moved. Rename later as its own coordinated change, if ever.
+# `--model-path` is the only thing that identifies the weights now — read it,
+# not the container name, when you need to know what is loaded.
 #
 # Host:
 #   2× A100 80GB PCIe (P2P: NS — hence two TP=1 replicas, no TP=2)
@@ -210,6 +221,71 @@ x-replica-common: &replica-common
 #   2. --mamba-radix-cache-strategy vs --mamba-scheduler-strategy
 #      (cookbook documents the latter; keep whichever `--help` accepts)
 #   3. worker-side /health bypass flag, if the build has one
+
+# =============================================================================
+# MODEL: Qwen3.6-27B -> Qwen3.8-27B, 2026-08-15. NO ENGINE CHANGE.
+#
+# The engine digest below is UNTOUCHED. v0.5.17 is still the newest stable
+# release (checked 2026-08-15; v0.5.16 was 07-25, nothing after 08-08), and
+# 3.8 needs no new code:
+#
+#   config.json          byte-identical to 3.6 except `transformers_version`
+#   architectures        Qwen3_5ForConditionalGeneration (unchanged) — the
+#                        class v0.5.17 already registers, so it just loads
+#   weights              1199 tensors / 51.75 GiB / same module tree
+#                        (language_model 850, visual 333, mtp 15, lm_head 1).
+#                        HF shows 18 shards vs 15 — repacking, same bytes.
+#   tokenizer            vocab identical (248044), same merges/normalizer.
+#                        Only 7 reserved audio/TTS specials added
+#                        (248070-248076). Token IDs are stable.
+#
+# Same shapes => the memory arithmetic does not move. Expect the SAME boot
+# gates as 3.6: max_total_num_tokens 171008, decode bs [1, 2, 3, 4], mamba
+# pool 43 slots. A deviation means something OTHER than the weights changed —
+# investigate before serving.
+#
+# REJECTED: lmsysorg/sglang:qwen38-27b-cu129. It is a build of PR #34859 from
+# a fork, still OPEN and in merge-conflict; its wheel reports
+# 0.0.0.dev0+qwen38.27b.g561c8f3 while its LABEL claims a different commit
+# (nightly-dev-cu12-20260814-c4271c3f) inherited from the base image — exactly
+# the provenance hole the 2026-08-08 digest pin closed. Its content is
+# Hopper/Blackwell: hopper_bf16_gemv, sm120_fp8_gemv, sm100 splitk GEMM, MNNVL
+# CuteDSL all-reduce, DeepEP v2. Nothing for SM80. It also swaps cu130 -> cu129
+# and a dev FlashInfer under our flashinfer attention backend, which would
+# invalidate every A/B baseline in tuning/.
+#
+# --default-chat-template-kwargs — THE ONLY NEW FLAG. 3.8 ships a reworked
+# chat template with two behaviour changes that are silent on a model swap:
+#
+#   reasoning_effort   NEW. Defaults to `xhigh`, which injects a 209-char
+#                      "think carefully, validate key assumptions..." system
+#                      instruction into EVERY request. Tiers are low / medium
+#                      / xhigh ONLY — `medium` has no branch and so injects
+#                      nothing at all (that is how you get 3.6's rendering).
+#   preserve_thinking  DEFAULT FLIPPED off -> on. Prior assistant turns now
+#                      keep their <think> blocks. `reasoning_content` is an
+#                      SGLang extension, not OpenAI schema, so a standard
+#                      client replays only `content` and the template wraps
+#                      nothing: history fills with EMPTY <think></think>
+#                      blocks. Pinned false, which reproduces 3.6 exactly
+#                      (verified: identical rendering in 6/6 message shapes,
+#                      incl. tools and tool-call round trips).
+#
+# WHY THE VALUES ARE PINNED HERE RATHER THAN LEFT TO THE CLIENT: the template
+# hard-raises on any other tier. SGLang's protocol layer happily accepts the
+# full OpenAI list (none/minimal/low/medium/high/xhigh/max, or a float) and
+# passes it straight to Jinja, which then raises — so a client sending the
+# ordinary OpenAI `reasoning_effort: "high"` gets a 400. Setting it server-side
+# disarms that: in serving_chat.py the server default is merged into
+# chat_template_kwargs (setdefault, after the per-request key is POPPED at
+# _convert_to_internal_request) and then OVERWRITES the top-level field at
+# render time, so our value always wins. Note the consequence — for
+# reasoning_effort specifically this flag is a LOCK, not a default, despite
+# what its --help says. preserve_thinking is unaffected and stays
+# client-overridable.
+#
+# Full analysis, evidence and rollout gates: tuning/docs/UPGRADE_QWEN3.8.md
+# =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
@@ -435,8 +511,9 @@ services:
     # alternative fix (cap_add: SYS_PTRACE) buys a capability we do not need
     # for a code path we never use. Do not remove without re-reading this.
     command: >
-      --model-path Qwen/Qwen3.6-27B
+      --model-path Qwen/Qwen3.8-27B
       --served-model-name qwen36-27b
+      --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
       --port 8001
       --trust-remote-code
@@ -567,8 +644,9 @@ services:
               capabilities: [gpu]
 
     command: >
-      --model-path Qwen/Qwen3.6-27B
+      --model-path Qwen/Qwen3.8-27B
       --served-model-name qwen36-27b
+      --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
       --port 8002
       --trust-remote-code
