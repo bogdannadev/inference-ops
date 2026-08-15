@@ -43,7 +43,7 @@ timescales and feeds back into the settings the other two obey.
 │   client                                                                   │
 │     │  HTTPS + edge key                                                    │
 │     ▼                                                                      │
-│   caddy :443            TLS · 8MB body cap · 401 guard · key swap          │
+│   caddy :443            TLS · 401 guard · key swap · no body cap           │
 │     │                   ── rejects here never reach SGLang ──┐             │
 │     ▼                                                        │             │
 │   sgl-router :8000      round_robin · injects `traceparent`  │             │
@@ -126,8 +126,7 @@ Each layer has exactly one blind spot the layer below cannot see, which is why
 all three are instrumented separately:
 
 - **Caddy** sees requests that never reach SGLang — TLS failures, 401s from a
-  wrong edge key, 413s from the body cap. On the engine dashboards those look
-  like *silence*.
+  wrong edge key. On the engine dashboards those look like *silence*.
 - **The engine** sees queueing, prefill, decode and cache behaviour per
   request, which no edge metric can decompose.
 - **The trace pipeline** stitches router and worker spans into one distributed
@@ -178,7 +177,7 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 ├── docker-compose.metrics.yml    # Prometheus + Grafana + exporters
 ├── docker-compose.langfuse.yml   # Langfuse trace observability
 ├── docker-compose.embedder.yml   # TEI CPU embedding (separate project)
-├── Caddyfile                     # edge gateway: TLS, auth, body cap
+├── Caddyfile                     # edge gateway: TLS, auth, no body cap
 ├── deploy/
 │   ├── roll-replica.sh           # zero-downtime single-replica roll
 │   ├── init-langfuse.sh          # one-shot Langfuse bootstrap
@@ -204,8 +203,8 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 - `qwen36-27b-r0` / `qwen36-27b-r1` — SGLang `TP=1` replicas, GPU0/GPU1,
   EAGLE speculative decoding, Mamba radix prefix caching
 - `qwen36-27b-router` — SGLang model-gateway, `round_robin`, OpenAI API, :8000
-- `caddy` — TLS termination, edge-auth key swap, 8 MB body cap (only host ports)
-- `prometheus` — 9 scrape targets, 30d/20GB retention, 17 alert rules, hot reload
+- `caddy` — TLS termination, edge-auth key swap, unbounded body size (only host ports)
+- `prometheus` — 9 scrape targets, 30d/20GB retention, 16 alert rules, hot reload
 - `grafana` — 7 dashboards (overview/sglang/router/gpu/host/edge/pipeline), SLO rules
 - `node-exporter` — host CPU/RAM/disk/network
 - `dcgm-exporter` — per-GPU utilisation/memory/power/occupancy
