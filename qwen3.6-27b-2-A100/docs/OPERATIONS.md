@@ -91,6 +91,12 @@ maintained and were used to gate the v0.5.17 upgrade:
 See `tuning/docs/UPGRADE_v0.5.17.md` for how those were combined into an
 A/B gate across two builds.
 
+**`byte_identity.py` only gates same-shape ENGINE changes.** It compares greedy
+output across two builds of the *same* weights. On a weights change it fails by
+construction and the failure carries no information — gate on the boot numbers
+above, `spec_accept_length` and the ladder instead. See
+`tuning/docs/UPGRADE_QWEN3.8.md`, which used exactly that substitution.
+
 ## Logs
 
 ```bash

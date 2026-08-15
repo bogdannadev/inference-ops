@@ -1,9 +1,18 @@
-# Qwen3.6-27B on 2×A100 — SGLang Inference Node
+# Qwen3.8-27B on 2×A100 — SGLang Inference Node
 
-Private deployment serving `Qwen/Qwen3.6-27B` (BF16) with SGLang on a single
+Private deployment serving `Qwen/Qwen3.8-27B` (BF16) with SGLang on a single
 host with two A100 80GB PCIe GPUs. Two independent `TP=1` replicas (one per
 GPU, no P2P) sit behind a `round_robin` SGLang router, which is exposed to the
 outside world only through a Caddy edge gateway.
+
+> **Names still say `qwen36`.** Containers, networks, the router, the Caddy
+> upstream and the API-visible `--served-model-name` all remain `qwen36-27b`
+> after the 2026-08-15 move to Qwen3.8-27B. Deliberate: the name has ~194
+> references across compose, `Caddyfile`, `grafana/`, `prometheus/` and
+> `benchmarks/`, and renaming the services would make a replica-by-replica
+> roll impossible. Clients still request model `qwen36-27b`. **Read
+> `--model-path`, not the container name, to know which weights are loaded.**
+> See [`tuning/docs/UPGRADE_QWEN3.8.md`](tuning/docs/UPGRADE_QWEN3.8.md).
 
 The deployment is assembled from **four compose files** in one project:
 
@@ -152,6 +161,11 @@ The in-repo `docs/` directory is the operational manual for this node:
   rolling a replica, logs, rollback, troubleshooting
 - **[docs/LANGFUSE.md](docs/LANGFUSE.md)** — Langfuse trace overlay: services,
   secrets, headless init, SDK access
+
+- **[tuning/docs/UPGRADE_QWEN3.8.md](tuning/docs/UPGRADE_QWEN3.8.md)** —
+  2026-08-15 Qwen3.6 → Qwen3.8 weights swap: why no engine change, why the
+  vendor `qwen38-27b-cu129` image was rejected, the two chat-template
+  behaviour changes and the flag that pins them, boot gates, rollback
 
 Tuning campaign material lives in its own tree: [`tuning/README.md`](tuning/README.md),
 results and decision records under `tuning/docs/` and `tuning/results/`.
