@@ -41,10 +41,15 @@ because Prometheus clamps it down silently.
 ### Caddy — the edge
 
 This is the only job that observes requests which never reach SGLang. TLS
-handshake failures, `401`s from a wrong edge key, and `413`s from the 8 MB
-body cap all terminate at Caddy, so they are invisible to every engine-side
-metric. A client misconfiguration looks like *silence* on the engine
-dashboards and like a `401` rate here.
+handshake failures and `401`s from a wrong edge key terminate at Caddy, so they
+are invisible to every engine-side metric. A client misconfiguration looks like
+*silence* on the engine dashboards and like a `401` rate here.
+
+The 8 MB request-body cap was removed on 2026-08-15 (OCR sends base64 images
+inline, which exceeds it on ordinary requests), so `413` is no longer a code
+this tier produces. Caddy's body-size histogram is now the only place payload
+growth is visible at all — nothing rejects on size before SGLang tokenises
+against `--context-length 169000`.
 
 Two pieces are required and neither is the default:
 
@@ -137,7 +142,6 @@ engine-side rule can see them:
 
 - `EdgeUpstreamUnhealthy` — `caddy_reverse_proxy_upstreams_healthy == 0` for 2m (critical)
 - `EdgeAuthRejectionRate` — 401s > 0.2/s for 10m (warning)
-- `EdgeBodyCapRejections` — any 413 for 5m (warning)
 - `EdgeServerErrors` — 5xx > 0.05/s for 5m (critical)
 - `EdgeConfigReloadFailed` — running edge diverged from the Caddyfile (warning)
 
@@ -170,7 +174,7 @@ Seven dashboards, one per folder, auto-provisioned (read-only):
 | `router` | `qwen36-27b-router.json` | router queue/dispatch, per-worker split |
 | `gpu` | `qwen36-27b-gpu-dcgm.json` | per-GPU util, power, clocks, occupancy, memory |
 | `host` | `qwen36-27b-host.json` | node-exporter: CPU, RAM, disk, network, load |
-| `edge` | `qwen36-27b-edge-caddy.json` | Caddy: traffic, 401/413/5xx, TTFB, body sizes, upstream health |
+| `edge` | `qwen36-27b-edge-caddy.json` | Caddy: traffic, 401/5xx, TTFB, body sizes, upstream health |
 | `pipeline` | `qwen36-27b-trace-pipeline.json` | collector span flow, backpressure, ClickHouse storage |
 
 **The checked-in JSON is the single source of truth** — edit it directly.

@@ -2,9 +2,8 @@
 # Edge gateway — example.com
 #
 # Pattern:
-#   - One shared snippet (edge_auth) carries TLS contact, request-body cap,
-#     and the edge-key guard clause. Each site imports it with its own
-#     body-size argument. Adding a third upstream is a three-line site block.
+#   - One shared snippet (edge_auth) carries TLS contact and the edge-key
+#     guard clause. Adding a third upstream is a three-line site block.
 #
 # Guard-clause mechanics:
 #   - Caddy sorts directives by its internal order, where `respond` runs
@@ -12,11 +11,16 @@
 #     Wrapping the 401 in `route` pins evaluation where it is written:
 #     bad keys terminate here, valid keys fall through to the proxy.
 #
-# Body cap rationale:
-#   - The production outage began with a ~244K-token request. A 184K-token
-#     prompt is roughly 0.75 MB of JSON, so an 8MB cap rejects pathological
-#     payloads at the edge with generous headroom. Tune per site via the
-#     import argument.
+# Body cap — REMOVED 2026-08-15:
+#   - The snippet used to carry `request_body { max_size 8MB }`, sized against
+#     a text-only workload (a 184K-token prompt is roughly 0.75 MB of JSON).
+#     OCR traffic sends base64 images inline in the chat payload, which blows
+#     past 8MB on ordinary requests, so the cap is gone entirely and Caddy no
+#     longer bounds body size at any site.
+#   - What still bounds a request: `--context-length 169000` on each SGLang
+#     replica. Over-length prompts are rejected by the engine after
+#     tokenisation instead of by byte count at the edge, so a pathological
+#     payload now costs a transfer and a tokenise before it is refused.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -49,11 +53,6 @@
 	# ACME registration contact for certificate issuance
 	tls contact@example.com
 
-	# Edge request-body cap — size passed per-site as {args[0]}
-	request_body {
-		max_size {args[0]}
-	}
-
 	# Reject anything without the edge key before it reaches the proxy
 	@bad_key not header Authorization "Bearer {$EDGE_API_KEY}"
 	route @bad_key {
@@ -65,7 +64,7 @@
 # Qwen3.6-27B — SGLang router on the A100 node
 # -----------------------------------------------------------------------------
 model.example.com {
-	import edge_auth 8MB
+	import edge_auth
 
 	reverse_proxy qwen36-27b-router:8000 {
 		# Swap the edge credential for the internal SGLang key
@@ -82,7 +81,7 @@ model.example.com {
 # `edge` network so the name `qwen3-emb` resolves from this Caddy.
 # -----------------------------------------------------------------------------
 embed.example.com {
-	import edge_auth 8MB
+	import edge_auth
 
 	reverse_proxy qwen3-emb:80
 }
@@ -101,8 +100,9 @@ embed.example.com {
 # exporter in this stack.
 #
 # This is the only telemetry that sees the edge itself — TLS handshake
-# failures, 401s from bad edge keys, and body-cap rejections are all invisible
-# to the SGLang and router metrics, because those requests never reach them.
+# failures and 401s from bad edge keys are invisible to the SGLang and router
+# metrics, because those requests never reach them. It is also the only place
+# request body sizes are observed now that nothing caps them.
 # -----------------------------------------------------------------------------
 :2020 {
 	metrics
