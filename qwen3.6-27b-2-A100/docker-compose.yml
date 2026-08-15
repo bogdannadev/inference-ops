@@ -814,7 +814,7 @@ services:
       - edge                 # be reachable from Caddy
 
   # ---------------------------------------------------------------------------
-  # Caddy — TLS termination, edge auth, request-body cap
+  # Caddy — TLS termination, edge auth (no request-body cap since 2026-08-15)
   # The ONLY service publishing host ports. Edge network only: it can reach
   # the router (and qwen3-emb from the embedding project), never a worker.
   # ---------------------------------------------------------------------------

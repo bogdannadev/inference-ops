@@ -429,7 +429,7 @@
         "y": 10
       },
       "id": 7,
-      "title": "413 \u2014 body cap rejections",
+      "title": "413 \u2014 upstream payload rejections",
       "type": "stat",
       "options": {
         "colorMode": "value",
@@ -459,7 +459,7 @@
           "range": true
         }
       ],
-      "description": "Payloads over the 8MB edge cap. The cap exists because the production outage began with a ~244K-token request; a nonzero rate here means a client is generating prompts that would have destabilised the engine."
+      "description": "Retained after the 8MB body cap was removed (2026-08-15, OCR image payloads). Caddy no longer rejects on size, so this panel is expected to sit flat at zero; a nonzero rate means a 413 came from upstream, not from the edge."
     },
     {
       "datasource": {
@@ -1138,7 +1138,7 @@
           "range": true
         }
       ],
-      "description": "Headroom against the 8MB cap. A p99 climbing toward the cap is the early warning for the 413s on the row above."
+      "description": "Request body sizes. Nothing caps them since 2026-08-15, so this is the only signal for payload growth \u2014 watch p99 for OCR images inflating requests toward the tokenised --context-length 169000 limit."
     },
     {
       "datasource": {
@@ -1693,5 +1693,5 @@
   "uid": "qwen36-27b-edge-caddy",
   "version": 1,
   "weekStart": "",
-  "description": "Caddy \u2014 the only tier that sees requests which never reach SGLang: TLS failures, 401s from a bad edge key, and 413s from the 8MB body cap all terminate here."
+  "description": "Caddy \u2014 the only tier that sees requests which never reach SGLang: TLS failures and 401s from a bad edge key terminate here. No request-body cap since 2026-08-15."
 }

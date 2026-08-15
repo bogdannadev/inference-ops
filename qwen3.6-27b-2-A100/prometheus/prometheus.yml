@@ -98,8 +98,9 @@ scrape_configs:
   # Caddy — the edge itself
   #
   # The only job that sees requests which never reach SGLang: TLS handshake
-  # failures, 401s from a wrong edge key, and 413s from the 8MB body cap all
-  # terminate at Caddy, so they are invisible everywhere else in this file.
+  # failures and 401s from a wrong edge key terminate at Caddy, so they are
+  # invisible everywhere else in this file. (There is no longer a body cap —
+  # removed 2026-08-15 for OCR image payloads — so 413s no longer appear here.)
   # A client-side outage that looks like "no traffic" on the engine dashboards
   # shows up here as a 401 rate.
   #

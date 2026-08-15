@@ -114,19 +114,12 @@ groups:
             minutes of tolerance so a single misconfigured client restart does
             not page.
 
-      - alert: EdgeBodyCapRejections
-        expr: sum(rate(caddy_http_request_duration_seconds_count{code="413"}[5m])) > 0
-        for: 5m
-        labels:
-          severity: warning
-          node: a100
-        annotations:
-          summary: "Requests exceeding the 8MB edge body cap"
-          description: >-
-            A client is sending payloads past the cap. The cap exists because
-            the production outage began with a ~244K-token request, so this is
-            an early warning that a caller is building prompts that would
-            destabilise the engine if they got through.
+      # EdgeBodyCapRejections removed 2026-08-15 together with the Caddyfile's
+      # 8MB `request_body` cap (OCR sends base64 images inline and exceeds it on
+      # ordinary requests). Caddy no longer emits 413, so the rule could only
+      # ever be silent. Over-length prompts are now caught by SGLang against
+      # --context-length 169000, which surfaces as a 4xx from the engine, not
+      # from the edge.
 
       - alert: EdgeServerErrors
         expr: sum(rate(caddy_http_request_duration_seconds_count{code=~"5.."}[5m])) > 0.05

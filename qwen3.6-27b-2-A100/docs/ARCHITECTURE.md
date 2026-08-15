@@ -42,7 +42,7 @@ docker network create edge     # once, before first up
 internet
    |
    v
-Caddy  (80/443, TLS, edge-auth key, 8MB body cap)
+Caddy  (80/443, TLS, edge-auth key, no body cap — see Caddyfile)
    |  edge key swapped for internal SGLANG_API_KEY
    v
 qwen36-27b-router:8000   (OpenAI API, round_robin)
