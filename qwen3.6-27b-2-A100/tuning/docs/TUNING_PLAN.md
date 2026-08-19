@@ -230,7 +230,7 @@ sweep). Prefer it over hand-tuning.
 | ~~`--linear-attn-decode-backend` / `--linear-attn-prefill-backend`~~ | unset | — | Same gate. Nothing to split between. |
 | ~~`--mamba-backend`~~ | `triton` | — | Expected to fail the same way. |
 | `--speculative-attention-mode` | `prefill` | `decode` | Draft-model attention mode. Straight A/B. |
-| `--enable-linear-replayssm` | off | on | **Distinct flag** from the `--enable-gdn-replayssm-spec` already rejected for the `extra_buffer` conflict. May not carry that conflict. Verify at boot. |
+| ~~`--enable-linear-replayssm`~~ | off | — | **DEAD, do not spend a roll.** Corrected 2026-08-19: this is the flag that carries the `extra_buffer` conflict — `server_args.py:6141` requires `--mamba-radix-cache-strategy no_buffer`, and we run `extra_buffer`. It is also the flag that disables the fused `_replay_metadata` path. The *spec* variant is a different flag with neither problem — see **Phase 5**. |
 | `--bf16-gemm-backend` | `auto` | `torch`, `cutedsl` | Low expected gain; cuBLAS is well-tuned on SM80. |
 
 **SM80 caveat:** these GPUs are compute capability **8.0**. `cutedsl` is
@@ -329,6 +329,191 @@ that will bind:
 - `--max-mamba-cache-size` — currently auto-profiled to 48
 
 This is the lever that lets Phase 1 and Phase 2 both go further at once.
+
+---
+
+## Phase 5 — ReplaySSM spec-verify (`--enable-linear-replayssm-spec`)
+
+> **STATUS: TESTED ON r1 AND REVERTED 2026-08-19.** Measurements and the full
+> post-mortem: `RESULTS.md`, entry `2026-08-19 — ReplaySSM spec-verify`.
+>
+> Outcome in one line: the flag does exactly what §5a says (verify scratch
+> 2.11 GB → 0.431 GB, 1.68 GB freed) and costs nothing in throughput (§5c
+> confirmed by measurement), **but the freed memory does not become KV** — the
+> budget solver pours it into mamba slots (43 → 95) and takes a further 2 GB
+> out of the KV pool to buy more, dropping `max_total_num_tokens` to 137,600,
+> *below* the served `--context-length 169000`.
+>
+> **Gate 2 below is what failed. Do not re-run this phase as written.** The
+> retry is §5f: pin `--max-mamba-cache-size 43` so the freed memory has nowhere
+> to go but KV. The drift gate in §5d was never exercised and is still open.
+>
+> This phase *reverses* the 2026-08-08 rejection recorded in
+> `docker-compose.yml`. Read §5c before trusting that comment again.
+
+### 5a. What it does and what it is worth here
+
+RFC #28511 Part B. The recurrent verify keeps a **full SSM state snapshot per
+draft token**; ReplaySSM replaces it with a per-slot raw-input window
+(`rawv`, `rawk`, `beta`, `g`) and replays the accepted prefix into the
+checkpoint on commit. On a GDN model under spec-fold, `replayssm_d` / `replayssm_k`
+are not allocated at all (`mem_cache/memory_pool.py:608`), and the ring records
+are kept in the **conv/activation dtype rather than the SSM dtype** to halve ring
+traffic (`memory_pool.py:591`).
+
+The target is visible in r1's boot log, so this is not a projection:
+
+```
+Mamba Cache is allocated. max_mamba_cache_size: 43, conv_state: 0.12GB,
+ssm_state: 3.09GB  intermediate_ssm_state_cache: 2.11GB  intermediate_conv_window_cache: 0.04GB
+```
+
+`intermediate_ssm_state_cache: 2.11 GB` is exactly what this flag deletes.
+`kv_cache_configurator.py:1842` states the budget consequence directly: with
+ReplaySSM active the mamba solve "no longer reserves the `(1 + D/ratio)`
+intermediate factor — the whole budget goes to persistent slots (K sized like
+non-spec)". So the win lands as **more mamba slots and/or more KV**, not as
+tok/s. At 61 KB/token, 2.11 GB ≈ **+29,000 KV tokens**, minus the new ring
+(`record_len = --speculative-num-draft-tokens = 6`, conv dtype).
+
+That matters because `CONTEXT_262144.md` identified the over-provisioned mamba
+pool as *the only identified route to materially more BF16 context*, and
+`next-session/README.md` names the 43-slot pool as the ceiling that binds above
+c≈8. This is the same lever, obtained without giving back radix caching.
+
+### 5b. Gates — all pass, verified against v0.5.17 source
+
+| requirement | source | our value |
+|---|---|---|
+| `--speculative-eagle-topk` in {None, 1} (linear chain; the chunked verify uses a strictly-lower causal mask and is invalid for tree verify) | `server_args.py:6173` | `1` ✓ |
+| linear-attn **decode** backend triton or flashinfer | `server_args.py:6182` | resolves `triton` ✓ |
+| `SGLANG_RAGGED_VERIFY_MODE=static` unless DSPARK/DFLASH | `server_args.py:6192` | `static` (default, `environ.py:914`) ✓ |
+| not PD-disaggregated | `server_args.py:6216` | `null` ✓ |
+| mutually exclusive with `--enable-linear-replayssm` | `server_args.py:6221` | that flag stays **off** ✓ |
+| GDN or KDA hybrid linear-attn model | `kv_cache_configurator.py:1849` | GDN ✓ |
+
+Note `--enable-linear-replayssm` (the *decode* ring, Phase 3 table) remains
+**unavailable** to us for an unrelated reason: it requires
+`--mamba-radix-cache-strategy no_buffer` and we run `extra_buffer`
+(`server_args.py:6141`). Phase 3's row for it should be struck.
+
+### 5c. Correcting the 2026-08-08 rejection
+
+`docker-compose.yml:462-466` declines this flag because "#32219's fused
+`_replay_metadata` fast path (5-7 dispatches collapsed to one Triton launch) is
+gated on replayssm being OFF". **That is true of `--enable-linear-replayssm`
+and false of `--enable-linear-replayssm-spec`.** The two flags were conflated.
+
+The fast path is guarded by
+`hybrid_linear_attn_backend.py:562`:
+
+```python
+if self._fused_state_indices_ok and self.replayssm_write_pos_list is None:
+```
+
+and `replayssm_write_pos_list` is populated from `_replayssm_enabled()`
+(`:415`), which reads **only the decode flag** (`:390`,
+`mamba_pool.enable_linear_replayssm`, wired from
+`kv_cache_configurator.py:798`). Its docstring is explicit that this is
+deliberate:
+
+> "the spec-verify ring (`--enable-linear-replayssm-spec`) also allocates the
+> cursor tensor but owns it exclusively via `commit_gdn_replayssm_spec`. The
+> decode-ring metadata machinery gated here … must stay fully dormant for the
+> spec ring."
+
+So under spec-only, `replayssm_write_pos_list is None` and **the fused replay
+path is still taken**. The cost that justified the rejection does not exist on
+this flag. Confirm at boot anyway (§5e).
+
+### 5d. The real cost — SSM dtype
+
+`server_args.py:6228` wants `--mamba-ssm-dtype float32` so the closed-loop fold
+stays bit-identical to the recurrent baseline. We pin `bfloat16`, which is
+**permitted but warns**: the fold re-quantizes the committed state on every
+commit/flush, so it "may drift over long sequences". We serve 169,000 tokens of
+context — that is precisely where drift would surface.
+
+Going fp32 is not the answer: `ssm_state` 3.09 GB → ~6.2 GB, which costs more
+than the 2.11 GB it frees. **Net negative. Do not take the fp32 variant.**
+
+Therefore the only configuration worth testing is `spec + bfloat16`, and it
+**will not pass the byte-identity gate**. This is the second flag in this
+campaign (after fp8 KV) whose gate must be quality, not equality — use the gate
+`CONTEXT_262144.md` specified: EAGLE accept length (free, already logged) plus a
+long-context probe. Related: `--enable-mamba-cache-stochastic-rounding` is *not*
+an available mitigation — it requires `--mamba-ssm-dtype float16` and SM100
+under the triton backend (`server_args.py:2482`). We are SM80.
+
+### 5e. Procedure — r1 only, r0 stays as control
+
+```
+# edit r1 command block only: + --enable-linear-replayssm-spec
+docker compose config >/dev/null          # validate before touching anything
+./deploy/roll-replica.sh r1
+```
+
+**Boot-log gates, in order. Any miss = revert, do not benchmark:**
+
+1. `Mamba Cache is allocated` — `intermediate_ssm_state_cache` must be
+   **materially below 2.11 GB**. If it reads 2.11 GB the flag parsed and did
+   nothing; that is the failure mode this campaign has hit before
+   (`--enable-fused-qk-norm-rope`, and `enable_session_radix_cache` in the old
+   build). Record `max_mamba_cache_size` — expect it **above 43**.
+2. `KV Cache is allocated` / `max_total_num_tokens` — expect **above 171,008**.
+3. The `--mamba-ssm-dtype` drift warning must be present. Its *absence* means
+   the dtype got silently forced to fp32 — check `ssm_state` did not double.
+4. No `--enable-linear-replayssm` in the resolved `server_args`, and the fused
+   replay path still live (§5c). Diff runtime `server_args` from
+   `/get_server_info` against r0, per `UPGRADE_v0.5.17.md:101-105` — a `--help`
+   diff cannot see computed defaults.
+
+**Measurement gates:**
+
+- `tuning/bench/worker_ladder.py` on r1 vs an r0 control ladder taken the same
+  session. Expect throughput **neutral** — this is a memory flag on a
+  bandwidth-bound node, and the 1.5% noise floor plus unlocked clocks will
+  swallow anything smaller. A *regression* beyond noise is the thing to watch
+  for: it would mean §5c is wrong and the fused path did drop.
+- Accept length must hold at ~3.9-4.1 (r1's post-Phase-2 value). This is the
+  primary drift detector and it is free.
+- Long-context correctness probe at ≥150K tokens. Byte-identity does **not**
+  apply here (§5d); compare against r0 for semantic agreement, not sha256.
+
+**Rollback:** delete the flag, `./deploy/roll-replica.sh r1`. No state migration,
+no weights change, so the gating in `36d78e5` does not apply. (Exercised
+2026-08-19; r1 restored to 43 slots / 171,008 tokens in one 181 s roll.)
+
+### 5f. The retry — pin the mamba pool
+
+Not run. This is the version worth testing next.
+
+```
+--enable-linear-replayssm-spec
+--max-mamba-cache-size 43        # NEW: hold slots at the pre-flag value
+```
+
+Rationale: `kv_cache_configurator.py:1842` redirects the whole mamba budget into
+persistent slots once the intermediate factor is dropped. Left to auto-profile
+it chose 95 slots — ~6× what `--max-running-requests 4` can use (4 slots/request,
+16 in flight). Pinning the count removes that degree of freedom, so the 1.68 GB
+has nowhere to land but KV.
+
+**Gate:** `max_total_num_tokens` must come out **above 171,008** and
+`max_mamba_cache_size` must read **43**. If the pool still shrinks, the freed
+memory is going somewhere else and the whole premise is wrong — stop and diff
+the `memory_usage` block from `/get_server_info` against r0 before doing
+anything else.
+
+Watch the interaction flagged in `next-session/README.md`: mamba slots track
+`num_draft_tokens`, so at draft=6 a 43-slot pool caps concurrency around 8.
+That ceiling is unchanged by this flag — pinning at 43 preserves today's
+behaviour rather than improving it. If the KV gain lands, the follow-up question
+is whether to spend some of it back on slots.
+
+**Still required before this could ship to r0:** the §5d long-context drift
+gate. The 2026-08-19 accept-length result (unchanged across all rungs) was
+measured on 200-token generations and does **not** cover it.
 
 ---
 

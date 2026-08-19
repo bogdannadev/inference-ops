@@ -135,8 +135,14 @@ time:
 
 ## Known warnings (no action)
 
-- `Disable prefill CUDA graph because cuda_graph_config resolved
-  prefill.backend='disabled'` — fine as long as decode `[1,2,3,4]` captures.
+- `Disable prefill CUDA graph because some layers do not apply Standard GQA`
+  — expected, and it does **not** mean prefill runs eager. The target model
+  captures prefill fine (boot log: `Capture target prefill CUDA graph begin.
+  backend=breakable, num_tokens=[4..2048]` → `elapsed=59.73 s, mem usage=1.23
+  GB`). The message comes from the EAGLE draft runner, where the hybrid's 16
+  attention layers are fewer than its 64 hidden layers, so
+  `cuda_graph_setup.py:337` bails. Corrected 2026-08-19 — this entry previously
+  quoted `prefill.backend='disabled'`, which is not the line this build emits.
 - `Multiple NUMA nodes found for GPU 0: [0, 1]. Using the first one.` — keep
   `cap_add: [SYS_NICE]`.
 - Transformers deprecation warnings (`use_fast`, `torch_dtype`) — upstream
