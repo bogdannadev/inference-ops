@@ -511,3 +511,118 @@ Not pursued, still open for future sessions: HiCache re-evaluation for
 long-context cold-prefix traffic (best ratio on the board per
 `NVIDIA_KERNEL_TUNING.md` §6.1), NUMA pinning validation, clock locking for
 any future sub-5% A/B, topk>1 tree speculation.
+
+---
+
+## 2026-08-19 — ReplaySSM spec-verify tested on r1. Works, measured, REVERTED.
+
+`--enable-linear-replayssm-spec` (RFC #28511 Part B). Rolled to r1 only, r0 held
+as control, then reverted the same session. Both replicas are byte-identical
+again. Files: `ladder_r1_replayssm_pre.json`, `ladder_r1_replayssm_post.json`,
+`ladder_r0_replayssm_control_pre.json`, `ladder_r0_replayssm_control_post.json`.
+Plan and gate spec: `TUNING_PLAN.md` Phase 5.
+
+### Why it was tested at all — a recorded rejection that was wrong
+
+`docker-compose.yml` declined this flag on 2026-08-08 because "#32219's fused
+`_replay_metadata` fast path is gated on replayssm being OFF". **That conflated
+two different flags.** The fast path is guarded by
+`hybrid_linear_attn_backend.py:562` on `replayssm_write_pos_list is None`, which
+is populated by `_replayssm_enabled()` (`:415`) reading **only**
+`mamba_pool.enable_linear_replayssm` — the *decode* ring. Its docstring states
+the decode-ring machinery "must stay fully dormant for the spec ring".
+
+Predicted from that: spec-only keeps the fused path, so throughput should be
+neutral. **Measured: it is.** The rejection reasoning does not apply to this
+flag, and that is now a measurement rather than a code reading.
+
+### What the flag actually did
+
+| | r1 before | r1 after |
+|---|---|---|
+| `intermediate_ssm_state_cache` | 2.11 GB | **0.00 GB** |
+| ReplaySSM ring (new) | — | 0.431 GB total |
+| `max_mamba_cache_size` | 43 | **95** |
+| `ssm_state` | 3.09 GB | 6.75 GB |
+| `conv_state` | 0.12 GB | 0.26 GB |
+| `kvcache` | 10.441 GB | 8.402 GB |
+| `max_total_num_tokens` | 171,008 | **137,600** |
+| `startup_available` | 8.271 GB | 8.308 GB |
+
+Ring detail from the boot log, confirming the source reading exactly:
+
+```
+GDN ReplaySSM ring buffers allocated (record_len=6, fold=True):
+  d=0.000GB, k=0.000GB, g=0.005GB rawv=0.316GB, rawk=0.105GB, beta=0.005GB
+```
+
+`d` and `k` are not allocated under GDN spec-fold (`memory_pool.py:608`), and
+`record_len = 6 = --speculative-num-draft-tokens`. Net verify scratch:
+2.11 GB → 0.431 GB, **1.68 GB freed**.
+
+### The finding that killed it
+
+**The freed memory does not go to KV. It goes to mamba slots, and then takes
+2 GB more from KV to buy still more of them.**
+
+`kv_cache_configurator.py:1842` is explicit that this is intended: with
+ReplaySSM active the mamba solve "no longer reserves the `(1 + D/ratio)`
+intermediate factor — the whole budget goes to persistent slots". Slots went
+43 → 95. At `--max-running-requests 4` and 4 slots/request we need **16**.
+95 is ~6× over-provisioned, and it was paid for out of the KV pool.
+
+Consequence: `max_total_num_tokens` **137,600 < `--context-length` 169,000**.
+That is the same class of user-visible contract break Phase 1 hit at
+mem-fraction 0.90 (pool 151,168 under a 160,000 context) — and worse here,
+because only one replica had it. A >137K request routed to r1 would fail while
+the identical request to r0 succeeded. Coin-flip failure under round-robin.
+
+### Performance — neutral, as predicted
+
+r1 post vs r1 pre, pass 1 of 2 (pass 0 c=1 discarded: 50.67 tok/s at DRAM 54.9%
+and 241.9 W is a cold first rung on a freshly booted replica, not a result):
+
+| c | pre | post | delta |
+|---|---|---|---|
+| 1 | 61.81 | 62.12 | +0.5% |
+| 2 | 98.55 | 99.89 | +1.4% |
+| 4 | 185.30 | 188.54 | +1.7% |
+| 6 | 154.82 | 157.13 | +1.5% |
+| 8 | 179.88 | 182.00 | +1.2% |
+| 12 | 189.70 | 193.33 | +1.9% |
+
+All inside the 1.5% noise floor; SM clock still unlocked (1309–1358 MHz). Signs
+are uniformly positive, which is suggestive but not resolvable — do not claim it.
+**r0 control did not drift** (61.32 / 185.28 / 189.18 post vs 61.5 / 185.0 /
+188.3 pre), so the deltas are trustworthy as far as they go.
+
+**Accept length unchanged**: r1 pre 2.84–3.16, r1 post 2.86–3.18, r0 2.83–3.16
+across all rungs. No drift signal — but note these are 200-token generations on
+short prompts. The bf16 re-quantization drift this flag warns about is a
+*long-sequence* effect and was **not** exercised. That gate remains unrun.
+
+### Decision: reverted
+
+Operator call, 2026-08-19: revert r1, record the findings, do not chase the
+follow-up this session. r1 rolled back and verified restored — 43 slots,
+2.11 GB intermediate cache, `max_total_num_tokens` 171,008, no ring allocated.
+
+### What a future session should do differently
+
+The flag is not the problem; the budget solver's reallocation is. **Pin
+`--max-mamba-cache-size` alongside it.** Holding slots at 43 leaves the freed
+1.68 GB nowhere to go but KV, which was the original hypothesis and is still
+untested. Expected `max_total_num_tokens` above 171,008 with everything else
+held constant.
+
+Two cautions for whoever picks this up:
+
+1. `--mamba-ssm-dtype float32` is **not** the answer to the drift warning.
+   `ssm_state` 3.09 → ~6.2 GB costs more than the 2.11 GB the flag frees. Net
+   negative. The only viable variant is bf16 + a real long-context quality gate.
+2. Byte-identity does not apply (the fold re-quantizes on every commit). Gate on
+   accept length **at long context**, not on sha256 and not on 200-token ladder
+   runs — this session's accept-length result does not cover the risk.
+
+Still dead for unrelated reasons: `--enable-linear-replayssm` (the decode ring)
+requires `--mamba-radix-cache-strategy no_buffer`; we run `extra_buffer`.
