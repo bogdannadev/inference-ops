@@ -459,11 +459,46 @@ services:
     # traffic shares a system prompt, so that cache is our single largest lever.
     #
     # That incompatibility is GONE — #32692 and #33102 made replayssm work with
-    # extra_buffer. We still decline it, now by choice: PR #32219's fused
-    # `_replay_metadata` fast path (5-7 dispatches collapsed to one Triton
-    # launch) is gated on replayssm being OFF. Enabling replayssm gives back
-    # part of what v0.5.17 bought. Never benchmark the two together — if you
-    # test replayssm, you are also silently disabling the fused replay path.
+    # extra_buffer.
+    #
+    # The 2026-08-08 note here then declined it a second time, on the grounds
+    # that PR #32219's fused `_replay_metadata` fast path is gated on replayssm
+    # being OFF. CORRECTED 2026-08-19: that reasoning conflated two flags.
+    # It holds for --enable-linear-replayssm (the DECODE ring) and NOT for
+    # --enable-linear-replayssm-spec. The fused path is guarded by
+    # `replayssm_write_pos_list is None` (hybrid_linear_attn_backend.py:562),
+    # populated from _replayssm_enabled() (:415), which reads ONLY the decode
+    # flag (:390 -> mamba_pool.enable_linear_replayssm). Its docstring says the
+    # decode-ring machinery "must stay fully dormant for the spec ring". So
+    # spec-only keeps the fused replay path.
+    #
+    # The decode flag stays dead for us regardless: it requires
+    # --mamba-radix-cache-strategy no_buffer and we run extra_buffer.
+    #
+    # --enable-linear-replayssm-spec was TESTED ON r1 AND REVERTED 2026-08-19.
+    # Do not re-add it as a bare flag. Full data: tuning/docs/RESULTS.md entry
+    # "2026-08-19 - ReplaySSM spec-verify"; retry recipe: TUNING_PLAN.md 5f.
+    #
+    # It worked mechanically and cost nothing in speed: intermediate_ssm_state_cache
+    # 2.11 GB -> 0.00 GB, ring 0.431 GB (net -1.68 GB), throughput +0.5..+1.9%
+    # across c=1..12 (all inside the 1.5% noise floor, r0 control did not drift),
+    # accept length unchanged. That also settles the paragraph above by
+    # measurement: the fused replay path was NOT lost.
+    #
+    # It was reverted because the freed memory does not become KV. The mamba
+    # budget solver (kv_cache_configurator.py:1842) redirects the whole budget
+    # into persistent slots once the intermediate factor is dropped: slots went
+    # 43 -> 95 (we need 16 at --max-running-requests 4) and it took a further
+    # 2 GB out of KV to buy them. max_total_num_tokens fell 171,008 -> 137,600,
+    # BELOW the served --context-length 169000 — the same contract break Phase 1
+    # hit at mem-fraction 0.90, and worse here because only one replica had it.
+    #
+    # The retry must pin --max-mamba-cache-size 43 alongside the flag so the
+    # freed memory has nowhere to go but KV. Two standing cautions: fp32 SSM
+    # dtype is NOT the fix for the drift warning (ssm_state 3.09 -> ~6.2 GB
+    # costs more than the 2.11 GB freed), and this flag is not byte-identity
+    # gated — the long-context drift gate was never exercised, because a
+    # 200-token ladder does not reach it.
     #
     # --enable-session-radix-cache (added 2026-08-08, BOTH replicas).
     # Enabled deliberately WITHOUT a controlled A/B — it is inert today and
