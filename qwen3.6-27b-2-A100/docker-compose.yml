@@ -494,6 +494,29 @@ services:
     # 2026-08-08 (see the router block). Under round_robin a conversation
     # alternates GPUs, so sessions fragment regardless of eviction order.
     #
+    # --stream-response-default-include-usage (added 2026-08-15, BOTH replicas).
+    #
+    # "Include usage in every streaming response (even when stream_options is
+    # not specified)" — server_args.py, default False.
+    #
+    # Why it is on: OpenAI's protocol omits `usage` from a streaming response
+    # unless the CLIENT asks for it with stream_options.include_usage, and
+    # coding-agent clients do not ask. Measured through the edge: a plain
+    # streaming request produced zero usage chunks; the same request with
+    # stream_options produced prompt_tokens=53 / completion_tokens=8. Any
+    # gateway that meters or bills by token is therefore blind to streaming
+    # traffic — which here is nearly all of it — unless it rewrites request
+    # bodies. Flipping the server default fixes it once, for every client and
+    # every proxy, instead of teaching each hop to inject the option.
+    #
+    # Cost: one extra SSE chunk per stream, carrying usage with an empty
+    # `choices` array. That is the standard OpenAI shape for it, and clients
+    # that ignore usage ignore an empty-choices chunk.
+    #
+    # This does NOT affect the engine's own trace spans: those carry token
+    # counts regardless, because the scheduler knows them whether or not the
+    # response says so.
+    #
     # --mm-feature-transport cpu is PINNED DELIBERATELY (added 2026-08-08).
     # This model is Qwen3_5ForConditionalGeneration, so SGLang auto-enables the
     # multimodal path even though we only ever serve text. In v0.5.16 the
@@ -543,6 +566,7 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
+      --stream-response-default-include-usage
       --enable-forward-pass-metrics
       --enable-trace
       --otlp-traces-endpoint otel-collector:4317
@@ -676,6 +700,7 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
+      --stream-response-default-include-usage
       --enable-forward-pass-metrics
       --enable-trace
       --otlp-traces-endpoint otel-collector:4317
