@@ -42,6 +42,19 @@ Full detail and method: `../docs/RESULTS.md`.
 ---
 
 ## Candidate next moves, roughly by value
+> **Added 2026-08-24 (after the v0.5.18 upgrade).** The list below is the
+> 2026-07-31 snapshot; items 2, 3 and 4 have since been settled (see
+> `tuning/docs/RESULTS.md` and the memory note in `docker-compose.yml`). One
+> new candidate was parked rather than tried:
+>
+> **`INT8_MAMBA_CHECKPOINT.md`** — `--enable-int8-mamba-checkpoint`, int8
+> radix-cached linear-attn states for ~2x cached-prefix capacity. Compatible
+> with our config and it is the only int8 lever that fits SM80 here (the
+> fp8 KV-dtype flags do not apply — no int8 option, and the draft pool is only
+> 0.66 GB). It **allocates ~3 GiB of additional HBM** and its own free-memory
+> pre-check runs before graph capture, so read that file's trap section before
+> enabling it. It is lossy on cache hits, so it needs a warm-path gate.
+
 
 ### 1. Context — `CONTEXT_262144.md`
 Start with **Option C**: raise `--context-length` from 160,000 to ~169,000 to
