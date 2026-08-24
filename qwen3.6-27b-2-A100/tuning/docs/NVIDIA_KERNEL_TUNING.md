@@ -14,6 +14,17 @@ measurements, including a memory-accounting correction that invalidates part of
 GPU interconnect, hypervisor). It also **closed the open question** at the end
 of §1 about `nvidia-smi -pl` headroom — there is none; see §1.
 
+> **2026-08-24 — §3 is now settled by measurement. See `tuning/lowlevel/`.**
+> Two bench experiments closed the launch-configuration question that §3 and §6
+> leave open. Achieved bandwidth does not track occupancy: cuBLASLt reaches 94%
+> occupancy on `gate_up` and gains nothing over 31%. It tracks **weight-matrix
+> size** — 340 MiB → 69%, 60 MiB → 40% — because a 60 MiB projection is only
+> ~32 µs of work and cannot amortise ramp-up. `CUBLASLT_WORKSPACE_SIZE` is
+> inert, and L2 residency is capped at a 25 MiB set-aside against a 9.2 GB KV
+> cache. §0's ~56% / 1086 GB/s figure is **confirmed** (58.2% reconstructed
+> from per-projection measurements). The remaining lever is fewer, larger
+> GEMMs — quantization — not better-scheduled small ones.
+
 ---
 
 ## 0. What Phase 1 measured, and why it changes the priority
