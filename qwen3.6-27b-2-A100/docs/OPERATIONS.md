@@ -42,10 +42,24 @@ serving traffic:
 
 | Check | Expected |
 |---|---|
-| `max_total_num_tokens` | **171008** (EAGLE 6/5 profile) |
+| `max_total_num_tokens` | **169408** (EAGLE 6/5 profile, sglang 0.5.18) |
 | decode CUDA-graph `bs` | `[1, 2, 3, 4]` |
 | `max_mamba_cache_size` | 43 slots (EAGLE 6/5 profile) |
 | boot to healthy | ~181 s |
+
+`max_total_num_tokens` was **171008** on sglang 0.5.17. The v0.5.18 upgrade
+(2026-08-24) moved it to **169408** — 1,600 tokens / ~100 MiB less KV, showing
+up as extra free memory (`startup_available` 8.271 -> 8.343 GB), not as a leak.
+Weights (51.047 GB) and the whole Mamba pool are byte-identical across the two
+builds, so this is a slightly larger pre-KV runtime workspace under torch 2.13
+/ flashinfer 0.6.17 / cuDNN 9.14.
+
+**Watch the margin.** 169,408 still clears `--context-length 169000`, but by
+only **408 tokens** (it was 792). If a future change costs another ~500 tokens
+the pool drops under the context length and long requests start failing — the
+failure mode `tuning/docs/RESULTS.md` records at 137,600. There is room to buy
+it back (`available_gpu_mem` is 8.34 GB); raising `--mem-fraction-static` off
+0.92 is the lever, and it needs its own gated roll.
 
 Confirm live server state:
 
@@ -90,6 +104,16 @@ maintained and were used to gate the v0.5.17 upgrade:
 
 See `tuning/docs/UPGRADE_v0.5.17.md` for how those were combined into an
 A/B gate across two builds.
+
+**`byte_identity.py` requires a FLUSHED cache on BOTH replicas.** Learned the
+hard way during the v0.5.18 roll (2026-08-24): with a warm session-radix +
+Mamba `extra_buffer` cache the greedy probe is **not reproducible even against
+the same build** — an untouched v0.5.17 r0 scored 1/8 against *itself*
+back-to-back. `POST /flush_cache` returns "Flush cache failed." whenever the
+replica has running or waiting requests; if you proceed anyway you measure
+cache state, not the engine. Retry the flush until it returns "Cache flushed.",
+on both replicas, then run the gate. Flushed, the same v0.5.18-vs-v0.5.17
+comparison scored 8/8.
 
 **`byte_identity.py` only gates same-shape ENGINE changes.** It compares greedy
 output across two builds of the *same* weights. On a weights change it fails by
