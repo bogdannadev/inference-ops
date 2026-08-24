@@ -141,13 +141,68 @@
 # performance-neutral; see tuning/docs/UPGRADE_v0.5.17.md for the measurements
 # and for the --mm-feature-transport trap it exposed.
 #
+# 2026-08-24: bumped to v0.5.18-cu130 (sglang 0.5.18, build commit 71de97b2).
+# Provenance verified from the registry config blob before pulling: LABEL
+# ai.sglang.build.commit, image.tag and the Actions build URL all agree, CUDA
+# 13.0.1 -> 13.0.3, cuDNN 9.13 -> 9.14, NCCL unchanged.
+#
+# Nothing in the release targets SM80 — `grep -i 'sm80|A100|Ampere'` over the
+# release body returns zero hits, and the Qwen3.5 GDN decode fusion (#34421) is
+# HIP-only. Taken for bug-fix surface and provenance, not speed.
+#
+# The four upstream breaking changes that looked dangerous are all inert here,
+# each checked against source at the tag — see tuning/docs/UPGRADE_v0.5.18.md:
+#   - post-capture reserve 512 -> 1536 MiB (#34996) is behind
+#     `if mem_fraction_static is None`, and we pin 0.92 explicitly.
+#   - MoE deferred finalize: this model is DENSE (no expert keys in
+#     text_config), so fused_moe_triton is never constructed.
+#   - unified-cache out-of-window slot freeing: only swa_component overrides
+#     free_out_of_window_slots; our components are FULL + MAMBA, no SWA.
+#   - SGLANG_AUTO_NUMA_BIND False -> True restores no behaviour: v0.5.17 had no
+#     such gate and always bound. Same call site, byte-identical.
+#
+# v0.5.18 flags evaluated on this deployment (2026-08-24):
+#
+#   --startup-weight-load-mode overlap   REJECTED — HARD BOOT FAILURE.
+#       "ValueError: --startup-weight-load-mode=overlap is not supported:
+#        speculative decoding is not supported" (startup_weight_load.py:307).
+#       We run EAGLE, so this can never be enabled here. Tried on r1
+#       2026-08-24, crashed the scheduler on boot; reverted, r1 recovered.
+#       Do not re-add without checking that upstream gate first.
+#
+#   --mm-preprocess-cache-size-mb 512    APPLIED. The content-addressed
+#       multimodal preprocessing cache is OFF by default for our processor
+#       (base_processor.py: auto_mm_preprocess_cache_size_mb = 0; only
+#       Kimi-K3 defaults it to 256). Host RAM only, no GPU cost, divided
+#       across tokenizer workers (we run 1). Helps only when the SAME image
+#       bytes are sent more than once — plausible for the OCR path, UNMEASURED
+#       here. Drop the flag to revert.
+#
+#   --speculative-draft-kv-cache-dtype   NOT APPLIED. Choices are only
+#       auto/fp8_e5m2/fp8_e4m3/bf16 — there is no int8 option. Moot anyway:
+#       the EAGLE draft KV pool is just 0.66 GB (boot log: K 0.33 + V 0.33),
+#       so fp8 would free ~0.33 GB while perturbing draft numerics, i.e.
+#       accept length, which the EAGLE 5/6 win rests on.
+#
+#   --enable-int8-mamba-checkpoint       NOT APPLIED, but the real int8 lever
+#       for SM80 + this hybrid arch: int8 radix-cached mamba states, ~2x
+#       cached-prefix capacity at fixed memory. Compatible with our config
+#       (requires enable_hierarchical_cache=False and radix_cache_backend
+#       unset — both hold). It is LOSSY, so it changes output on cache hits
+#       and needs its own gated roll. Not new in v0.5.18.
+#
+# KEEP --mm-feature-transport cpu pinned. v0.5.18 adds a third value
+# (cuda_vmm) and rewrote the auto-resolution AGAIN; single-node now resolves to
+# cpu on its own, which is what we already pin. The explicit pin is what made
+# the v0.5.17 cuda_ipc flip a non-event.
+#
 # To bump: pull the tag, re-read the digest, paste it here, roll ONE replica at
 # a time, and re-run benchmarks/run_worker.sh against both. Also diff the
 # runtime server_args from /get_server_info between the two builds — `--help`
 # does NOT show defaults that are resolved at startup, which is exactly how
 # v0.5.17 flipped mm_feature_transport underneath us.
-#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.17-cu130
-x-sglang-image: &sglang-image lmsysorg/sglang@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155
+#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.18-cu130
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:9e148f5ac788e856a06166bd6347a831831eb9fcfab4d1770874823a7c29a1a1
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -431,6 +486,14 @@ services:
 
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      # v0.5.18 moved every compiled-kernel cache (triton, inductor, flashinfer
+      # JIT, deep_gemm, nv ComputeCache) under one dir, SGLANG_CACHE_DIR
+      # (~/.cache/sglang). Before this, all of it lived in the container's
+      # writable layer and was thrown away on every recreate. One volume per
+      # replica — deliberately NOT shared, so a corrupt cache cannot take out
+      # both. Does not orphan the image's AOT flashinfer-jit-cache: that ships
+      # as a dist-packages PACKAGE, not a ~/.cache directory.
+      - sglang_kernel_cache_r0:/root/.cache/sglang
       - ./logs/r0:/app/logs
       - /etc/localtime:/etc/localtime:ro
 
@@ -574,6 +637,7 @@ services:
       --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
       --port 8001
+      --mm-preprocess-cache-size-mb 512
       --trust-remote-code
       --dtype bfloat16
       --tp 1
@@ -691,6 +755,14 @@ services:
 
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      # v0.5.18 moved every compiled-kernel cache (triton, inductor, flashinfer
+      # JIT, deep_gemm, nv ComputeCache) under one dir, SGLANG_CACHE_DIR
+      # (~/.cache/sglang). Before this, all of it lived in the container's
+      # writable layer and was thrown away on every recreate. One volume per
+      # replica — deliberately NOT shared, so a corrupt cache cannot take out
+      # both. Does not orphan the image's AOT flashinfer-jit-cache: that ships
+      # as a dist-packages PACKAGE, not a ~/.cache directory.
+      - sglang_kernel_cache_r1:/root/.cache/sglang
       - ./logs/r1:/app/logs
       - /etc/localtime:/etc/localtime:ro
 
@@ -708,6 +780,7 @@ services:
       --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
       --port 8002
+      --mm-preprocess-cache-size-mb 512
       --trust-remote-code
       --dtype bfloat16
       --tp 1
@@ -938,3 +1011,5 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  sglang_kernel_cache_r0:
+  sglang_kernel_cache_r1:

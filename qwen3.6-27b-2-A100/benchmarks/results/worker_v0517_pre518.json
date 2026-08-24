@@ -1,0 +1,71 @@
+{
+  "label": "v0517_pre518",
+  "host": "qwen36-27b-r0",
+  "port": 8001,
+  "metrics_before": {
+    "gen_throughput": 0.0,
+    "cache_hit_rate": 0.0,
+    "mamba_used_tokens": 0.0,
+    "spec_accept_length": 1.0,
+    "spec_accept_rate": 0.0,
+    "spec_verify_calls_total": 142568.0
+  },
+  "decode_runs": [
+    {
+      "status": 200,
+      "latency_s": 5.551,
+      "prompt_tokens": 66,
+      "completion_tokens": 512,
+      "decode_tok_s": 92.24,
+      "finish_reason": "length",
+      "text": "\n\n```python\ndef merge_sorted_lists(list1, list2):\n    \"\"\"\n    Merge two sorted lists into a single sorted list.\n\n    Args:\n        list1: A sorted list.\n        list2: A sorted list.\n\n    Returns:\n        A new sorted list containing all elements from list1 and list2.\n    \"\"\"\n    merged = []\n    i = 0  # Pointer for list1\n    j = 0  # Pointer for list2\n\n    # Compare elements from both lists and append the smaller one\n    while i < len(list1) and j < len(list2):\n        if list1[i] <= list2[j]:\n            merged.append(list1[i])\n            i += 1\n        else:\n            merged.append(list2[j])\n            j += 1\n\n    # Append any remaining elements from list1\n    while i < len(list1):\n        merged.append(list1[i])\n        i += 1\n\n    # Append any remaining elements from list2\n    while j < len(list2):\n        merged.append(list2[j])\n        j += 1\n\n    return merged\n```\n\nExample:\n\n```python\na = [1, 3, 5]\nb = [2, 4, 6]\n\nprint(merge_sorted_lists(a, b))\n```\n\nOutput:\n\n```python\n[1, 2, 3, 4, 5, 6]\n```\n\nExplanation:\n\n1. Create an empty list called `merged` to store the result.\n2. Use two pointers, `i` and `j`, to track the current position in `list1` and `list2`.\n3. While both lists still have elements, compare the current elements.\n4. Append the smaller element to `merged` and move that list\u2019s pointer forward.\n5. Once one list is exhausted, append the remaining elements from the other list.\n6. Return the fully merged sorted list.\n\nThis approach runs in `O(n + m)` time, where `n` and `m` are the lengths of the",
+      "reasoning": "We need answer user: \"Write a Python function that merges two sorted lists. Explain each step.\" Need provide code and explanation. Now final. Need likely include function merge_sorted_lists(a,b) using two pointers, O(n+m). Explain steps. Could include example. Ensure clear.\n"
+    },
+    {
+      "status": 200,
+      "latency_s": 9.118,
+      "prompt_tokens": 69,
+      "completion_tokens": 512,
+      "decode_tok_s": 56.15,
+      "finish_reason": "length",
+      "text": "\n\nA B-tree index speeds up a range query by letting the database find the first matching row quickly and then read only the rows in the requested range.\n\nFor example, suppose a table has 10 million rows and you run:\n\n```sql\nSELECT *\nFROM orders\nWHERE order_date BETWEEN '2024-01-01' AND '2024-01-31';\n```\n\nWithout an index, the database may need to scan the whole table, checking every row.\n\nWith a B-tree index on `order_date`:\n\n1. **The index is sorted by `order_date`.**  \n   The B-tree stores the indexed values in sorted order, with internal nodes guiding the search to the correct part of the tree.\n\n2. **The database finds the lower bound quickly.**  \n   It traverses the B-tree from the root to a leaf in roughly `O(log n)` steps, where `n` is the number of indexed entries. For 10 million rows, this might take only a handful of page reads.\n\n3. **It then scans only the matching range.**  \n   Once it reaches the leaf containing the first `order_date` in the range, it reads forward through the leaf pages until it reaches the end of the range.\n\n4. **It fetches the actual rows only for matching entries.**  \n   If the index is a secondary index, each index entry points to the corresponding table row. If it is a clustered index, the table rows themselves are stored in index order, so the range is physically contiguous.\n\nSo instead of reading all 10 million rows, the database reads:\n\n- a small number of B-tree pages to locate the start of the range,\n",
+      "reasoning": "We need answer user: \"Explain how a B-tree index speeds up a range query in a relational database.\" Need provide clear explanation. Need final only. Let's craft concise but thorough: B-tree balanced, sorted keys, fanout, height log, range query: find lower bound via tree traversal O(log n) to leaf, then scan contiguous leaf pages for range, avoids full table scan, uses page locality, maybe clustered vs secondary. Mention if range small, only relevant pages; if large, still sequential. Include example. Also mention index stores key and row pointer/primary key. Need maybe discuss database uses index to locate first matching row, then follows leaf links. Also B+ tree common. Ensure not overdo.\n"
+    },
+    {
+      "status": 200,
+      "latency_s": 6.575,
+      "prompt_tokens": 63,
+      "completion_tokens": 417,
+      "decode_tok_s": 63.42,
+      "finish_reason": "stop",
+      "text": "\n\nOptimistic and pessimistic concurrency control are two strategies for handling simultaneous access to shared data.\n\n**Optimistic concurrency control**\n- Assumes conflicts are rare.\n- Allows multiple transactions to read and modify data without locking it.\n- Detects conflicts later, usually at commit time.\n- If a conflict is detected, the transaction is rolled back and often retried.\n- Works well when contention is low.\n- Can cause wasted work if many transactions conflict.\n\nExample: A user edits a record, and the system checks whether the record changed before saving. If it did, the update is rejected.\n\n**Pessimistic concurrency control**\n- Assumes conflicts are likely.\n- Locks data before it is read or modified.\n- Other transactions must wait until the lock is released.\n- Prevents conflicts by serializing access.\n- Works well when contention is high.\n- Can reduce throughput and cause waiting or deadlocks.\n\nExample: A database places a row lock before updating a record, so no other transaction can modify that row until the first transaction finishes.\n\nIn short:\n\n| Aspect | Optimistic | Pessimistic |\n|---|---|---|\n| Assumption | Conflicts are unlikely | Conflicts are likely |\n| Locking | No locks during work | Locks acquired early |\n| Conflict handling | Detect and retry | Prevent by waiting |\n| Best for | Low contention | High contention |\n| Main risk | Wasted work | Waiting, deadlocks |",
+      "reasoning": "We need answer user: \"Describe the difference between optimistic and pessimistic concurrency control.\" Need provide concise but thorough. Done. Now final. Need explain in context likely databases/systems. Include assumptions, mechanisms, conflicts, performance, use cases. Maybe mention optimistic: assume no conflict, validate at commit, rollback/retry; pessimistic: lock resources upfront, serialize access, hold locks. Discuss read/write, starvation, throughput, latency, consistency. Could include examples. Ensure clear.\n"
+    }
+  ],
+  "decode_tok_s_mean": 70.6,
+  "long_prompt_stream": {
+    "status": 200,
+    "latency_s": 15.054,
+    "ttft_s": 12.426,
+    "stream_chunks": 50,
+    "decode_tok_s": 19.02
+  },
+  "greedy_probe": {
+    "status": 200,
+    "latency_s": 1.322,
+    "prompt_tokens": 67,
+    "completion_tokens": 119,
+    "decode_tok_s": 90.03,
+    "finish_reason": "stop",
+    "text": "\n\n2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37",
+    "reasoning": "We need answer user's request: \"List the first 12 prime numbers, comma separated, nothing else.\" Need final only primes comma separated. First 12 primes: 2,3,5,7,11,13,17,19,23,29,31,37. Ensure nothing else.\n"
+  },
+  "metrics_after": {
+    "gen_throughput": 62.83865146461104,
+    "cache_hit_rate": 0.0,
+    "mamba_used_tokens": 4.0,
+    "spec_accept_length": 3.5,
+    "spec_accept_rate": 0.5,
+    "spec_verify_calls_total": 143050.0
+  }
+}
