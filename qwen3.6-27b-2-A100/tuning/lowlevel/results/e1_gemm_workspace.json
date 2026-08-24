@@ -1,0 +1,3805 @@
+{
+  "experiment": "e1_gemm_workspace",
+  "gpu": 1,
+  "m_values": [
+    1,
+    6,
+    24,
+    48
+  ],
+  "workspaces_kib": [
+    null,
+    1024,
+    8192,
+    32768,
+    131072
+  ],
+  "runs": [
+    {
+      "workspace_kib": null,
+      "device": "NVIDIA A100 80GB PCIe",
+      "capability": "8.0",
+      "l2_bytes": 41943040,
+      "persisting_l2_max": null,
+      "free_mib_before": 1815,
+      "total_mib": 81175,
+      "torch": "2.11.0+cu130",
+      "gpu_before": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 73.8,
+        "temp_c": 48.0
+      },
+      "rows": [
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 1,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00025497600436210634,
+          "gb_per_s": 1398.5461608127546,
+          "pct_of_peak": 72.27628738050412,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 1632,
+              "n": 6,
+              "dur_us": 1342.861,
+              "block": 128,
+              "warps_per_sm": 60.444443,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 6,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.000254368007183075,
+          "gb_per_s": 1403.4590118208605,
+          "pct_of_peak": 72.53018148945016,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 544,
+              "n": 6,
+              "dur_us": 1306.958,
+              "block": 128,
+              "warps_per_sm": 20.148148,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 24,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00027619200944900514,
+          "gb_per_s": 1297.7666106816876,
+          "pct_of_peak": 67.06804189569445,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1445.4340000000002,
+              "block": 128,
+              "warps_per_sm": 5.037037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 48,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00033952000737190246,
+          "gb_per_s": 1061.3504010833776,
+          "pct_of_peak": 54.85014992678954,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1811.66,
+              "block": 256,
+              "warps_per_sm": 10.074074,
+              "regs_per_thread": 238,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 1,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.0001552319973707199,
+          "gb_per_s": 1148.6225715062003,
+          "pct_of_peak": 59.36033961272352,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 668.162,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 6,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.0001523520052433014,
+          "gb_per_s": 1171.814284392883,
+          "pct_of_peak": 60.55887774640223,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 200,
+              "n": 6,
+              "dur_us": 679.077,
+              "block": 128,
+              "warps_per_sm": 7.407407,
+              "regs_per_thread": 158,
+              "shared_bytes": 73728
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 160,
+              "n": 6,
+              "dur_us": 20.223,
+              "block": 512,
+              "warps_per_sm": 23.703703,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 24,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015692800283432007,
+          "gb_per_s": 1142.8123774017633,
+          "pct_of_peak": 59.06007118355367,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 707.9390000000001,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.881,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 48,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015887999534606933,
+          "gb_per_s": 1135.5778781778745,
+          "pct_of_peak": 58.68619525467053,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 717.8889999999999,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 480,
+              "n": 6,
+              "dur_us": 29.948,
+              "block": 512,
+              "warps_per_sm": 71.111115,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 1,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.924800157546998e-05,
+          "gb_per_s": 940.2194168912753,
+          "pct_of_peak": 48.59015074373516,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 341.37199999999996,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 234,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 6,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.712000191211701e-05,
+          "gb_per_s": 865.3812020725895,
+          "pct_of_peak": 44.72254274276948,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 192,
+              "n": 6,
+              "dur_us": 353.38300000000004,
+              "block": 128,
+              "warps_per_sm": 7.111111,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 256,
+              "n": 6,
+              "dur_us": 23.905,
+              "block": 512,
+              "warps_per_sm": 37.925926,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 24,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.939199686050415e-05,
+          "gb_per_s": 850.4211472743648,
+          "pct_of_peak": 43.949413295832805,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 390.586,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 48,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.411200135946274e-05,
+          "gb_per_s": 904.9221222563764,
+          "pct_of_peak": 46.76600115020033,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 360.894,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.7504001557827e-05,
+          "gb_per_s": 812.0495295077328,
+          "pct_of_peak": 41.966383953888,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 259.42600000000004,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.740800082683563e-05,
+          "gb_per_s": 814.5117730277575,
+          "pct_of_peak": 42.09363168102105,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.283,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.752000331878663e-05,
+          "gb_per_s": 725.0369012083778,
+          "pct_of_peak": 37.469607297590585,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 283.605,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.272000000000002,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.118399977684021e-05,
+          "gb_per_s": 788.2822252649894,
+          "pct_of_peak": 40.73809949689868,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 267.531,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 1,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015004800260066985,
+          "gb_per_s": 1118.409876115544,
+          "pct_of_peak": 57.79896000597127,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 648.224,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 29.762,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 6,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015376000106334686,
+          "gb_per_s": 1092.8083171043556,
+          "pct_of_peak": 56.47588202089693,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 668.4190000000001,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 33.215,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 24,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.0001576640009880066,
+          "gb_per_s": 1070.6588120444871,
+          "pct_of_peak": 55.331204756821045,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 728.7829999999999,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 48,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015529599785804748,
+          "gb_per_s": 1093.6311710701245,
+          "pct_of_peak": 56.51840677364984,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 707.39,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.083199709653854e-05,
+          "gb_per_s": 778.6160216335313,
+          "pct_of_peak": 40.238554089588185,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.78499999999997,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.076799660921096e-05,
+          "gb_per_s": 780.6276080495188,
+          "pct_of_peak": 40.34251204390278,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 262.46299999999997,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.835200220346451e-05,
+          "gb_per_s": 718.2093265285589,
+          "pct_of_peak": 37.116761060907436,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 287.592,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.752,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.108799904584885e-05,
+          "gb_per_s": 789.2154788998478,
+          "pct_of_peak": 40.786329658906865,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 269.907,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        }
+      ],
+      "gpu_after": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 172.0,
+        "temp_c": 50.0
+      },
+      "label": "unset(baseline)"
+    },
+    {
+      "workspace_kib": "1024",
+      "device": "NVIDIA A100 80GB PCIe",
+      "capability": "8.0",
+      "l2_bytes": 41943040,
+      "persisting_l2_max": null,
+      "free_mib_before": 1815,
+      "total_mib": 81175,
+      "torch": "2.11.0+cu130",
+      "gpu_before": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 77.97,
+        "temp_c": 48.0
+      },
+      "rows": [
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 1,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00026009601354599,
+          "gb_per_s": 1371.0156766279965,
+          "pct_of_peak": 70.85352333994814,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 1632,
+              "n": 6,
+              "dur_us": 1353.9140000000002,
+              "block": 128,
+              "warps_per_sm": 60.444443,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 6,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00025004801154136655,
+          "gb_per_s": 1427.7061025175988,
+          "pct_of_peak": 73.78326111202061,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 544,
+              "n": 6,
+              "dur_us": 1309.186,
+              "block": 128,
+              "warps_per_sm": 20.148148,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 24,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002725760042667389,
+          "gb_per_s": 1314.9828392423087,
+          "pct_of_peak": 67.95776946988677,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1448.5349999999999,
+              "block": 128,
+              "warps_per_sm": 5.037037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 48,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0003338879942893982,
+          "gb_per_s": 1079.2532291163068,
+          "pct_of_peak": 55.775360677845306,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1812.587,
+              "block": 256,
+              "warps_per_sm": 10.074074,
+              "regs_per_thread": 238,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 1,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00014927999675273896,
+          "gb_per_s": 1194.4197473110444,
+          "pct_of_peak": 61.72711872408498,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 668.03,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 6,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00014793600142002104,
+          "gb_per_s": 1206.7938452190633,
+          "pct_of_peak": 62.366606988065286,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 200,
+              "n": 6,
+              "dur_us": 679.533,
+              "block": 128,
+              "warps_per_sm": 7.407407,
+              "regs_per_thread": 158,
+              "shared_bytes": 73728
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 160,
+              "n": 6,
+              "dur_us": 20.058999999999997,
+              "block": 512,
+              "warps_per_sm": 23.703703,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 24,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015174399316310883,
+          "gb_per_s": 1181.8541232615987,
+          "pct_of_peak": 61.07773246829967,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 708.741,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.651,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 48,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015545600652694703,
+          "gb_per_s": 1160.5894942935226,
+          "pct_of_peak": 59.978785234807376,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 718.071,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 480,
+              "n": 6,
+              "dur_us": 29.758000000000003,
+              "block": 512,
+              "warps_per_sm": 71.111115,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 1,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.521600067615509e-05,
+          "gb_per_s": 984.7059628964755,
+          "pct_of_peak": 50.88919704891346,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 341.22900000000004,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 234,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 6,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.15519967675209e-05,
+          "gb_per_s": 918.011916369433,
+          "pct_of_peak": 47.442476298161914,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 192,
+              "n": 6,
+              "dur_us": 353.0,
+              "block": 128,
+              "warps_per_sm": 7.111111,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 256,
+              "n": 6,
+              "dur_us": 23.837,
+              "block": 512,
+              "warps_per_sm": 37.925926,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 24,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.424000233411789e-05,
+          "gb_per_s": 896.9127112319609,
+          "pct_of_peak": 46.35207809984294,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 389.85699999999997,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 48,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.905600011348725e-05,
+          "gb_per_s": 956.2975194425129,
+          "pct_of_peak": 49.42106043630558,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 360.97599999999994,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.196799665689468e-05,
+          "gb_per_s": 874.5149361326636,
+          "pct_of_peak": 45.19457034277331,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 259.071,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.215999811887741e-05,
+          "gb_per_s": 873.749024994859,
+          "pct_of_peak": 45.15498837182734,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 259.114,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.048000186681748e-05,
+          "gb_per_s": 788.4596238579746,
+          "pct_of_peak": 40.74726738284106,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 284.27500000000003,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.688,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.356800138950347e-05,
+          "gb_per_s": 869.8877608646142,
+          "pct_of_peak": 44.95543983796456,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 267.996,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 1,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014137600362300874,
+          "gb_per_s": 1187.013097692969,
+          "pct_of_peak": 61.34434613400356,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 646.295,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 29.661,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 6,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014534400403499602,
+          "gb_per_s": 1156.0862734973337,
+          "pct_of_peak": 59.74606064585704,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 666.444,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 33.373999999999995,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 24,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014908799529075623,
+          "gb_per_s": 1132.2464405721755,
+          "pct_of_peak": 58.51402793654653,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 729.57,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 48,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014684799313545227,
+          "gb_per_s": 1156.546578361089,
+          "pct_of_peak": 59.769849010908985,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 706.856,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.350400090217591e-05,
+          "gb_per_s": 856.2403029429777,
+          "pct_of_peak": 44.25014485493425,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 260.455,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.308799773454666e-05,
+          "gb_per_s": 862.6550179824964,
+          "pct_of_peak": 44.581654676098,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 262.732,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.111999928951264e-05,
+          "gb_per_s": 782.2390601056578,
+          "pct_of_peak": 40.42579121993064,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 285.699,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.399,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.452800124883651e-05,
+          "gb_per_s": 858.6826820476293,
+          "pct_of_peak": 44.3763659972935,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 271.56800000000004,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        }
+      ],
+      "gpu_after": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 137.74,
+        "temp_c": 50.0
+      },
+      "label": "1024 KiB"
+    },
+    {
+      "workspace_kib": "8192",
+      "device": "NVIDIA A100 80GB PCIe",
+      "capability": "8.0",
+      "l2_bytes": 41943040,
+      "persisting_l2_max": null,
+      "free_mib_before": 1815,
+      "total_mib": 81175,
+      "torch": "2.11.0+cu130",
+      "gpu_before": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 76.43,
+        "temp_c": 48.0
+      },
+      "rows": [
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 1,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002580479979515076,
+          "gb_per_s": 1381.8968363668978,
+          "pct_of_peak": 71.41585717658386,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 1632,
+              "n": 6,
+              "dur_us": 1347.971,
+              "block": 128,
+              "warps_per_sm": 60.444443,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 6,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002555199861526489,
+          "gb_per_s": 1397.1316975053737,
+          "pct_of_peak": 72.20318850156971,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 544,
+              "n": 6,
+              "dur_us": 1308.4140000000002,
+              "block": 128,
+              "warps_per_sm": 20.148148,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 24,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00027740800380706787,
+          "gb_per_s": 1292.0779612735446,
+          "pct_of_peak": 66.77405484617802,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1447.884,
+              "block": 128,
+              "warps_per_sm": 5.037037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 48,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0003404799997806549,
+          "gb_per_s": 1058.3578954186607,
+          "pct_of_peak": 54.69549847124862,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1813.744,
+              "block": 256,
+              "warps_per_sm": 10.074074,
+              "regs_per_thread": 238,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 1,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015638400614261628,
+          "gb_per_s": 1140.1611993325869,
+          "pct_of_peak": 58.923059397032915,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 665.683,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 6,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015401600301265716,
+          "gb_per_s": 1159.1539353564992,
+          "pct_of_peak": 59.90459614245474,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 200,
+              "n": 6,
+              "dur_us": 680.9599999999999,
+              "block": 128,
+              "warps_per_sm": 7.407407,
+              "regs_per_thread": 158,
+              "shared_bytes": 73728
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 160,
+              "n": 6,
+              "dur_us": 20.288,
+              "block": 512,
+              "warps_per_sm": 23.703703,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 24,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.0001570879966020584,
+          "gb_per_s": 1141.6484255910998,
+          "pct_of_peak": 58.99991863519895,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 709.2620000000001,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.561,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 48,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015964800119400025,
+          "gb_per_s": 1130.1150446647773,
+          "pct_of_peak": 58.40387827724947,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 717.664,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 480,
+              "n": 6,
+              "dur_us": 29.953000000000003,
+              "block": 512,
+              "warps_per_sm": 71.111115,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 1,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.860799670219421e-05,
+          "gb_per_s": 947.0105083407451,
+          "pct_of_peak": 48.941111542157365,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 342.299,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 234,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 6,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.663999825716018e-05,
+          "gb_per_s": 869.6794858827818,
+          "pct_of_peak": 44.944676273011986,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 192,
+              "n": 6,
+              "dur_us": 354.698,
+              "block": 128,
+              "warps_per_sm": 7.111111,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 256,
+              "n": 6,
+              "dur_us": 23.617,
+              "block": 512,
+              "warps_per_sm": 37.925926,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 24,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.920000284910202e-05,
+          "gb_per_s": 852.0670723021572,
+          "pct_of_peak": 44.034474020783314,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 390.077,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 48,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.433600306510926e-05,
+          "gb_per_s": 902.7733763664027,
+          "pct_of_peak": 46.65495485097689,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 362.116,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.727999985218048e-05,
+          "gb_per_s": 814.4033141871728,
+          "pct_of_peak": 42.08802657298051,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.027,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.734400033950805e-05,
+          "gb_per_s": 815.1857639020204,
+          "pct_of_peak": 42.128463250750414,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.837,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.537600189447403e-05,
+          "gb_per_s": 743.244361318671,
+          "pct_of_peak": 38.410561308458455,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 285.32899999999995,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.658,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.903999835252761e-05,
+          "gb_per_s": 809.6647942042054,
+          "pct_of_peak": 41.843141819338776,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 266.432,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 1,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014643199741840363,
+          "gb_per_s": 1146.0279922324473,
+          "pct_of_peak": 59.226252828550244,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 645.807,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 29.985,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 6,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015104000270366668,
+          "gb_per_s": 1112.4881156793099,
+          "pct_of_peak": 57.49292587489973,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 668.331,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 33.024,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 24,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.0001542080044746399,
+          "gb_per_s": 1094.6536308221312,
+          "pct_of_peak": 56.57124707091117,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 728.881,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 48,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015263999998569488,
+          "gb_per_s": 1112.6607967499788,
+          "pct_of_peak": 57.50184996123921,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 705.4929999999999,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.77600035071373e-05,
+          "gb_per_s": 809.3760951827019,
+          "pct_of_peak": 41.82822197326625,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.767,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.753600180149078e-05,
+          "gb_per_s": 813.1671292701056,
+          "pct_of_peak": 42.02414104755068,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 262.30199999999996,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.620800077915192e-05,
+          "gb_per_s": 736.0712628351042,
+          "pct_of_peak": 38.03985854444983,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 285.59999999999997,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.592,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.952000200748444e-05,
+          "gb_per_s": 804.7774444721051,
+          "pct_of_peak": 41.59056560579355,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 269.794,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        }
+      ],
+      "gpu_after": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 146.51,
+        "temp_c": 49.0
+      },
+      "label": "8192 KiB"
+    },
+    {
+      "workspace_kib": "32768",
+      "device": "NVIDIA A100 80GB PCIe",
+      "capability": "8.0",
+      "l2_bytes": 41943040,
+      "persisting_l2_max": null,
+      "free_mib_before": 1815,
+      "total_mib": 81175,
+      "torch": "2.11.0+cu130",
+      "gpu_before": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 76.82,
+        "temp_c": 47.0
+      },
+      "rows": [
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 1,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002580479979515076,
+          "gb_per_s": 1381.8968363668978,
+          "pct_of_peak": 71.41585717658386,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 1632,
+              "n": 6,
+              "dur_us": 1346.0569999999998,
+              "block": 128,
+              "warps_per_sm": 60.444443,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 6,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00025491198897361754,
+          "gb_per_s": 1400.4640324584643,
+          "pct_of_peak": 72.37540219423587,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 544,
+              "n": 6,
+              "dur_us": 1305.401,
+              "block": 128,
+              "warps_per_sm": 20.148148,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 24,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00027619200944900514,
+          "gb_per_s": 1297.7666106816876,
+          "pct_of_peak": 67.06804189569445,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1446.588,
+              "block": 128,
+              "warps_per_sm": 5.037037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 48,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0003389759957790375,
+          "gb_per_s": 1063.0537279545158,
+          "pct_of_peak": 54.938177155272136,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1810.959,
+              "block": 256,
+              "warps_per_sm": 10.074074,
+              "regs_per_thread": 238,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 1,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.0001493760049343109,
+          "gb_per_s": 1193.6520599704745,
+          "pct_of_peak": 61.687444959714455,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 666.569,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 6,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015145599842071535,
+          "gb_per_s": 1178.74668459207,
+          "pct_of_peak": 60.9171413225876,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 200,
+              "n": 6,
+              "dur_us": 675.735,
+              "block": 128,
+              "warps_per_sm": 7.407407,
+              "regs_per_thread": 158,
+              "shared_bytes": 73728
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 160,
+              "n": 6,
+              "dur_us": 20.127000000000002,
+              "block": 512,
+              "warps_per_sm": 23.703703,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 24,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015657599270343781,
+          "gb_per_s": 1145.3816188774028,
+          "pct_of_peak": 59.192848520796005,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 708.024,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.751,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 48,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015852800011634827,
+          "gb_per_s": 1138.0993128506266,
+          "pct_of_peak": 58.81650195610473,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 719.126,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 480,
+              "n": 6,
+              "dur_us": 29.917,
+              "block": 512,
+              "warps_per_sm": 71.111115,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 1,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.799999952316284e-05,
+          "gb_per_s": 953.5534597123832,
+          "pct_of_peak": 49.279248563947455,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 337.441,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 234,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 6,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.619200229644776e-05,
+          "gb_per_s": 873.7298527270983,
+          "pct_of_peak": 45.153997556955986,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 192,
+              "n": 6,
+              "dur_us": 354.271,
+              "block": 128,
+              "warps_per_sm": 7.111111,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 256,
+              "n": 6,
+              "dur_us": 23.647000000000002,
+              "block": 512,
+              "warps_per_sm": 37.925926,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 24,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.84639972448349e-05,
+          "gb_per_s": 858.4361631168077,
+          "pct_of_peak": 44.36362600086862,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 390.855,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 48,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.356799721717835e-05,
+          "gb_per_s": 910.1833376034317,
+          "pct_of_peak": 47.03789858415668,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 361.38899999999995,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.67040029168129e-05,
+          "gb_per_s": 820.5189508591434,
+          "pct_of_peak": 42.40408014775935,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.056,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.702399790287018e-05,
+          "gb_per_s": 818.5725191713341,
+          "pct_of_peak": 42.303489362859644,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.59799999999996,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.470399677753449e-05,
+          "gb_per_s": 749.1409427427377,
+          "pct_of_peak": 38.715294198591096,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 286.579,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.688,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.878399640321732e-05,
+          "gb_per_s": 812.2957316415924,
+          "pct_of_peak": 41.979107578376876,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 267.218,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 1,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014579200744628906,
+          "gb_per_s": 1151.0587647393802,
+          "pct_of_peak": 59.486241071802596,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 648.58,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 30.016000000000002,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 6,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.000150176003575325,
+          "gb_per_s": 1118.8885307879411,
+          "pct_of_peak": 57.823696681547354,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 667.356,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 33.75999999999999,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 24,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015376000106334686,
+          "gb_per_s": 1097.8430725325964,
+          "pct_of_peak": 56.73607609987578,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 730.727,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 48,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.0001521279960870743,
+          "gb_per_s": 1116.4055819337143,
+          "pct_of_peak": 57.69537891130307,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 704.73,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.731200009584427e-05,
+          "gb_per_s": 814.0662241563589,
+          "pct_of_peak": 42.070605899553435,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 260.546,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.807999849319458e-05,
+          "gb_per_s": 807.5016549276111,
+          "pct_of_peak": 41.73135167584554,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 263.641,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.54400023818016e-05,
+          "gb_per_s": 742.6876197456161,
+          "pct_of_peak": 38.38178913414037,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 285.49499999999995,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.462999999999997,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.897599786520004e-05,
+          "gb_per_s": 810.3209295212862,
+          "pct_of_peak": 41.877050621255094,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 268.78200000000004,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        }
+      ],
+      "gpu_after": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 134.4,
+        "temp_c": 49.0
+      },
+      "label": "32768 KiB"
+    },
+    {
+      "workspace_kib": "131072",
+      "device": "NVIDIA A100 80GB PCIe",
+      "capability": "8.0",
+      "l2_bytes": 41943040,
+      "persisting_l2_max": null,
+      "free_mib_before": 1815,
+      "total_mib": 81175,
+      "torch": "2.11.0+cu130",
+      "gpu_before": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 77.01,
+        "temp_c": 47.0
+      },
+      "rows": [
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 1,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00025907200574874876,
+          "gb_per_s": 1376.4347520659217,
+          "pct_of_peak": 71.13357891813548,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 1632,
+              "n": 6,
+              "dur_us": 1344.4610000000002,
+              "block": 128,
+              "warps_per_sm": 60.444443,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 6,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002494720071554184,
+          "gb_per_s": 1431.0025243737903,
+          "pct_of_peak": 73.95361883068684,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 544,
+              "n": 6,
+              "dur_us": 1309.3170000000002,
+              "block": 128,
+              "warps_per_sm": 20.148148,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 24,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002721279859542847,
+          "gb_per_s": 1317.14776318601,
+          "pct_of_peak": 68.06965184423824,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1444.528,
+              "block": 128,
+              "warps_per_sm": 5.037037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 48,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.000334304004907608,
+          "gb_per_s": 1077.9101976346058,
+          "pct_of_peak": 55.7059533661295,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1811.609,
+              "block": 256,
+              "warps_per_sm": 10.074074,
+              "regs_per_thread": 238,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 1,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00014403200149536134,
+          "gb_per_s": 1237.9400004778965,
+          "pct_of_peak": 63.97622741487837,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 668.555,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 6,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00014688000082969667,
+          "gb_per_s": 1215.4701456394912,
+          "pct_of_peak": 62.81499460669205,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 200,
+              "n": 6,
+              "dur_us": 680.2060000000001,
+              "block": 128,
+              "warps_per_sm": 7.407407,
+              "regs_per_thread": 158,
+              "shared_bytes": 73728
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 160,
+              "n": 6,
+              "dur_us": 20.639,
+              "block": 512,
+              "warps_per_sm": 23.703703,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 24,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.000151296004652977,
+          "gb_per_s": 1185.3536014473416,
+          "pct_of_peak": 61.25858405412617,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 705.781,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.685000000000002,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 48,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015539200603961945,
+          "gb_per_s": 1161.0675001775776,
+          "pct_of_peak": 60.00348838127017,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 719.015,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 480,
+              "n": 6,
+              "dur_us": 30.427,
+              "block": 512,
+              "warps_per_sm": 71.111115,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 1,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.454400300979614e-05,
+          "gb_per_s": 992.5328942642685,
+          "pct_of_peak": 51.29368962606039,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 339.58299999999997,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 234,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 6,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.193599969148636e-05,
+          "gb_per_s": 914.1775178606447,
+          "pct_of_peak": 47.24431616850877,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 192,
+              "n": 6,
+              "dur_us": 353.186,
+              "block": 128,
+              "warps_per_sm": 7.111111,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 256,
+              "n": 6,
+              "dur_us": 23.678,
+              "block": 512,
+              "warps_per_sm": 37.925926,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 24,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.385599941015243e-05,
+          "gb_per_s": 900.5823445619492,
+          "pct_of_peak": 46.541723233175674,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 390.999,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 48,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 8.915200084447861e-05,
+          "gb_per_s": 955.267758359844,
+          "pct_of_peak": 49.36784280929426,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 361.364,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.241600006818772e-05,
+          "gb_per_s": 869.104727418495,
+          "pct_of_peak": 44.914972993203875,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 259.137,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.193599641323089e-05,
+          "gb_per_s": 876.4697945909529,
+          "pct_of_peak": 45.29559661968749,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.081,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.073599636554718e-05,
+          "gb_per_s": 785.9596073193262,
+          "pct_of_peak": 40.61806756172228,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 283.404,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.335,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.385600358247757e-05,
+          "gb_per_s": 866.4956252139143,
+          "pct_of_peak": 44.78013566996974,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 268.14799999999997,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 1,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014217600226402283,
+          "gb_per_s": 1180.3339897570397,
+          "pct_of_peak": 60.99917259726304,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 648.245,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 29.181,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 6,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014556799829006195,
+          "gb_per_s": 1154.3073338494314,
+          "pct_of_peak": 59.65412578033237,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 666.086,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 33.632,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 24,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014975999295711517,
+          "gb_per_s": 1127.165864973954,
+          "pct_of_peak": 58.25146589012682,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 728.7139999999999,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 48,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.000147039994597435,
+          "gb_per_s": 1155.0363862905276,
+          "pct_of_peak": 59.691802909071185,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 705.866,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.327999919652939e-05,
+          "gb_per_s": 858.857651338249,
+          "pct_of_peak": 44.385408337894,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 259.514,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.305599749088287e-05,
+          "gb_per_s": 863.0328811521379,
+          "pct_of_peak": 44.60118248848257,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 261.73600000000005,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.073599636554718e-05,
+          "gb_per_s": 785.9596073193262,
+          "pct_of_peak": 40.61806756172228,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 285.236,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 23.005999999999997,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.401599735021591e-05,
+          "gb_per_s": 864.6225990470061,
+          "pct_of_peak": 44.68333845204166,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 269.40799999999996,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        }
+      ],
+      "gpu_after": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 192.26,
+        "temp_c": 49.0
+      },
+      "label": "131072 KiB"
+    },
+    {
+      "workspace_kib": null,
+      "device": "NVIDIA A100 80GB PCIe",
+      "capability": "8.0",
+      "l2_bytes": 41943040,
+      "persisting_l2_max": null,
+      "free_mib_before": 1815,
+      "total_mib": 81175,
+      "torch": "2.11.0+cu130",
+      "gpu_before": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 77.97,
+        "temp_c": 47.0
+      },
+      "rows": [
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 1,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002539519965648651,
+          "gb_per_s": 1404.1855028649768,
+          "pct_of_peak": 72.56772624625204,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 1632,
+              "n": 6,
+              "dur_us": 1344.795,
+              "block": 128,
+              "warps_per_sm": 60.444443,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 6,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002538880109786987,
+          "gb_per_s": 1406.1123667235788,
+          "pct_of_peak": 72.66730577382836,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn",
+              "grid": 544,
+              "n": 6,
+              "dur_us": 1304.537,
+              "block": 128,
+              "warps_per_sm": 20.148148,
+              "regs_per_thread": 146,
+              "shared_bytes": 81920
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 24,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.0002763200104236603,
+          "gb_per_s": 1297.165440354618,
+          "pct_of_peak": 67.03697366173738,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1446.306,
+              "block": 128,
+              "warps_per_sm": 5.037037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "mlp_gate_up",
+          "note": "trace grid 544, 5.04 blk/SM, ~82% peak - the healthy one",
+          "M": 48,
+          "N": 34816,
+          "K": 5120,
+          "seconds": 0.00034019199013710024,
+          "gb_per_s": 1059.2539108718463,
+          "pct_of_peak": 54.74180417942359,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn",
+              "grid": 136,
+              "n": 6,
+              "dur_us": 1812.7469999999998,
+              "block": 256,
+              "warps_per_sm": 10.074074,
+              "regs_per_thread": 238,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 1,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00014921599626541138,
+          "gb_per_s": 1194.9320479209978,
+          "pct_of_peak": 61.75359420780351,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 669.24,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 6,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.0001531520038843155,
+          "gb_per_s": 1165.6932424785814,
+          "pct_of_peak": 60.242544830934435,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 200,
+              "n": 6,
+              "dur_us": 680.7150000000001,
+              "block": 128,
+              "warps_per_sm": 7.407407,
+              "regs_per_thread": 158,
+              "shared_bytes": 73728
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 160,
+              "n": 6,
+              "dur_us": 20.448,
+              "block": 512,
+              "warps_per_sm": 23.703703,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 24,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.0001568319946527481,
+          "gb_per_s": 1143.5119753280364,
+          "pct_of_peak": 59.09622611514399,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 706.671,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.944,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "mlp_down",
+          "note": "trace grid 200 (40 tiles x splitK 5), 1.85 blk/SM, ~58%",
+          "M": 48,
+          "N": 5120,
+          "K": 17408,
+          "seconds": 0.00015913599729537963,
+          "gb_per_s": 1133.751074969625,
+          "pct_of_peak": 58.59178682013566,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 718.6659999999999,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 480,
+              "n": 6,
+              "dur_us": 29.951,
+              "block": 512,
+              "warps_per_sm": 71.111115,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 1,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.12640020251274e-05,
+          "gb_per_s": 919.450189976291,
+          "pct_of_peak": 47.51680568352925,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 340.03299999999996,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 234,
+              "shared_bytes": 147456
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 6,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 0.0001037760004401207,
+          "gb_per_s": 809.8772706941513,
+          "pct_of_peak": 41.85412251649361,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 192,
+              "n": 6,
+              "dur_us": 353.864,
+              "block": 128,
+              "warps_per_sm": 7.111111,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 256,
+              "n": 6,
+              "dur_us": 23.618,
+              "block": 512,
+              "warps_per_sm": 37.925926,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 24,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.98080000281334e-05,
+          "gb_per_s": 846.8765627622485,
+          "pct_of_peak": 43.76623063370793,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 390.97299999999996,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_qkv",
+          "note": "16 full-attn layers: 24*256 q + 4*256 k + 4*256 v",
+          "M": 48,
+          "N": 8192,
+          "K": 5120,
+          "seconds": 9.42080020904541e-05,
+          "gb_per_s": 903.9999799404459,
+          "pct_of_peak": 46.718345216560515,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 361.681,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.648000121116638e-05,
+          "gb_per_s": 822.9221627001091,
+          "pct_of_peak": 42.5282771421245,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.528,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.72159993648529e-05,
+          "gb_per_s": 816.5370974748909,
+          "pct_of_peak": 42.19829961110547,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.722,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.4927998483181e-05,
+          "gb_per_s": 747.1650472554886,
+          "pct_of_peak": 38.61318073671776,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 285.85699999999997,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.752,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "attn_o_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.868800312280655e-05,
+          "gb_per_s": 813.2866696353072,
+          "pct_of_peak": 42.03031884420192,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 266.571,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 1,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00014652800559997558,
+          "gb_per_s": 1145.2770909756243,
+          "pct_of_peak": 59.18744656204776,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 646.564,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 29.569000000000003,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 6,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.0001504960060119629,
+          "gb_per_s": 1116.5094174435653,
+          "pct_of_peak": 57.700745087522755,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 384,
+              "n": 6,
+              "dur_us": 667.1030000000001,
+              "block": 128,
+              "warps_per_sm": 14.222222,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 512,
+              "n": 6,
+              "dur_us": 33.763999999999996,
+              "block": 512,
+              "warps_per_sm": 75.851852,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 24,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.0001539520025253296,
+          "gb_per_s": 1096.473895961352,
+          "pct_of_peak": 56.66531762074169,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+              "grid": 128,
+              "n": 6,
+              "dur_us": 729.588,
+              "block": 128,
+              "warps_per_sm": 4.740741,
+              "regs_per_thread": 158,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_in_proj_qkvz",
+          "note": "48 GDN layers: 2048 q + 2048 k + 6144 v + 6144 z",
+          "M": 48,
+          "N": 16384,
+          "K": 5120,
+          "seconds": 0.00015248000621795655,
+          "gb_per_s": 1113.8282861638518,
+          "pct_of_peak": 57.56218533146521,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 64,
+              "n": 6,
+              "dur_us": 707.811,
+              "block": 128,
+              "warps_per_sm": 2.37037,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 1,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.654400169849396e-05,
+          "gb_per_s": 822.2340954671869,
+          "pct_of_peak": 42.492718111999324,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 258.907,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 6,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.705599814653397e-05,
+          "gb_per_s": 818.2325778208872,
+          "pct_of_peak": 42.28592133441278,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 263.11,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 24,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 8.560000360012055e-05,
+          "gb_per_s": 741.2994080751491,
+          "pct_of_peak": 38.31004692894828,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+              "grid": 100,
+              "n": 6,
+              "dur_us": 286.682,
+              "block": 128,
+              "warps_per_sm": 3.703704,
+              "regs_per_thread": 254,
+              "shared_bytes": 122880
+            },
+            {
+              "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+              "grid": 320,
+              "n": 6,
+              "dur_us": 22.878999999999998,
+              "block": 512,
+              "warps_per_sm": 47.407406,
+              "regs_per_thread": 32,
+              "shared_bytes": 0
+            }
+          ]
+        },
+        {
+          "shape": "gdn_out_proj",
+          "note": "narrow output - starved class",
+          "M": 48,
+          "N": 5120,
+          "K": 6144,
+          "seconds": 7.88479968905449e-05,
+          "gb_per_s": 811.6363956441119,
+          "pct_of_peak": 41.94503336662077,
+          "kernels": [
+            {
+              "kernel": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+              "grid": 80,
+              "n": 6,
+              "dur_us": 270.077,
+              "block": 128,
+              "warps_per_sm": 2.962963,
+              "regs_per_thread": 146,
+              "shared_bytes": 98304
+            }
+          ]
+        }
+      ],
+      "gpu_after": {
+        "sm_clock_mhz": 1410.0,
+        "power_w": 212.16,
+        "temp_c": 49.0
+      },
+      "label": "unset(control-repeat)"
+    }
+  ]
+}

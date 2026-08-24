@@ -1,0 +1,163 @@
+{
+  "experiment": "e2_l2_policy",
+  "gpu": 1,
+  "device": "NVIDIA A100 80GB PCIe",
+  "cudart": "libcudart.so.13",
+  "torch": "2.11.0+cu130",
+  "l2_cache_bytes": 41943040,
+  "l2_enum_sanity_ok": true,
+  "max_persisting_bytes": 26214400,
+  "max_window_bytes": 134213632,
+  "gpu_before": {
+    "sm_clock_mhz": 1410.0,
+    "power_w": 76.91,
+    "temp_c": 45.0
+  },
+  "arm_a": [
+    {
+      "shape": "mlp_gate_up",
+      "N": 34816,
+      "K": 5120,
+      "M": 24,
+      "weight_mib": 340.0,
+      "distinct": 2,
+      "resident_frac_l2": 0.118,
+      "same_pct_peak": 68.78140466098671,
+      "rot_pct_peak": 68.520867055459,
+      "delta_pct": -0.3787907601071458
+    },
+    {
+      "shape": "mlp_down",
+      "N": 5120,
+      "K": 17408,
+      "M": 24,
+      "weight_mib": 170.0,
+      "distinct": 2,
+      "resident_frac_l2": 0.235,
+      "same_pct_peak": 62.42038749969505,
+      "rot_pct_peak": 61.57113023266447,
+      "delta_pct": -1.3605446890805128
+    },
+    {
+      "shape": "attn_qkv",
+      "N": 8192,
+      "K": 5120,
+      "M": 24,
+      "weight_mib": 80.0,
+      "distinct": 4,
+      "resident_frac_l2": 0.5,
+      "same_pct_peak": 45.381273084162494,
+      "rot_pct_peak": 47.93078364170531,
+      "delta_pct": 5.617979365220951
+    },
+    {
+      "shape": "attn_o_proj",
+      "N": 5120,
+      "K": 6144,
+      "M": 24,
+      "weight_mib": 60.0,
+      "distinct": 6,
+      "resident_frac_l2": 0.667,
+      "same_pct_peak": 39.53679860090249,
+      "rot_pct_peak": 41.59065904478295,
+      "delta_pct": 5.194807158295261
+    },
+    {
+      "shape": "gdn_in_proj_qkvz",
+      "N": 16384,
+      "K": 5120,
+      "M": 24,
+      "weight_mib": 160.0,
+      "distinct": 2,
+      "resident_frac_l2": 0.25,
+      "same_pct_peak": 57.5626764503385,
+      "rot_pct_peak": 59.57536109079002,
+      "delta_pct": 3.4965098299206714
+    },
+    {
+      "shape": "gdn_out_proj",
+      "N": 5120,
+      "K": 6144,
+      "M": 24,
+      "weight_mib": 60.0,
+      "distinct": 6,
+      "resident_frac_l2": 0.667,
+      "same_pct_peak": 39.53679860090249,
+      "rot_pct_peak": 41.59065904478295,
+      "delta_pct": 5.194807158295261
+    }
+  ],
+  "arm_b": {
+    "max_persisting_bytes": 26214400,
+    "max_window_bytes": 134213632,
+    "hot_bytes": 25165824,
+    "cold_mib": 512,
+    "setaside_bytes": 26214400,
+    "window_readback": {
+      "base_ptr": 136494027112448,
+      "num_bytes": 25165824,
+      "hit_ratio": 1.0,
+      "hit_prop": 2,
+      "miss_prop": 1
+    },
+    "window_applied": true,
+    "t_off_us": 26.623999699950218,
+    "t_on_us": 22.52800017595291,
+    "speedup": 1.1818181592687265
+  },
+  "arm_c": [
+    {
+      "shape": "mlp_gate_up",
+      "window_bytes": 134213632,
+      "window_applied": true,
+      "normal_pct_peak": 68.00567611756239,
+      "streaming_pct_peak": 68.26229578638315,
+      "delta_pct": 0.37735036760333457
+    },
+    {
+      "shape": "mlp_down",
+      "window_bytes": 134213632,
+      "window_applied": true,
+      "normal_pct_peak": 58.0189511886314,
+      "streaming_pct_peak": 61.99284736043332,
+      "delta_pct": 6.849307149455335
+    },
+    {
+      "shape": "attn_qkv",
+      "window_bytes": 83886080,
+      "window_applied": true,
+      "normal_pct_peak": 47.39821920680125,
+      "streaming_pct_peak": 47.93078364170531,
+      "delta_pct": 1.1235958730441904
+    },
+    {
+      "shape": "attn_o_proj",
+      "window_bytes": 62914560,
+      "window_applied": true,
+      "normal_pct_peak": 41.59065904478295,
+      "streaming_pct_peak": 41.59065904478295,
+      "delta_pct": 0.0
+    },
+    {
+      "shape": "gdn_in_proj_qkvz",
+      "window_bytes": 134213632,
+      "window_applied": true,
+      "normal_pct_peak": 58.75363168366144,
+      "streaming_pct_peak": 58.75363168366144,
+      "delta_pct": 0.0
+    },
+    {
+      "shape": "gdn_out_proj",
+      "window_bytes": 62914560,
+      "window_applied": true,
+      "normal_pct_peak": 41.59065904478295,
+      "streaming_pct_peak": 41.59065904478295,
+      "delta_pct": 0.0
+    }
+  ],
+  "gpu_after": {
+    "sm_clock_mhz": 1410.0,
+    "power_w": 193.27,
+    "temp_c": 47.0
+  }
+}
