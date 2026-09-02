@@ -1,0 +1,79 @@
+# Token quota enforcement. The unit of account is one Redis integer per
+# consumer at chat_quota:<name>; nothing else holds state.
+#
+# REQUEST PATH  — onHttpRequestHeaders reads X-Mse-Consumer (401 if absent),
+#   and for paths ending in enable_path_suffixes it parks the request
+#   (HeaderStopAllIterationAndWatermark) on a Redis GET. Three conditions all
+#   deny with 403 "No quota left", and they are indistinguishable in the code:
+#
+#     response.Error()      -> redis is down
+#     response.IsNull()     -> consumer was never seeded
+#     response.Integer()<=0 -> genuinely exhausted
+#
+#   There is no fail-open option; the plugin parses exactly five config keys
+#   and none of them changes this. Consequences to keep in mind:
+#     - every consumer MUST be seeded via /quota/refresh at creation, or they
+#       are locked out with a message blaming an empty balance;
+#     - Redis is a hard dependency of every chat request on this route, which
+#       is why the ledger is persistent and why cutover adds a second hostname
+#       instead of moving the existing one.
+#
+# RESPONSE PATH — onHttpStreamingResponseBody, so nothing is buffered and
+#   flush_interval -1's guarantee survives. It runs tokenusage.GetTokenUsage on
+#   each SSE frame, keeps the last one carrying `usage`, and at endOfStream does
+#   one DECRBY of (input + output). This is why
+#   --stream-response-default-include-usage had to land on the replicas first:
+#   without it SGLang omits usage from streams unless the client asks, and
+#   coding agents never ask.
+#
+# OVERDRAFT IS REAL. The gate is `> 0` and the deduction happens afterwards, so
+# a consumer with 1 token left can spend a full 169k-context request and go
+# deeply negative. Balances stay negative until a /refresh SETs them.
+#
+# COVERAGE IS NARROWER THAN "TOKEN QUOTA" SOUNDS. enable_path_suffixes defaults
+# to /v1/chat/completions and /v1/messages. Everything else — /v1/models,
+# /v1/completions, /v1/embeddings — returns ChatModeNone and passes ungated and
+# unmetered. key-auth still authenticates it, so it is not an open door, but a
+# consumer at zero can still call those.
+#
+# ai-statistics is NOT a dependency, whatever the docs say: ai-quota calls
+# tokenusage.GetTokenUsage itself.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-quota
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  url: http://localhost:8002/plugins/ai-quota/2.0.1/plugin.wasm
+
+  # A quota plugin that fails to load must stop traffic, not stop accounting.
+  failStrategy: FAIL_CLOSE
+
+  phase: UNSPECIFIED_PHASE
+  priority: 280
+
+  # No global config: this plugin is only meaningful on the inference route.
+  defaultConfigDisable: true
+
+  matchRules:
+    - ingress:
+        - ai-inference
+      configDisable: false
+      config:
+        redis_key_prefix: "chat_quota:"
+
+        # Admin endpoints live UNDER the chat path, not at the root:
+        # getOperationMode builds "/v1/chat/completions" + admin_path, so this
+        # yields /v1/chat/completions/quota{,/refresh,/delta}. The docs show
+        # "/quota" and invite the wrong assumption.
+        admin_path: /quota
+        admin_consumer: ${QUOTA_ADMIN_CONSUMER}
+
+        redis:
+          # <registry-name>.<registry-type>, same naming as a route
+          # destination. The plugin builds an FQDNCluster from this, so the
+          # McpBridge registry must exist or every request 403s.
+          service_name: quota-redis.dns
+          service_port: 6379
+          timeout: 2000

@@ -1,0 +1,38 @@
+# Per-consumer usage metrics. NOT a dependency of ai-quota — despite what the
+# docs say, ai-quota extracts token usage itself via tokenusage.GetTokenUsage.
+# This plugin exists purely so the numbers reach Prometheus and the access log.
+#
+# It emits counters named
+#   route.<route>.upstream.<cluster>.model.<model>.consumer.<consumer>.metric.<name>
+# where <consumer> comes from the same X-Mse-Consumer header key-auth sets
+# (main.go:697). Unauthenticated requests bucket as "none".
+#
+# Streaming is handled properly in 2.0.x: the plugin ships its own SSE framer
+# (sse_framer.go) and a processTokenUsageEvent() that reads usage out of
+# individual frames, so it never buffers the body.
+#
+# failStrategy is FAIL_OPEN here, deliberately and in contrast to key-auth and
+# ai-quota: losing metrics is not a reason to stop serving inference. Losing
+# authentication or quota enforcement is.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-statistics
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  url: http://localhost:8002/plugins/ai-statistics/2.0.1/plugin.wasm
+
+  failStrategy: FAIL_OPEN
+
+  phase: UNSPECIFIED_PHASE
+  priority: 900
+
+  defaultConfigDisable: true
+
+  matchRules:
+    - ingress:
+        - ai-inference
+      configDisable: false
+      config:
+        use_default_attributes: true

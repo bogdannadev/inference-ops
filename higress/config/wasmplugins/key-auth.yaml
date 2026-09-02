@@ -1,0 +1,78 @@
+# Consumer identity. This is what turns one shared credential into many.
+#
+# key-auth matches the RAW value of the header named in `keys` against each
+# consumer's `credential` — main.go does credential2Name[tokens[0]] with no
+# Bearer stripping — so credentials in consumers.conf carry the "Bearer "
+# prefix verbatim. On a match it does:
+#
+#     proxywasm.AddHttpRequestHeader("X-Mse-Consumer", name)
+#
+# and that header is the entire contract with ai-quota and ai-statistics
+# downstream.
+#
+# TWO THINGS THAT BITE:
+#
+#  1. It APPENDS the header (AddHttpRequestHeader), it does not replace, so a
+#     client that sends its own X-Mse-Consumer produces a duplicate.
+#     MEASURED on this version: the forgery loses. Authenticating as an
+#     exhausted consumer while sending `X-Mse-Consumer: <a consumer with
+#     budget>` returned 403 and did not bill the forged identity; the same
+#     request under a healthy identity returned 200. So the authenticated name
+#     wins today.
+#     That said, it wins by Envoy's duplicate-header semantics, not by anything
+#     key-auth guarantees, and nothing in the plugin documents it. Strip the
+#     header at the edge anyway — `header_up -X-Mse-Consumer` in Caddy — as
+#     defence in depth before any public hostname points here. Note that a
+#     Higress request-header-control-remove annotation CANNOT do this job:
+#     route-level header rules run after the whole wasm chain and would strip
+#     the header key-auth just added.
+#
+#  2. `keys` lists exactly ONE header. main.go collects a token from every
+#     listed header and then does `if len(tokens) > 1 { denied }` — so listing
+#     both Authorization and x-api-key means any client that sends both (some
+#     OpenAI clients do) gets a 401 with no fallback.
+#
+# global_auth: false -> the global config only supplies the credential table;
+# authentication is enforced only where a matchRule sets `allow`.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: key-auth
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  # Version 2.0.0 is what this image actually ships on the local plugin server
+  # (/usr/share/nginx/html/plugins/key-auth/2.0.0/plugin.wasm). Note it is NOT
+  # listed in snapshot-inventory.json — that file covers only the 36 plugins at
+  # 2.0.1 and omits the 2.0.0-era auth plugins. List the directory, not the
+  # inventory.
+  #
+  # A remote oci:// URL would turn the flaky Aliyun registry into a
+  # request-path dependency. Always the bundled copy.
+  url: http://localhost:8002/plugins/key-auth/2.0.0/plugin.wasm
+
+  # If this plugin cannot load, requests must STOP. FAIL_OPEN here would mean
+  # an unauthenticated gateway that still answers 200 — the exact silent
+  # failure the upstream ai-gateway template ships.
+  failStrategy: FAIL_CLOSE
+
+  phase: AUTHN
+  priority: 310
+
+  defaultConfig:
+    global_auth: false
+    in_header: true
+    keys:
+      - Authorization
+    consumers:
+      # __CONSUMERS__
+
+  defaultConfigDisable: false
+
+  matchRules:
+    - ingress:
+        - ai-inference
+      configDisable: false
+      config:
+        allow:
+          # __ALLOW__
