@@ -1,0 +1,19 @@
+# Consumer table — the source of per-consumer identity.
+#
+#   <consumer-name>  <credential>
+#
+# The credential is compared by key-auth against the RAW value of the
+# Authorization header, with no Bearer stripping (main.go looks the whole
+# header value up in credential2Name), so it must include the "Bearer " prefix
+# exactly as the client sends it.
+#
+# Copy to consumers.conf and fill in real keys. consumers.conf is gitignored.
+#
+# `legacy-shared` MUST hold the current EDGE_API_KEY value from
+# ../qwen3.6-27b-2-A100/.env — that is what keeps every existing client working
+# unchanged when a public hostname is eventually pointed at this gateway.
+# It is retired only once its traffic counter has been flat at zero.
+
+legacy-shared   Bearer sk-REPLACE-with-the-current-EDGE_API_KEY
+quota-admin     Bearer sk-REPLACE-admin-key-for-quota-management
+danila          Bearer sk-REPLACE-per-person-key

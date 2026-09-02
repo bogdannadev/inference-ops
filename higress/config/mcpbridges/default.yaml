@@ -1,0 +1,50 @@
+# Upstream registry. Higress derives every Envoy cluster from the McpBridge
+# named `default`; a route addresses a registry as <name>.<type>.
+#
+# TYPE CHOICE IS NOT COSMETIC. A `static` registry pins a container IP and dies
+# the next time the router is recreated. A `dns` registry survives that, but
+# registry/direct/watcher.go validates the domain against
+#
+#   ^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$
+#
+# which the bare Docker hostname `qwen36-27b-router` cannot satisfy (no dot).
+# That was the August blocker: the watcher logs "Registry Watcher is ready"
+# and then generateServiceEntry returns nil, so no cluster is created and every
+# request 503s with cluster_not_found.
+#
+# Docker's embedded DNS also answers <container>.<network>, and
+# `qwen36-27b-router.edge` both resolves and clears the regex — so the upstream
+# is name-based with zero changes to the running router.
+apiVersion: networking.higress.io/v1
+kind: McpBridge
+metadata:
+  name: default
+  namespace: higress-system
+  creationTimestamp: "2000-01-01T00:00:00Z"
+  resourceVersion: "1"
+spec:
+  registries:
+  # Seeded by the image. Keep it: the console's own route resolves through it.
+  - name: higress-console
+    type: static
+    domain: 127.0.0.1:8001
+    port: 80
+
+  # The SGLang router. NOT the replicas — the router owns health checks, the
+  # circuit breaker, --request-timeout-secs 900 and the round_robin policy, and
+  # it lives on a network this project does not join anyway.
+  - name: qwen-router
+    type: dns
+    protocol: http
+    domain: qwen36-27b-router.edge
+    port: 8000
+
+  # Quota ledger. ai-quota addresses this as `quota-redis.dns` and speaks RESP
+  # over the cluster, hence protocol tcp. The network is named `higressint`
+  # rather than `higress-internal` so this domain clears the regex above.
+  - name: quota-redis
+    type: dns
+    protocol: tcp
+    domain: higress-redis.higressint
+    port: 6379
+status: {}
