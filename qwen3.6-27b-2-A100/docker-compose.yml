@@ -908,6 +908,29 @@ services:
 
     entrypoint: python3 -m sglang_router.launch_router
 
+    # NOTE: `command:` below is a folded scalar — every line becomes an
+    # argument. Never put a # comment inside it.
+    #
+    # --control-plane-api-keys (added 2026-09-02) closes the router's admin
+    # API. Until then `GET /workers` answered 200 to anything on the `edge`
+    # network and `POST /workers` would have registered an arbitrary backend.
+    # Format is id:name:role:key with role admin|user; no spaces, because the
+    # folded scalar splits on whitespace.
+    #
+    # This does NOT touch the inference path. --api-key would have: despite
+    # the docs page calling it client auth, `--help` on this build says it is
+    # "the api key used for the authorization with the worker", i.e. an
+    # outbound credential. Client auth stays where it already is — the workers
+    # enforce SGLANG_API_KEY, which Caddy (and now Higress) set on the way in.
+    # Verified on a throwaway router before this was applied: control plane
+    # 401 without the key / 200 with it, while /health, /v1/models and
+    # /v1/chat/completions all stayed 200 on the normal credential.
+    #
+    # --request-id-headers makes the router record an inbound request id as
+    # attributes.request_id on the engine trace and echo x-request-id back.
+    # That is the join key between edge/gateway logs and Langfuse, and it is
+    # needed because the router roots its own trace and drops inbound W3C
+    # context.
     command: >
       --host 0.0.0.0
       --port 8000
@@ -918,6 +941,9 @@ services:
       --prometheus-port 29000
       --enable-trace
       --otlp-traces-endpoint otel-collector:4317
+      --request-id-headers x-request-id x-trace-id x-correlation-id
+      --control-plane-api-keys ops:ops:admin:${ROUTER_CONTROL_PLANE_KEY:?set ROUTER_CONTROL_PLANE_KEY in .env}
+      --control-plane-audit-enabled
 
     depends_on:
       qwen36-27b-r0:
