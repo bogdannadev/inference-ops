@@ -37,4 +37,19 @@ spec:
         - ai-models
       configDisable: false
       config:
-        use_default_attributes: true
+        # FALSE, deliberately. `true` enables the builtin attribute set, which
+        # writes question / system / answer / reasoning / tool_calls into the
+        # gateway access log — i.e. every customer prompt and every model
+        # response, verbatim, on disk. Unacceptable for third-party traffic,
+        # and at 169k context it is also a log-volume and disk problem.
+        #
+        # It costs latency too: extracting those fields makes the plugin buffer
+        # the request body and the streaming response body (see the comment at
+        # main.go:214). Off, nothing is buffered.
+        #
+        # The per-consumer token counters do NOT come from this setting. They
+        # are emitted from tokenusage in the response handler and are gated
+        # only by disable_openai_usage (default false), so
+        # route.<r>.upstream.<c>.model.<m>.consumer.<n>.metric.{input,output,total}_token
+        # keep working. Verified after the change.
+        use_default_attributes: false
