@@ -187,9 +187,13 @@ quotes itself.
    flag day: clients migrate one at a time, and the direct path stays as the
    escape hatch from the Redis dependency above.
 4. **Retire `legacy-shared`** once its counter has been flat at zero.
-5. **Router hardening (separate change):** `qwen36-27b-router` runs with no
-   `--api-key`, so its admin API — including `POST /workers` — is open to
-   anything on the `edge` network. Higress neither causes nor fixes this.
+5. ~~Router hardening~~ **DONE 2026-09-02** (`bfd3eef`). The router's control
+   plane was open — `GET /workers` answered 200 to anything on `edge`. Closed
+   with `--control-plane-api-keys`, plus `--request-id-headers` for the trace
+   join key. Note it is NOT `--api-key`: `--help` on this build says that flag
+   is "the api key used for the authorization with the worker", an outbound
+   credential, contradicting the docs page that calls it client auth. The
+   inference path was untouched and every client kept working.
 
 ## Attribution already works without any of this
 
