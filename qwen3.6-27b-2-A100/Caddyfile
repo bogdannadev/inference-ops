@@ -87,6 +87,103 @@ embed.example.com {
 }
 
 # -----------------------------------------------------------------------------
+# Qwen3.8-27B via the Higress gateway — PAID / EXTERNAL consumers
+#
+# Deliberately NOT importing edge_auth: that snippet asserts the single shared
+# EDGE_API_KEY, which is exactly what this hostname replaces. Identity here is
+# per-consumer (Higress key-auth) and budgets are token quotas (ai-quota).
+#
+# The team keeps using model.example.com above — straight to the router, no
+# gateway, no Redis, no quota. That is deliberate: ai-quota has no fail-open, so
+# if the ledger is unavailable every consumer on THIS hostname gets a 403. The
+# direct hostname is the standing escape hatch.
+#
+# Rehearsed in full on a throwaway Caddy on the edge network (no published
+# ports, tls internal) before landing here.
+# -----------------------------------------------------------------------------
+gateway.example.org {
+	tls contact@example.com
+
+	# Bounds the PROMPT half of a request's cost. A byte cap is the only lever
+	# that exists before tokenisation, and it is what makes overdraft bounded:
+	# ai-quota's gate is `> 0` and its DECRBY lands afterwards, so one request
+	# can always cross zero. 1MB comfortably fits the served 169k context
+	# (~0.75MB of JSON) while refusing absurd payloads. The output half is
+	# capped separately by request-validation in the gateway (max_tokens 8192),
+	# so worst-case overdraft is ~one full-context request, not unbounded.
+	#
+	# NOTE this is per-site. model.example.com deliberately has NO cap, because
+	# OCR traffic sends base64 images inline and blew past the old global 8MB
+	# limit. Paid traffic does not get that allowance.
+	request_body {
+		max_size 1MB
+	}
+
+	# Only the OpenAI surface is forwarded. Higress serves its console landing
+	# page on GET / of the gateway port — a seeded route we do not own — and
+	# without this it would be publicly visible. Everything else dies here
+	# rather than relying on Higress's own route allowlist alone.
+	handle /v1/* {
+		reverse_proxy higress:8080 {
+			# key-auth ADDS X-Mse-Consumer rather than replacing it, so a
+			# client-supplied value arrives alongside the authenticated one.
+			# Measured: the real identity wins — but by Envoy's duplicate-header
+			# semantics, not by anything key-auth guarantees. Strip it here so
+			# the question never arises.
+			header_up -X-Mse-Consumer
+
+			# SSE: no response buffering. ai-quota reads token usage from the
+			# final stream frame, so buffering breaks metering as well as the
+			# client experience. Verified unbuffered through handle_response:
+			# TTFB 0.15s against 2.38s total.
+			flush_interval -1
+
+			# Give the gateway's denials an OpenAI-shaped body. key-auth and
+			# ai-quota answer text/plain, and an SDK shows a JSON parse failure
+			# or nothing at all against a bare string. This cannot be done in
+			# Higress: both are wasm LOCAL replies, and the custom-response
+			# wasm plugin never sees another plugin's local reply — verified,
+			# it loads into the filter chain but does not fire.
+			#
+			# Status codes pass through unchanged so client retry logic still
+			# behaves. SGLang's own 400s are NOT rewritten — the engine already
+			# returns OpenAI-shaped errors and its messages are more useful
+			# than anything we could substitute.
+			@quota status 403
+			handle_response @quota {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"error":{"message":"Token quota exhausted for this API key, or the key is not permitted on this route. Contact the operator to top up.","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}` 403
+			}
+
+			@badkey status 401
+			handle_response @badkey {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"error":{"message":"Incorrect API key provided. Send it as an Authorization: Bearer header.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}` 401
+			}
+
+			# 422 is request-validation's alone; the engine never returns it.
+			@toobig status 422
+			handle_response @toobig {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"error":{"message":"max_tokens exceeds the per-request limit of 8192 for this gateway.","type":"invalid_request_error","param":"max_tokens","code":"max_tokens_too_large"}}` 422
+			}
+		}
+	}
+
+	# Default deny. No hint that a gateway or console lives behind this name.
+	handle {
+		respond "Not Found" 404
+	}
+
+	# request_body aborts before proxying, so its 413 never reaches the
+	# handle_response blocks above. Shape it here instead.
+	handle_errors {
+		header Content-Type "application/json; charset=utf-8"
+		respond `{"error":{"message":"Request rejected by the gateway. If the prompt is very large, reduce it: the request body limit is 1MB.","type":"invalid_request_error","param":null,"code":"request_rejected"}}` {err.status_code}
+	}
+}
+
+# -----------------------------------------------------------------------------
 # Metrics exposition — internal only
 #
 # A port-only site address means plain HTTP with no automatic TLS and no

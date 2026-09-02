@@ -1,0 +1,57 @@
+# Bound the cost of a single request.
+#
+# WHAT THIS DOES AND DOES NOT FIX. It does NOT eliminate overdraft — nothing
+# can, short of patching ai-quota, because the gate is `> 0` and the DECRBY
+# lands afterwards. What it does is bound the SIZE of the one request that can
+# cross zero, and make per-request cost predictable for paid access.
+#
+# It only bounds the OUTPUT half. Total tokens = prompt + completion, and the
+# prompt dominates: served context is 169k while this cap is 8k. The prompt is
+# bounded at the edge instead, by `request_body { max_size }` on the paid
+# hostname in ../qwen3.6-27b-2-A100/Caddyfile — a byte cap is the only lever
+# that exists before tokenisation. The two together are what bound overdraft.
+#
+# rejected_code is 422, not 400, ON PURPOSE: SGLang returns its own
+# OpenAI-shaped 400s for genuine request errors, and Caddy rewrites the bodies
+# of the gateway's denials. Sharing 400 would make Caddy clobber the engine's
+# useful validation messages with this one. 422 is ours alone.
+#
+# NOTE: this plugin buffers the request body to validate it. That is the same
+# cost ai-statistics was paying before use_default_attributes was turned off,
+# so it is worth re-measuring TTFT with a large prompt after any change here.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: request-validation
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  url: http://localhost:8002/plugins/request-validation/2.0.1/plugin.wasm
+
+  # A cost ceiling that silently stops applying is a billing problem.
+  failStrategy: FAIL_CLOSE
+
+  phase: UNSPECIFIED_PHASE
+  # Above ai-statistics (900) and ai-quota (280) so a request that will be
+  # rejected never costs a Redis round trip or a metrics increment.
+  priority: 950
+
+  defaultConfigDisable: true
+
+  matchRules:
+    # Billable routes only. /v1/models carries no body.
+    - ingress:
+        - ai-chat
+        - ai-completions
+      configDisable: false
+      config:
+        rejected_code: 422
+        rejected_msg: "max_tokens exceeds the per-request limit for this gateway"
+        body_schema: |
+          {
+            "type": "object",
+            "properties": {
+              "max_tokens": { "type": "integer", "maximum": 8192 },
+              "max_completion_tokens": { "type": "integer", "maximum": 8192 }
+            }
+          }
