@@ -162,10 +162,13 @@ gateway.example.org {
 			}
 
 			# 422 is request-validation's alone; the engine never returns it.
+			# The number below MUST match the `maximum` in
+			# ../higress/config/wasmplugins/request-validation.yaml — this is
+			# the copy the customer actually reads.
 			@toobig status 422
 			handle_response @toobig {
 				header Content-Type "application/json; charset=utf-8"
-				respond `{"error":{"message":"max_tokens exceeds the per-request limit of 8192 for this gateway.","type":"invalid_request_error","param":"max_tokens","code":"max_tokens_too_large"}}` 422
+				respond `{"error":{"message":"max_tokens exceeds the per-request limit of 70000 for this gateway.","type":"invalid_request_error","param":"max_tokens","code":"max_tokens_too_large"}}` 422
 			}
 		}
 	}
