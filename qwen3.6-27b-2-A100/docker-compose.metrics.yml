@@ -258,15 +258,33 @@ services:
       - GF_USERS_ALLOW_ORG_CREATE=false
       - GF_USERS_AUTO_ASSIGN_ORG=true
       - GF_USERS_AUTO_ASSIGN_ORG_ROLE=Viewer
+      # STAYS FALSE, and this is load-bearing now. Anonymous viewing was
+      # considered while Grafana was loopback-only; with the public hostname
+      # below it would publish per-consumer token usage — customer names and
+      # what they spend — to anyone who found the URL. Login required.
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_AUTH_BASIC_ENABLED=true
       - GF_AUTH_DISABLE_LOGIN_FORM=false
       - GF_SECURITY_DISABLE_GRAVATAR=true
-      - GF_SECURITY_COOKIE_SECURE=false
-      - GF_SECURITY_COOKIE_SAMESITE=lax
-      - GF_SECURITY_ALLOW_EMBEDDING=false
+      # Grafana is published over HTTPS (see the Caddyfile), so the session
+      # cookie can and must be Secure.
+      #
+      # CONSEQUENCE: logging in over the old http://localhost:3000 tunnel no
+      # longer works — a browser will not send a Secure cookie over plain HTTP.
+      # Use the public hostname. The loopback port stays published because
+      # curl/API access with basic auth is unaffected.
+      - GF_SECURITY_COOKIE_SECURE=true
+      # none + Secure is what lets the Higress console iframe a dashboard from
+      # a different origin. Only valid because Grafana is HTTPS; browsers
+      # reject SameSite=None without Secure.
+      - GF_SECURITY_COOKIE_SAMESITE=none
+      # Drops `X-Frame-Options: deny`, which was verified on the wire to be
+      # exactly what Firefox refused when framing a dashboard.
+      - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SERVER_ENFORCE_DOMAIN=false
-      - GF_SERVER_ROOT_URL=http://localhost:3000
+      # Must match the public URL, or Grafana builds redirects, share links and
+      # alert notification URLs pointing at localhost.
+      - GF_SERVER_ROOT_URL=https://grafana.example.org
       - GF_SERVER_READ_TIMEOUT=60
       - GF_SERVER_WRITE_TIMEOUT=60
       - GF_SNAPSHOTS_EXTERNAL_ENABLED=false
@@ -316,7 +334,13 @@ services:
         max-file: "5"
 
     networks:
+      # backend: reach Prometheus and ClickHouse.
+      # edge: so Caddy can proxy the public HTTPS site for
+      #   grafana.example.org. Caddy lives on `edge` only — it must
+      #   never be able to reach a worker — so the service being fronted has to
+      #   come to it, not the reverse.
       - qwen36-27b-backend
+      - edge
 
 networks:
   # Declared here so the Prometheus service above can attach to it. Created

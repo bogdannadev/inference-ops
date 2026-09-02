@@ -187,6 +187,33 @@ gateway.example.org {
 }
 
 # -----------------------------------------------------------------------------
+# Grafana — observability UI, PUBLIC over HTTPS
+#
+# Why it is public at all: the Higress console can only embed a dashboard from
+# a URL the BROWSER can reach, and browsers refuse to frame a page that sends
+# `X-Frame-Options: deny`. Dropping that header requires the session cookie to
+# be SameSite=None, which browsers only accept together with Secure, which
+# requires HTTPS. So the iframe forces a real certificate.
+#
+# NOT importing edge_auth on purpose. Grafana has its own login, and a second
+# Bearer check in front would break both the browser login flow and the iframe.
+# The admin password was rotated from a 6-character value identical to the
+# username before this hostname was created — see .env.
+#
+# Anonymous viewing is deliberately OFF (docker-compose.metrics.yml): these
+# dashboards carry per-consumer token usage, i.e. customer names and spend.
+# -----------------------------------------------------------------------------
+grafana.example.org {
+	tls contact@example.com
+
+	reverse_proxy qwen36-27b-grafana:3000 {
+		# Grafana Live uses websockets; Caddy upgrades them automatically, but
+		# streaming panels also want unbuffered responses.
+		flush_interval -1
+	}
+}
+
+# -----------------------------------------------------------------------------
 # Metrics exposition — internal only
 #
 # A port-only site address means plain HTTP with no automatic TLS and no
