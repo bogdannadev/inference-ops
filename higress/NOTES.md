@@ -114,7 +114,19 @@ chunk rather than only from non-streaming JSON.
   plugin records. Do not assume the streaming path works because the
   non-streaming one does.
 
-## Question 4 — config as committable files
+## Question 4 — ANSWERED 2026-09-02: the apiserver watches /data, no restart needed
+
+Measured, twice: a consumer added by writing `/data/wasmplugins/key-auth.yaml`
+went live in **~6s** with no restart, and one removed was revoked in ~6s. The
+apiserver runs `--storage file --file-root-dir /data` and picks up file changes
+on the controller's own resync. `apply.sh` no longer restarts (1.2s instead of
+a ~40s restart cycle).
+
+The exception is `/data/configmaps/`: `start-apiserver.sh` reads
+`higress-config` once at boot to build the mesh config, so a change there does
+need `./apply.sh --restart`.
+
+## Question 4 (original text) — config as committable files
 
 Objects live under `/data/<kind>/` in the container. Before hand-writing YAML,
 confirm whether the apiserver **reads** files written directly or only serves
