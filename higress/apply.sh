@@ -20,7 +20,14 @@ set -euo pipefail
 cd "$(dirname -- "$0")"
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+RESTART=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY_RUN=1 ;;
+    --restart) RESTART=1 ;;
+    *) echo "unknown flag: $a (use --dry-run or --restart)" >&2; exit 1 ;;
+  esac
+done
 
 CONTAINER=higress
 RENDERED=./rendered
@@ -150,15 +157,26 @@ for f in $(cd "$RENDERED" && find . -name '*.yaml' | sed 's|^\./||'); do
 done
 echo "verified $(cd "$RENDERED" && find . -name '*.yaml' | wc -l) object(s) installed into /data"
 
-docker restart "$CONTAINER" >/dev/null
+# NO RESTART for ordinary config.
+#
+# Measured 2026-09-02: the apiserver runs with `--storage file --file-root-dir
+# /data` and WATCHES that tree. A consumer added by writing key-auth.yaml went
+# live in ~6s, and one removed was revoked in ~6s, both without restarting.
+# That answers the open question in NOTES.md: files are not a startup-only
+# input. Restarting on every key change was needless downtime.
+#
+# The exception is /data/configmaps/: start-apiserver.sh reads higress-config
+# once at boot to build the mesh config, so a change there DOES need a restart.
+# Pass --restart for that.
+if [ "$RESTART" = 1 ]; then
+  docker restart "$CONTAINER" >/dev/null
+  echo "restarted $CONTAINER; waiting for the gateway to answer"
+  for _ in $(seq 1 60); do
+    docker exec "$CONTAINER" sh -c 'nc -z 127.0.0.1 8080' 2>/dev/null && { echo "gateway up"; exit 0; }
+    sleep 2
+  done
+  echo "gateway did not come up within 120s; check: docker logs $CONTAINER" >&2
+  exit 1
+fi
 
-echo "restarted $CONTAINER; waiting for the gateway to answer"
-for _ in $(seq 1 60); do
-  if docker exec "$CONTAINER" sh -c 'nc -z 127.0.0.1 8080' 2>/dev/null; then
-    echo "gateway up"
-    exit 0
-  fi
-  sleep 2
-done
-echo "gateway did not come up within 120s; check: docker logs $CONTAINER" >&2
-exit 1
+echo "installed; the controller picks changes up on its own resync (~6s). No restart."
