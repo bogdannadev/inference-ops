@@ -153,6 +153,34 @@ Nothing bypasses the router.
 - **Per-consumer metrics** land in Envoy stats as
   `wasmcustom.route.ai-inference.upstream.<cluster>.model.<model>.consumer.<name>.metric.<n>`.
 
+### The console is NOT a second way to manage consumers
+
+The console at `http://127.0.0.1:8001` (loopback; `ssh -L 8001:127.0.0.1:8001`)
+is fine for browsing routes, services and plugins. **Do not create consumers in
+it.** Tried 2026-09-02: it writes its own `key-auth.internal` object, separate
+from the `key-auth` this project owns, and that object arrives
+
+  - `defaultConfigDisable: true`, with an empty consumer list,
+  - `matchRules` bound to the console's own `default` ingress with
+    `configDisable: true`, i.e. not attached to ai-chat / ai-completions /
+    ai-models,
+  - pointing at `plugins/key-auth/1.0.0/plugin.wasm` — a version that does not
+    exist on disk (only 2.0.0), the same hardcoded-version bug as the
+    ai-gateway template.
+
+The consumer created that way never appeared anywhere under `/data` and its key
+returned 401. The stray object was deleted. Note it is `FAIL_OPEN` and fully
+disabled, so it broke nothing — it simply did nothing.
+
+Two writers for one thing is the real problem: `apply.sh` overwrites
+`/data/wasmplugins/key-auth.yaml` on every run, so anything the console put
+there would be destroyed on the next apply. `consumers.conf` is the source of
+truth. Adding a customer is two commands and takes ~6s.
+
+The same caveat applies to the upstream quick-start guide
+(`higress.ai/en/docs/ai/quick-start/`): it documents a `CONFIG_TEMPLATE=ai-gateway`
+deployment with cloud providers and model-name routing, which is not this.
+
 ### Config model
 
 `./config` is the source of truth and is committed. `./apply.sh` renders it
