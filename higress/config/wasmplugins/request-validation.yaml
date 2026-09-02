@@ -47,11 +47,23 @@ spec:
       config:
         rejected_code: 422
         rejected_msg: "max_tokens exceeds the per-request limit for this gateway"
+        # 70000 raised from 8192 on 2026-09-02: coding agents (OpenCode)
+        # routinely ask for far more than 8k of output and were being rejected.
+        #
+        # KEEP IN SYNC with the 422 message in
+        # ../../qwen3.6-27b-2-A100/Caddyfile, which quotes this number to the
+        # customer. Changing one without the other tells them the wrong limit.
+        #
+        # Note the engine still enforces its own ceiling: prompt + max_tokens
+        # must fit --context-length 169000, so a large prompt with
+        # max_tokens=70000 is refused by SGLang with its own OpenAI-shaped
+        # error. That is a better message than ours would be, so it is left
+        # alone.
         body_schema: |
           {
             "type": "object",
             "properties": {
-              "max_tokens": { "type": "integer", "maximum": 8192 },
-              "max_completion_tokens": { "type": "integer", "maximum": 8192 }
+              "max_tokens": { "type": "integer", "maximum": 70000 },
+              "max_completion_tokens": { "type": "integer", "maximum": 70000 }
             }
           }
