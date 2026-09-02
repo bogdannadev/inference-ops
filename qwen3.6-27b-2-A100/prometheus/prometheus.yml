@@ -111,10 +111,16 @@ scrape_configs:
   # ---------------------------------------------------------------------------
   # Higress AI gateway — the PAID edge (qw38-27b-gw.duckdns.org).
   #
-  # Port 15090 is Envoy's prometheus endpoint, bound 0.0.0.0 inside the
-  # container and reachable over the shared `edge` network. NOT the admin API
-  # on 15000, which binds 127.0.0.1 only and must stay that way — it can
-  # rewrite Envoy's whole config.
+  # Port 15020 is pilot-agent's MERGED metrics endpoint, which is what the
+  # Higress console documents. It is a strict superset of Envoy's own :15090 —
+  # same 654 Envoy families plus ~48 `istio_agent_*` ones, including
+  # istio_agent_wasm_remote_fetch_count and istio_agent_wasm_cache_entries,
+  # which are worth watching on this stack: a non-zero remote fetch would mean
+  # a plugin is reaching for the flaky Aliyun registry instead of the bundled
+  # copy on the local plugin-server.
+  #
+  # NOT the admin API on 15000, which binds 127.0.0.1 only and must stay that
+  # way — it can rewrite Envoy's whole config.
   #
   # The valuable series here are the ai-statistics counters. Envoy's stat-tag
   # extraction has already turned the dotted wasm metric names into labels:
@@ -135,7 +141,7 @@ scrape_configs:
     metrics_path: /stats/prometheus
     static_configs:
       - targets:
-          - higress:15090
+          - higress:15020
         labels:
           node: a100
 
