@@ -1,0 +1,28 @@
+# Billable path 1: OpenAI chat completions.
+#
+# Prefix, not Exact, deliberately: ai-quota serves its admin API at
+# "/v1/chat/completions" + admin_path, i.e. /v1/chat/completions/quota{,/refresh,/delta}.
+# An Exact match would make the admin endpoints unroutable. Anything else under
+# this prefix simply 404s at the engine.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-chat
+  namespace: higress-system
+  annotations:
+    higress.io/destination: "qwen-router.dns:8000"
+    higress.io/request-header-control-update: |
+      Authorization Bearer ${SGLANG_API_KEY}
+    higress.io/ignore-path-case: "false"
+spec:
+  ingressClassName: higress
+  rules:
+  - http:
+      paths:
+      - path: /v1/chat/completions
+        pathType: Prefix
+        backend:
+          resource:
+            apiGroup: networking.higress.io
+            kind: McpBridge
+            name: default

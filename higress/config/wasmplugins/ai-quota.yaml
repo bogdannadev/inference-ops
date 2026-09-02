@@ -30,11 +30,16 @@
 # a consumer with 1 token left can spend a full 169k-context request and go
 # deeply negative. Balances stay negative until a /refresh SETs them.
 #
-# COVERAGE IS NARROWER THAN "TOKEN QUOTA" SOUNDS. enable_path_suffixes defaults
-# to /v1/chat/completions and /v1/messages. Everything else — /v1/models,
-# /v1/completions, /v1/embeddings — returns ChatModeNone and passes ungated and
-# unmetered. key-auth still authenticates it, so it is not an open door, but a
-# consumer at zero can still call those.
+# COVERAGE IS NARROWER THAN "TOKEN QUOTA" SOUNDS, AND THAT LEAKED REVENUE.
+# enable_path_suffixes defaults to /v1/chat/completions and /v1/messages only;
+# every other path returns ChatModeNone and passes ungated and unmetered.
+# Measured at zero balance with the old catch-all route: /v1/completions 200,
+# SGLang's native /generate 200. Two defences now, both needed:
+#   - the gateway only routes an explicit allowlist of paths (see
+#     ../ingresses/), so /generate and friends are unroutable;
+#   - enable_path_suffixes below names every billable path, so nothing that IS
+#     routable escapes metering.
+# Adding a path to ../ingresses/ without adding it here re-opens the hole.
 #
 # ai-statistics is NOT a dependency, whatever the docs say: ai-quota calls
 # tokenusage.GetTokenUsage itself.
@@ -57,10 +62,21 @@ spec:
   defaultConfigDisable: true
 
   matchRules:
+    # ai-models is deliberately absent: discovery is free.
     - ingress:
-        - ai-inference
+        - ai-chat
+        - ai-completions
       configDisable: false
       config:
+        # Both billable paths. The default is only /v1/chat/completions and
+        # /v1/messages, which left /v1/completions gated by nothing — measured
+        # as a 200 at zero balance. /v1/messages stays listed so an Anthropic-
+        # style client is billed too if one ever points here.
+        enable_path_suffixes:
+          - /v1/chat/completions
+          - /v1/completions
+          - /v1/messages
+
         redis_key_prefix: "chat_quota:"
 
         # Admin endpoints live UNDER the chat path, not at the root:

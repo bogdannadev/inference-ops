@@ -86,9 +86,10 @@ services:
       # /data and restarts; nothing here is authored through the console.
       - ./rendered:/rendered:ro
 
-    # Scaffolding, not a service: it must not resurrect itself after a host
-    # reboot while it is still under evaluation.
-    restart: "no"
+    # unless-stopped since 2026-09-02: once a public hostname points here, a
+    # host reboot that silently leaves the gateway down is an outage, not a
+    # safe default.
+    restart: unless-stopped
 
     logging:
       driver: "json-file"
@@ -154,7 +155,10 @@ services:
       timeout: 3s
       retries: 3
 
-    restart: "no"
+    # The ledger must come back on its own. A Redis that stays down after a
+    # reboot means 403 for every consumer on the route — ai-quota cannot tell
+    # "redis unreachable" from "balance empty".
+    restart: unless-stopped
 
     logging:
       driver: "json-file"
