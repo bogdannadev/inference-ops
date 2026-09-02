@@ -14,6 +14,7 @@
 #       host/      Host Hardware     — node-exporter
 #       edge/      Edge Gateway      — Caddy: the tier in front of everything
 #       pipeline/  Trace Pipeline    — OTel Collector -> Langfuse ingest health
+#       gateway/   AI Gateway        — Higress: per-consumer tokens, quotas, denials
 #
 #   allowUiUpdates: false   — the checked-in JSON is the source of truth. UI
 #     edits are NOT saved back to these files and are overwritten on the next

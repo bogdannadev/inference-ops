@@ -1,0 +1,491 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Per-consumer usage and health for the paid Higress gateway. Source of truth for billing is the gateway access log (it carries cached_tokens); this board is for watching, alerting and spotting anomalies.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "text",
+      "title": "About this board",
+      "datasource": null,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Paid gateway \u2014 `qw38-27b-gw.duckdns.org`.** Series come from the `ai-statistics` wasm plugin, scraped from Envoy on `higress:15090`. Verified against the ledger: a request reporting 54/16/70 tokens moved these counters by exactly 54/16/70 and the Redis balance by 70.\n\nThese are **counters that reset when the gateway container restarts** \u2014 always read them through `rate()` or `increase()`, which handle resets. Raw totals are not a billing figure.\n\n**Not here: each consumer's REMAINING quota.** That lives in `higress-redis` (RESP, not HTTP) and would need a `redis_exporter`. Read it with `curl -H \"Authorization: $ADMIN\" 'https://qw38-27b-gw.duckdns.org/v1/chat/completions/quota?consumer=<name>'`."
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Token rate by consumer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_input_token{ai_consumer=~\"$consumer\"}[$__rate_interval]))",
+          "legendFormat": "{{ai_consumer}} input",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_output_token{ai_consumer=~\"$consumer\"}[$__rate_interval]))",
+          "legendFormat": "{{ai_consumer}} output",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "description": "Tokens/sec. Input and output separately: output costs GPU time, input is largely cache-read."
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by consumer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval]))",
+          "legendFormat": "{{ai_consumer}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Billing view \u2014 tokens over the selected range",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 9
+      },
+      "description": "increase() over the dashboard time range, so it is correct across gateway restarts. Set the range to your billing period. cached_tokens is NOT here \u2014 it is per-request and lives in the gateway access log; use it to price cache reads lower than fresh input.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "total"
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "ai_consumer",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true
+            },
+            "renameByName": {
+              "Value #A": "input",
+              "Value #B": "output",
+              "Value #C": "total"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "refId": "A",
+          "expr": "sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_input_token{ai_consumer=~\"$consumer\"}[$__range]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "refId": "B",
+          "expr": "sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_output_token{ai_consumer=~\"$consumer\"}[$__range]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "refId": "C",
+          "expr": "sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_total_token{ai_consumer=~\"$consumer\"}[$__range]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mean time to first token, by consumer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_first_token_duration{ai_consumer=~\"$consumer\"}[$__rate_interval]))\n/ clamp_min(sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_stream_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval])), 1)",
+          "legendFormat": "{{ai_consumer}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "description": "Streaming requests only. The gateway hop itself measured +6.6ms median; anything much larger is the engine, not Higress."
+    },
+    {
+      "type": "timeseries",
+      "title": "Mean end-to-end service duration, by consumer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_service_duration{ai_consumer=~\"$consumer\"}[$__rate_interval]))\n/ clamp_min(sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval])), 1)",
+          "legendFormat": "{{ai_consumer}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway responses by status class",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (response_code_class) (rate(envoy_listener_http_outbound_0_0_0_0_8080_downstream_rq[$__rate_interval]))",
+          "legendFormat": "{{response_code_class}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "description": "4xx here is mostly the gateway doing its job: 401 unknown key, 403 quota exhausted, 422 max_tokens over 70000, 404 a path outside the allowlist. A sustained 5xx is the real alarm."
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "inference",
+    "gateway",
+    "higress",
+    "billing"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(route_upstream_model_consumer_metric_total_token, ai_consumer)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "consumer",
+        "multi": true,
+        "name": "consumer",
+        "options": [],
+        "query": {
+          "query": "label_values(route_upstream_model_consumer_metric_total_token, ai_consumer)",
+          "refId": "A"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "AI Gateway (Higress)",
+  "uid": "qwen36-27b-gateway-higress",
+  "version": 1,
+  "weekStart": ""
+}

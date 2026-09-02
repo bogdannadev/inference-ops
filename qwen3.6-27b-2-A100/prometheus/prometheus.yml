@@ -108,6 +108,37 @@ scrape_configs:
   # `servers { metrics }` in the Caddyfile global options — without it this
   # target is up but serves only process and config gauges.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Higress AI gateway — the PAID edge (qw38-27b-gw.duckdns.org).
+  #
+  # Port 15090 is Envoy's prometheus endpoint, bound 0.0.0.0 inside the
+  # container and reachable over the shared `edge` network. NOT the admin API
+  # on 15000, which binds 127.0.0.1 only and must stay that way — it can
+  # rewrite Envoy's whole config.
+  #
+  # The valuable series here are the ai-statistics counters. Envoy's stat-tag
+  # extraction has already turned the dotted wasm metric names into labels:
+  #
+  #   route_upstream_model_consumer_metric_total_token{
+  #       ai_route="ai-chat", ai_cluster="outbound|8000||qwen-router.dns",
+  #       ai_model="qwen3.8-27b", ai_consumer="acme"}
+  #
+  # Verified against the ledger: one request reporting 54/16/70 moved the
+  # metric by exactly 54/16/70 and the Redis balance by 70. Counters here and
+  # billing agree.
+  #
+  # NOT scraped from here: each consumer's REMAINING quota. That lives in
+  # higress-redis, which speaks RESP, not HTTP. A redis_exporter would be
+  # needed; see the gateway dashboard notes.
+  - job_name: higress
+    scrape_interval: 15s
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets:
+          - higress:15090
+        labels:
+          node: a100
+
   - job_name: caddy
     scrape_interval: 15s
     static_configs:
