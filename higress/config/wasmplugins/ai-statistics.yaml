@@ -32,7 +32,9 @@ spec:
 
   matchRules:
     - ingress:
-        - ai-inference
+        - ai-chat
+        - ai-completions
+        - ai-models
       configDisable: false
       config:
         use_default_attributes: true

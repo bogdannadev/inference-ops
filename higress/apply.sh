@@ -120,7 +120,23 @@ docker inspect "$CONTAINER" >/dev/null 2>&1 || {
 
 # /data is root-owned inside the container, so the copy happens in-container
 # from the read-only ./rendered mount rather than from the host.
+# Prune objects a previous apply installed that are no longer in ./config.
+# Without this, deleting a file here leaves the object live in /data forever —
+# which for an Ingress means a route we thought we removed is still serving.
+MANIFEST=/data/.apply-manifest
+PREV=$(docker exec "$CONTAINER" sh -c "cat $MANIFEST 2>/dev/null" || true)
+NEXT=$(cd "$RENDERED" && find . -name '*.yaml' | sed 's|^\./||' | sort)
+if [ -n "$PREV" ]; then
+  for f in $PREV; do
+    if ! printf '%s\n' "$NEXT" | grep -qx "$f"; then
+      echo "  pruning removed object: $f"
+      docker exec "$CONTAINER" sh -c "rm -f '/data/$f'"
+    fi
+  done
+fi
+
 docker exec "$CONTAINER" sh -c 'cp -r /rendered/. /data/'
+printf '%s\n' "$NEXT" | docker exec -i "$CONTAINER" sh -c "cat > $MANIFEST"
 
 # Prove the copy landed before restarting. A bind mount that has gone stale,
 # or a read-only /data, would otherwise leave the previous config in place and

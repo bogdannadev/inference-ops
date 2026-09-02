@@ -71,7 +71,9 @@ spec:
 
   matchRules:
     - ingress:
-        - ai-inference
+        - ai-chat
+        - ai-completions
+        - ai-models
       configDisable: false
       config:
         allow:

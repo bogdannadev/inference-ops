@@ -1,0 +1,32 @@
+# Billable path 2: legacy OpenAI completions.
+#
+# This endpoint is why the route is an allowlist rather than `path: /`.
+# MEASURED 2026-09-02 with the old catch-all rule: a consumer at ZERO balance
+# got 200 here, and 200 from SGLang's native /generate as well, because
+# ai-quota only gates the paths in enable_path_suffixes and lets everything
+# else through as ChatModeNone. For an internal stack that was untidy; for a
+# stack we sell access to it is free inference.
+#
+# Any path not present in this directory is now unroutable at the gateway.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-completions
+  namespace: higress-system
+  annotations:
+    higress.io/destination: "qwen-router.dns:8000"
+    higress.io/request-header-control-update: |
+      Authorization Bearer ${SGLANG_API_KEY}
+    higress.io/ignore-path-case: "false"
+spec:
+  ingressClassName: higress
+  rules:
+  - http:
+      paths:
+      - path: /v1/completions
+        pathType: Exact
+        backend:
+          resource:
+            apiGroup: networking.higress.io
+            kind: McpBridge
+            name: default

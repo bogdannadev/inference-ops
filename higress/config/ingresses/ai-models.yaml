@@ -1,0 +1,24 @@
+# Discovery. Authenticated but NOT metered: clients need it at startup and it
+# costs no GPU time. Deliberately the only non-billable path exposed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-models
+  namespace: higress-system
+  annotations:
+    higress.io/destination: "qwen-router.dns:8000"
+    higress.io/request-header-control-update: |
+      Authorization Bearer ${SGLANG_API_KEY}
+    higress.io/ignore-path-case: "false"
+spec:
+  ingressClassName: higress
+  rules:
+  - http:
+      paths:
+      - path: /v1/models
+        pathType: Exact
+        backend:
+          resource:
+            apiGroup: networking.higress.io
+            kind: McpBridge
+            name: default
