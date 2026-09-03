@@ -178,16 +178,29 @@ Without it the only evidence a key exists would be the key itself.
 
 ## Latency
 
-Every command logs both halves of its own timing:
+Every command logs three numbers, and the split is the diagnosis:
 
 ```
-/status from 700766285 work=4ms total=190ms
+/status from 700766285 queued=1s work=4ms total=190ms
 ```
 
-`work` is this stack and the services behind it. `total` adds the round trip to
-Telegram. The split is the diagnosis: a slow `work` is ours, while a slow
-`total` over a fast `work` is the network to api.telegram.org and no local
-change will touch it.
+- **`queued`** — how long Telegram held the update after the operator pressed
+  send. Not ours, and not fixable from inside this process.
+- **`work`** — this stack and the services behind it. Ours to fix.
+- **`total`** — `work` plus the round trip back out to Telegram.
+
+`queued` exists because every other clock in this process starts when the update
+*arrives*, so an update that sat in Telegram's retry queue for twenty minutes is
+indistinguishable from a fast bot. If the bot feels slow while `work` and
+`total` are in the hundreds of milliseconds, read `queued` — a large value means
+inbound delivery to this host is failing and Telegram is backing off.
+
+**That is the known failure mode here.** Telegram reaches this host only
+intermittently: deliveries land in bursts separated by 15–25 minute gaps, with
+`getWebhookInfo` reporting `Connection timed out` in between. Outbound to
+api.telegram.org is fine (~100 ms), so it is the inbound leg specifically. This
+is what the Cloudflare Tunnel below is for — it makes delivery arrive over an
+outbound-initiated connection, which is the direction that works.
 
 Telegram is ~100 ms away from this host and a *new* connection to it costs
 ~200 ms more (TCP 100 ms + TLS 106 ms). Since the commands themselves finish in
