@@ -13,7 +13,8 @@ website's "latest" describes.
 | Component | Version | How it was determined |
 |---|---|---|
 | Higress release | **v2.2.4** | see "Reading the release tag" below |
-| all-in-one image | `sha256:930b314be06e4b435617a39ac8dc8f17c9d60a4faf2c96aa7aafe9e85381ad9b` | pulled 2026-08-15, built 2026-08-14T01:26:39Z |
+| Deployment | official standalone `compose/`, project `higress` | `get-higress.sh`, VERSION=v2.2.4 |
+| controller / pilot / gateway / plugin-server | digest-pinned in `compose/.env` | shipped by the release |
 | Go wasm plugins | **2.0.1** | `/usr/share/nginx/html/plugins/snapshot-inventory.json` |
 | key-auth | **2.0.0** | directory name only — not in the inventory, see below |
 | Envoy | **1.36.4** | `curl localhost:15000/server_info` |
@@ -24,7 +25,7 @@ website's "latest" describes.
 
 The tag is **not** stamped in the binaries. Verified 2026-09-03:
 
-    $ docker exec higress /usr/local/bin/higress version
+    $ docker exec <all-in-one> /usr/local/bin/higress version
     HIGRESS_VERSION:
     GIT_COMMIT_ID:
 
@@ -189,25 +190,25 @@ This is what `hgctl gateway-config` would have shown. All read-only, all
 verified 2026-09-03. Admin is bound inside the container only.
 
     # Clusters and their resolved endpoints — the cluster_not_found answer.
-    docker exec higress curl -s 'localhost:15000/clusters?format=json'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/clusters?format=json'
 
     # Full xDS state. `include_eds` adds EndpointsConfigDump, which plain
     # /config_dump omits — that omission is what makes a DNS registry look
     # fine while resolving to nothing.
-    docker exec higress curl -s 'localhost:15000/config_dump?include_eds'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/config_dump?include_eds'
 
     # Narrow it: resource= filters repeated resources, mask= filters top-level
     # fields. `?resource=bootstrap` is INVALID (bootstrap is not repeated).
-    docker exec higress curl -s 'localhost:15000/config_dump?resource=dynamic_active_clusters'
-    docker exec higress curl -s 'localhost:15000/config_dump?resource=dynamic_route_configs'
-    docker exec higress curl -s 'localhost:15000/config_dump?resource=dynamic_listeners'
-    docker exec higress curl -s 'localhost:15000/config_dump?mask=bootstrap'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/config_dump?resource=dynamic_active_clusters'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/config_dump?resource=dynamic_route_configs'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/config_dump?resource=dynamic_listeners'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/config_dump?mask=bootstrap'
 
     # Envoy build, uptime, effective command line.
-    docker exec higress curl -s 'localhost:15000/server_info'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/server_info'
 
     # Everything the admin API offers.
-    docker exec higress curl -s 'localhost:15000/help'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/help'
 
 Wasm plugin config is embedded in the HCM filter chain, so it comes back under
 `resource=dynamic_listeners` — grep that dump for the plugin name to see what
@@ -216,7 +217,7 @@ the gateway actually loaded, rather than what `./config` says it should have.
 Faster check of *which* plugins the gateway holds, and whether each has a live
 config version:
 
-    docker exec higress curl -s 'localhost:15000/stats?filter=wasm'
+    docker exec higress-gateway-1 curl -s 'localhost:15000/stats?filter=wasm'
 
 Each loaded plugin reports
 `extension_config_discovery.http_filter.extensions.istio.io/wasmplugin/higress-system.<name>.version_text`.
@@ -304,17 +305,17 @@ was invisible. It only appears in `/stats/prometheus` once it increments.
 
 ## Question 4 — ANSWERED 2026-09-02: the apiserver watches /data, no restart needed
 
-Measured, twice: a consumer added by writing `/data/wasmplugins/key-auth.yaml`
+Measured, twice: a consumer added by writing `conf/wasmplugins/key-auth.yaml`
 went live in **~6s** with no restart, and one removed was revoked in ~6s. The
 apiserver runs `--storage file --file-root-dir /data` and picks up file changes
 on the controller's own resync. `apply.sh` no longer restarts (1.2s instead of
 a ~40s restart cycle).
 
-The exception is `/data/configmaps/`: `start-apiserver.sh` reads
+The exception is `conf/configmaps/`: the apiserver reads
 `higress-config` once at boot to build the mesh config, so a change there does
 need `./apply.sh --restart`.
 
-Objects live under `/data/<kind>/`. The image's own config templates write YAML
+Objects live under `conf/<kind>/` on the host, `/opt/data/<kind>/` in the apiserver. The image's own config templates write YAML
 straight into that tree before the apiserver starts — files ARE the config, not
 a cache of it. `./config` is our committed source of truth; nothing is authored
 through the console.
@@ -352,13 +353,16 @@ point plugin URLs at a remote registry.
 
 ## Things already established (don't re-derive)
 
-- Higress config API is anonymous on `https://localhost:18443` inside the
-  container; no kubectl in the image; `PATCH` fails on custom resources, use
-  `PUT` with `resourceVersion` or DELETE + POST.
+- The apiserver's config API is anonymous on `https://127.0.0.1:8443` inside
+  the apiserver container; no kubectl anywhere; `PATCH` fails on custom
+  resources, use `PUT` with `resourceVersion` or DELETE + POST. Prefer writing
+  files — that is what `apply.sh` does.
 - `higress.io/destination` must be `<registry-name>.<registry-type>:<port>`.
-- `MODE=full|gateway|console`; `O11Y=off` keeps the bundled
-  Prometheus/Grafana/Loki/Promtail from starting.
-- No supervisorctl socket — restart the container, not a process.
+- `MODE=full|gateway|console` and `O11Y=off` were all-in-one environment
+  variables and no longer exist. In compose mode each component is its own
+  container, and the bundled Prometheus/Grafana/Loki/Promtail are held down by
+  a profile in `compose/docker-compose.override.yml` because upstream gives
+  them none.
 - The controller picks up McpBridge changes on its own resync, not instantly.
 - Never create consumers in the console — it writes a disabled, mis-versioned
   `key-auth.internal` that never reaches the real routes.

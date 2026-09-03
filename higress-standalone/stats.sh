@@ -8,9 +8,10 @@
 #              the billing record. Decremented by ai-quota after each
 #              completion, survives restarts (appendonly yes).
 #
-#   COUNTERS - Envoy stats on :15020, emitted by the ai-statistics plugin.
+#   COUNTERS - Envoy stats on :15020 of the gateway container, emitted by the
+#              ai-statistics plugin.
 #              These are process-lifetime counters: they RESET TO ZERO when the
-#              higress container restarts. Use them for rates and latency, not
+#              gateway container restarts. Use them for rates and latency, not
 #              for invoicing.
 #
 # Prometheus scrapes the same :15020 endpoint, so Grafana inherits the same
@@ -22,7 +23,7 @@
 set -euo pipefail
 
 ONLY="${1:-}"
-METRICS=$(docker exec higress curl -s localhost:15020/stats/prometheus)
+METRICS=$(docker exec "${GATEWAY:-higress-gateway-1}" curl -s localhost:15020/stats/prometheus)
 
 # metric_name{...ai_consumer="X"...} VALUE  ->  "X VALUE"
 grab() {
@@ -58,4 +59,4 @@ for key in $(docker exec higress-redis redis-cli --scan --pattern 'chat_quota:*'
 done
 
 echo
-echo "balance = durable ledger (billing truth) | counters reset on higress restart"
+echo "balance = durable ledger (billing truth) | counters reset on gateway restart"
