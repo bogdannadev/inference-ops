@@ -104,6 +104,20 @@ qw3-emb.bnna.dev {
 # Everything that is not a Telegram-sourced POST to that exact path gets a 404 —
 # not a 403, which would confirm the host is running something worth probing.
 # -----------------------------------------------------------------------------
+# The quota-bot webhook origin.
+#
+# Telegram does NOT deliver here directly. Inbound connections from its ranges
+# to this host are dropped upstream — measured 2026-09-03: every local counter
+# clean (ListenDrops 0, no TLS handshake errors), outbound to Telegram flawless
+# at 30/30, other inbound traffic fine, yet deliveries stalled 60-543s. Tested
+# on BOTH 443 and 8443 with identical failure, which is what proved the filter
+# keys on Telegram's SOURCE addresses rather than our port — so neither the
+# port nor the hostname could ever have fixed it. 8443 has been removed again.
+#
+# Deliveries now arrive via a Cloudflare Worker (quota-bot/worker.js) on
+# workers.dev, which forwards here from Cloudflare's IPs. Those are not
+# filtered, because they are not Telegram's. Measured after the switch: a 50
+# minute idle gap still delivered in 1s, against 132-543s before.
 infra-bot.duckdns.org {
 	tls contact@bogdanna.dev
 
@@ -114,8 +128,25 @@ infra-bot.duckdns.org {
 	# identical to one that is never delivered.
 	log
 
+	# Telegram's own ranges, kept so the direct webhook still works if the
+	# upstream filtering is ever lifted — plus Cloudflare's, because deliveries
+	# now arrive via a Worker on workers.dev rather than from Telegram itself.
+	#
+	# Widening this is a real change to the posture: the endpoint is now
+	# reachable from anything on Cloudflare's network, not just Telegram. It is
+	# acceptable because the IP match was never the real gate — the
+	# X-Telegram-Bot-Api-Secret-Token check is, and that is a fixed-time compare
+	# against a 40-char secret on a path that is itself unguessable. The IP list
+	# is defence in depth, and it still excludes the open internet.
+	#
+	# Cloudflare publishes these at https://www.cloudflare.com/ips-v4 — they
+	# change rarely, but they DO change. If deliveries start failing with 404
+	# rather than timing out, this list is the first thing to re-check.
+	# ONE remote_ip line, not several: repeating the same matcher type inside a
+	# named matcher does not OR them the way it reads, so the ranges all belong
+	# on a single directive.
 	@telegram {
-		remote_ip 149.154.160.0/20 91.108.4.0/22
+		remote_ip 149.154.160.0/20 91.108.4.0/22 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
 		path /tg/CRRp7AOxcmjUJNZXXkR9br5z
 	}
 	handle @telegram {

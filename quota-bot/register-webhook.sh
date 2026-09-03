@@ -20,8 +20,23 @@ unquote() { sed -e 's/^"//' -e 's/"$//'; }
 readvar() { grep -E "^$1=" .env | cut -d= -f2- | unquote; }
 
 TOKEN=$(readvar TELEGRAM_BOT_TOKEN)
-URL=$(readvar TELEGRAM_WEBHOOK_URL)
 SECRET=$(readvar TELEGRAM_WEBHOOK_SECRET)
+
+# TWO URLs, because they stopped being the same thing.
+#
+#   TELEGRAM_WEBHOOK_URL  the ORIGIN. The bot derives its listen path from this
+#                         (Uri.AbsolutePath), and Caddy routes that path. It
+#                         must keep matching the Caddyfile.
+#   TELEGRAM_PUBLIC_URL   what TELEGRAM is pointed at. Optional; defaults to the
+#                         origin, which is what a normal deployment wants.
+#
+# They diverge here because Telegram cannot reach this host at all — its ranges
+# are filtered upstream — so deliveries come via a Cloudflare Worker on
+# workers.dev that forwards to the origin. Telegram must be told the Worker's
+# address, while the bot still listens on the origin path. Registering the
+# origin URL instead would silently restore the stalling.
+URL=$(readvar TELEGRAM_PUBLIC_URL)
+[ -n "$URL" ] || URL=$(readvar TELEGRAM_WEBHOOK_URL)
 
 for v in TOKEN URL SECRET; do
   [ -n "${!v}" ] || { echo "TELEGRAM_${v} is unset in .env" >&2; exit 1; }
