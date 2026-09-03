@@ -216,7 +216,7 @@ Without it the only evidence a key exists would be the key itself.
 Every command logs three numbers, and the split is the diagnosis:
 
 ```
-/status from 700766285 queued=1s work=4ms total=190ms
+/status from <your-telegram-id> queued=1s work=4ms total=190ms
 ```
 
 - **`queued`** — how long Telegram held the update after the operator pressed

@@ -147,7 +147,11 @@ bot.example.org {
 	# on a single directive.
 	@telegram {
 		remote_ip 149.154.160.0/20 91.108.4.0/22 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
-		path /tg/REDACTED-ROTATED-PATH
+		# From the environment, never committed: this path is a second secret,
+		# and a value committed once stays readable in git history even after it
+		# is edited out. Set QUOTA_BOT_WEBHOOK_PATH in .env (which is gitignored)
+		# and keep it in step with TELEGRAM_WEBHOOK_URL in quota-bot/.env.
+		path {$QUOTA_BOT_WEBHOOK_PATH}
 	}
 	handle @telegram {
 		reverse_proxy quota-bot:8080
@@ -285,6 +289,27 @@ grafana.example.org {
 	reverse_proxy qwen36-27b-grafana:3000 {
 		# Grafana Live uses websockets; Caddy upgrades them automatically, but
 		# streaming panels also want unbuffered responses.
+		flush_interval -1
+	}
+}
+
+# Langfuse — LLM trace explorer. Note .org, not .com: DuckDNS is example.org,
+# and qw38-27b-langfuse.duckdns.com resolves to an unrelated third party's
+# server (198.51.100.11, checked 2026-09-04). Pointing a site block at the .com
+# would fail ACME and send traffic to a stranger.
+#
+# Two things had to change in docker-compose.langfuse.yml before this hostname
+# could be served safely, and both are load-bearing:
+#   NEXTAUTH_URL       must be this public URL, or the login round-trip
+#                      redirects to localhost:3001 and auth silently fails.
+#   AUTH_DISABLE_SIGNUP  Langfuse allows registration by default. Acceptable on
+#                      loopback, not on a public hostname.
+langfuse.example.org {
+	tls contact@example.com
+
+	reverse_proxy qwen36-27b-langfuse-web:3000 {
+		# Traces stream in; keep responses unbuffered for the same reason as
+		# Grafana above.
 		flush_interval -1
 	}
 }

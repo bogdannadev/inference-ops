@@ -24,10 +24,24 @@
 //   the secret path and the origin's IP allowlist must be widened from
 //   Telegram's ranges to Cloudflare's.
 
-const ORIGIN = "https://bot.example.org/tg/REDACTED-ROTATED-PATH";
-
+// ORIGIN comes from a Worker environment variable, NOT from this file.
+//
+// The origin URL ends in the webhook path, and that path is a second secret —
+// it keeps the endpoint out of scan logs. Hardcoding it here would commit it to
+// git, and git history is forever: a value committed once stays readable in the
+// history of a repository that later goes public, even after it is edited out.
+//
+// Set it in the Cloudflare dashboard: Worker -> Settings -> Variables and
+// Secrets -> add ORIGIN as a SECRET (not a plaintext variable), value
+//   https://bot.example.org/tg/<the path from TELEGRAM_WEBHOOK_URL>
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
+    const ORIGIN = env.ORIGIN;
+    if (!ORIGIN) {
+      // Fail loudly rather than forwarding nowhere. A 500 makes Telegram retry,
+      // so nothing is lost while the variable is being set.
+      return new Response("ORIGIN not configured", { status: 500 });
+    }
     // Only POST is a webhook delivery. Everything else is a scanner that found
     // the workers.dev name; give it nothing to work with.
     if (request.method !== "POST") {
