@@ -1,0 +1,88 @@
+# =============================================================================
+# quota-bot — Telegram control surface for gateway access management.
+#
+# Deliberately its own compose project, not part of higress-standalone/. That
+# tree tracks an upstream release and bin/update.sh re-extracts over it; adding
+# a service there would put local work in the blast radius of an upgrade.
+#
+# No published ports. Telegram reaches the bot through Caddy over the `edge`
+# network, so the only inbound surface is one already-public 443 that Caddy
+# already terminates. Nothing new is exposed on the host.
+# =============================================================================
+
+services:
+  quota-bot:
+    build:
+      context: .
+    image: quota-bot:local
+    container_name: quota-bot
+
+    # Cores 48-55 are the observability/edge partition. r0 owns 0-27 and r1
+    # owns 28-47; nothing here may compete with a replica.
+    cpuset: "48-55"
+
+    # Run as the host user that owns consumers.conf. The chiselled base defaults
+    # to its own non-root uid, which cannot write a file owned by smuser — and
+    # the bot's whole job includes rewriting that file.
+    user: "1001:1001"
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      # Service addresses. Each is on a network this container joins below.
+      - GATEWAY_URL=http://higress:80
+      - APISERVER_URL=https://apiserver.svc:8443
+      - REDIS_HOST=higress-redis
+      - PROMETHEUS_URL=http://qwen36-27b-prometheus:9090
+      - CONSUMERS_PATH=/data/consumers.conf
+      - AUDIT_PATH=/var/lib/quota-bot/audit.log
+
+    networks:
+      # Reaches the gateway (quota admin API) and Prometheus, and is where
+      # Caddy finds the bot to forward webhooks to.
+      edge:
+      # Reaches higress-redis to enumerate and delete ledger entries.
+      higressint:
+      # Reaches the apiserver to read and write the key-auth object. This is
+      # how keys are issued without a Docker socket, root, or write access to
+      # the root-owned conf/ tree.
+      higress-net:
+
+    volumes:
+      # The consumer table, read-write. This is the bot's only credential-bearing
+      # mount and the single most sensitive thing it touches.
+      #
+      # Rewrites truncate in place rather than renaming, so the inode the
+      # container holds stays valid — the same trap that bites the Caddyfile.
+      - ../higress-standalone/consumers.conf:/data/consumers.conf
+      # Append-only record of every access and balance change the bot makes.
+      - ./data:/var/lib/quota-bot
+
+    healthcheck:
+      test: ["CMD", "/app/bot", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# -----------------------------------------------------------------------------
+# All three networks are owned by other compose projects. Declared external so
+# this project can never create or remove them.
+# -----------------------------------------------------------------------------
+networks:
+  edge:
+    external: true
+  higressint:
+    external: true
+  higress-net:
+    external: true
+    name: higress_higress-net
