@@ -230,7 +230,49 @@ indistinguishable from a fast bot. If the bot feels slow while `work` and
 `total` are in the hundreds of milliseconds, read `queued` — a large value means
 inbound delivery to this host is failing and Telegram is backing off.
 
-**That is the known failure mode here.** Telegram reaches this host only
+### How delivery actually reaches this host
+
+**Telegram cannot connect to this host at all.** Its source ranges are dropped
+upstream — measured on both TCP 443 and 8443, with every local counter clean
+(`ListenDrops` 0, no TLS handshake errors), outbound to Telegram flawless
+(30/30, ~98 ms), other inbound traffic fine, and no AAAA records. The identical
+failure on two different ports is what proved the filter keys on Telegram's
+**source addresses**, so no port and no hostname could ever have fixed it.
+
+Deliveries therefore arrive via a Cloudflare Worker (`worker.js`) on
+`workers.dev`, which forwards to the origin from Cloudflare's IPs — not
+filtered, because not Telegram:
+
+```
+Telegram --POST--> <name>.workers.dev        free, permanent hostname
+                        |
+                        v  Worker forwards, secret header intact
+                   bot.example.org     Caddy, Cloudflare IPs allowed
+                        |
+                        v
+                   quota-bot:8080
+```
+
+Measured after the switch: a **50-minute idle gap still delivered in 1 s**,
+against 132–543 s before. Idle gaps were what triggered the stalls, so that is
+the case that matters.
+
+Consequences worth knowing:
+
+- `TELEGRAM_PUBLIC_URL` (the Worker) and `TELEGRAM_WEBHOOK_URL` (the origin) are
+  now different values. The bot derives its listen path from the origin; only
+  Telegram's target is the Worker. Registering the origin would silently restore
+  the stalling.
+- Caddy's `remote_ip` allowlist was widened from Telegram's ranges to
+  Cloudflare's. The IP match was never the real gate — the secret token is — but
+  the endpoint is now reachable from anything on Cloudflare's network. If
+  deliveries ever fail with **404 rather than timeouts**, Cloudflare changed
+  their published ranges and that list needs updating.
+- A Cloudflare **Tunnel** would be strictly better — no public inbound at all —
+  but a tunnel's public hostname requires a domain on Cloudflare DNS, and
+  `workers.dev` is not a zone. The Worker exists only to avoid buying a domain.
+
+**Historic — the failure mode this replaced.** Telegram reaches this host only
 intermittently: deliveries land in bursts separated by 15–25 minute gaps, with
 `getWebhookInfo` reporting `Connection timed out` in between. Outbound to
 api.telegram.org is fine (~100 ms), so it is the inbound leg specifically. This
