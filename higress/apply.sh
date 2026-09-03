@@ -46,6 +46,24 @@ unquote() { sed -e 's/^"//' -e 's/"$//'; }
 QUOTA_ADMIN_CONSUMER=$(grep -E '^QUOTA_ADMIN_CONSUMER=' .env | cut -d= -f2- | unquote)
 SGLANG_ENV_FILE=$(grep -E '^SGLANG_ENV_FILE=' .env | cut -d= -f2- | unquote)
 
+# Which Redis the ai-quota ledger lives in. Not optional and not defaulted: a
+# deployment that silently fell back to the production ledger would spend real
+# customer balances on test traffic. See config/mcpbridges/default.yaml.
+QUOTA_REDIS_DOMAIN=$(grep -E '^QUOTA_REDIS_DOMAIN=' .env | cut -d= -f2- | unquote)
+[ -n "$QUOTA_REDIS_DOMAIN" ] || { echo "QUOTA_REDIS_DOMAIN is unset in .env" >&2; exit 1; }
+
+# Where the gateway fetches plugin .wasm modules from. Deployment-shaped: the
+# all-in-one serves them from a plugin-server on localhost inside the single
+# container, compose mode from a separate `plugin-server` container.
+#
+# GET THIS WRONG AND THE GATEWAY FAILS OPEN. Envoy registers the ECDS filter,
+# the module fetch never completes, and the filter sits in the chain with no
+# config — so key-auth stops authenticating and ai-quota stops metering while
+# the route keeps answering 200. Verified 2026-09-03 on the compose instance:
+# a stale localhost URL served the model to an unauthenticated caller.
+WASM_PLUGIN_BASE=$(grep -E '^WASM_PLUGIN_BASE=' .env | cut -d= -f2- | unquote)
+[ -n "$WASM_PLUGIN_BASE" ] || { echo "WASM_PLUGIN_BASE is unset in .env" >&2; exit 1; }
+
 [ -f "$SGLANG_ENV_FILE" ] || { echo "SGLANG_ENV_FILE not found: $SGLANG_ENV_FILE" >&2; exit 1; }
 SGLANG_API_KEY=$(grep -E '^SGLANG_API_KEY=' "$SGLANG_ENV_FILE" | cut -d= -f2- | unquote)
 [ -n "$SGLANG_API_KEY" ] || { echo "SGLANG_API_KEY empty in $SGLANG_ENV_FILE" >&2; exit 1; }
@@ -87,12 +105,12 @@ mkdir -p "$RENDERED"
 find "$RENDERED" -mindepth 1 -delete
 cp -r config/. "$RENDERED"/
 
-export SGLANG_API_KEY QUOTA_ADMIN_CONSUMER
+export SGLANG_API_KEY QUOTA_ADMIN_CONSUMER QUOTA_REDIS_DOMAIN WASM_PLUGIN_BASE
 while IFS= read -r -d '' f; do
   tmp=$(mktemp)
   # Only the two named variables are substituted. A bare envsubst would eat
   # any $... that happens to appear in a comment or a regex.
-  envsubst '${SGLANG_API_KEY} ${QUOTA_ADMIN_CONSUMER}' <"$f" >"$tmp"
+  envsubst '${SGLANG_API_KEY} ${QUOTA_ADMIN_CONSUMER} ${QUOTA_REDIS_DOMAIN} ${WASM_PLUGIN_BASE}' <"$f" >"$tmp"
   mv "$tmp" "$f"
 done < <(find "$RENDERED" -type f -name '*.yaml' -print0)
 

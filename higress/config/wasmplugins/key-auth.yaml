@@ -49,7 +49,7 @@ spec:
   #
   # A remote oci:// URL would turn the flaky Aliyun registry into a
   # request-path dependency. Always the bundled copy.
-  url: http://localhost:8002/plugins/key-auth/2.0.0/plugin.wasm
+  url: ${WASM_PLUGIN_BASE}/plugins/key-auth/2.0.0/plugin.wasm
 
   # If this plugin cannot load, requests must STOP. FAIL_OPEN here would mean
   # an unauthenticated gateway that still answers 200 — the exact silent

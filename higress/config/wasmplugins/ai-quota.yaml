@@ -50,7 +50,7 @@ metadata:
   namespace: higress-system
   resourceVersion: "1"
 spec:
-  url: http://localhost:8002/plugins/ai-quota/2.0.1/plugin.wasm
+  url: ${WASM_PLUGIN_BASE}/plugins/ai-quota/2.0.1/plugin.wasm
 
   # A quota plugin that fails to load must stop traffic, not stop accounting.
   failStrategy: FAIL_CLOSE

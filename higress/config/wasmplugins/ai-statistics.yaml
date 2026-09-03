@@ -21,7 +21,7 @@ metadata:
   namespace: higress-system
   resourceVersion: "1"
 spec:
-  url: http://localhost:8002/plugins/ai-statistics/2.0.1/plugin.wasm
+  url: ${WASM_PLUGIN_BASE}/plugins/ai-statistics/2.0.1/plugin.wasm
 
   failStrategy: FAIL_OPEN
 

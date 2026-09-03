@@ -26,7 +26,7 @@ metadata:
   namespace: higress-system
   resourceVersion: "1"
 spec:
-  url: http://localhost:8002/plugins/request-validation/2.0.1/plugin.wasm
+  url: ${WASM_PLUGIN_BASE}/plugins/request-validation/2.0.1/plugin.wasm
 
   # A cost ceiling that silently stops applying is a billing problem.
   failStrategy: FAIL_CLOSE
