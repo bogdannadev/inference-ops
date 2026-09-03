@@ -48,6 +48,7 @@
 
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -114,8 +115,31 @@ var cfg = new BotConfig(
     ContextLimit:    int.Parse(Opt("MODEL_CONTEXT", "169000"), CultureInfo.InvariantCulture),
     OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture));
 
+// Encoded once, not on every delivery — and validated here because the
+// comparison's fast path assumes one byte per character. That holds for the
+// alphabet Telegram allows; enforcing it now turns "someone typed a non-ASCII
+// character into .env" into a startup error naming the variable, instead of a
+// bot that silently rejects every webhook it is sent.
+if (cfg.WebhookSecret.Length is < 1 or > 256 ||
+    !cfg.WebhookSecret.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-'))
+    throw new InvalidOperationException(
+        "TELEGRAM_WEBHOOK_SECRET must be 1-256 characters of [A-Za-z0-9_-] — Telegram's own constraint");
+var secretBytes = Encoding.UTF8.GetBytes(cfg.WebhookSecret);
+
 var builder = WebApplication.CreateSlimBuilder(args);
 builder.Logging.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "yyyy-MM-ddTHH:mm:ssZ "; o.UseUtcTimestamp = true; });
+
+// The framework loggers emit five lines per HTTP request, and the compose
+// healthcheck fires every 30s: 75% of this container's log was /healthz, which
+// buried the command traffic it exists to show. Both are demoted to Warning and
+// the bot logs what actually matters itself — one line per command, with its
+// end-to-end duration. LOG_HTTP=debug restores the per-request framework
+// tracing when something needs taking apart again.
+if (!string.Equals(Opt("LOG_HTTP", ""), "debug", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+    builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
+}
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.TypeInfoResolverChain.Insert(0, BotJson.Default));
 
@@ -134,10 +158,40 @@ builder.Services.AddSingleton<Ledger>();
 builder.Services.AddSingleton<KeyStore>();
 builder.Services.AddHostedService<Worker>();
 
+// api.telegram.org is ~100ms away, and opening a connection to it costs ~200ms
+// more (TCP 100ms + TLS 106ms, measured from this host on 2026-09-03). Every
+// command is at least one round trip, so connection reuse — not the work the
+// commands do, which runs in single-digit milliseconds — decides how fast this
+// bot feels. Three settings that only work together:
+//
+//   HTTP/2            one multiplexed connection instead of one per concurrent
+//                     call. api.telegram.org negotiates h2.
+//   keep-alive pings  h2 PING frames hold the connection open across idle gaps.
+//                     Without them the far-side nginx closes it after ~75s, so
+//                     a command typed minutes after the last one pays the full
+//                     handshake — which is the common case, because real use is
+//                     bursty with long gaps between bursts.
+//   handler lifetime  IHttpClientFactory rotates handlers every 2 MINUTES by
+//                     default and the connection pool dies with them, which
+//                     would quietly undo both of the above. That rotation
+//                     exists to pick up DNS changes; SocketsHttpHandler already
+//                     re-resolves on PooledConnectionLifetime, so disabling it
+//                     costs nothing here.
 builder.Services.AddHttpClient("telegram", c =>
 {
     c.BaseAddress = new Uri($"https://api.telegram.org/bot{cfg.BotToken}/");
     c.Timeout = TimeSpan.FromSeconds(20);
+    c.DefaultRequestVersion = HttpVersion.Version20;
+    c.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+})
+.SetHandlerLifetime(Timeout.InfiniteTimeSpan)
+.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+{
+    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
+    PooledConnectionLifetime    = TimeSpan.FromMinutes(30),
+    KeepAlivePingDelay          = TimeSpan.FromSeconds(30),
+    KeepAlivePingTimeout        = TimeSpan.FromSeconds(10),
+    KeepAlivePingPolicy         = HttpKeepAlivePingPolicy.Always
 });
 builder.Services.AddHttpClient("gateway", c =>
 {
@@ -196,8 +250,7 @@ var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("webhoo
 // ---------------------------------------------------------------------------
 app.MapPost(cfg.WebhookPath, async (HttpRequest req) =>
 {
-    var presented = req.Headers["X-Telegram-Bot-Api-Secret-Token"].ToString();
-    if (!FixedTimeEquals(presented, cfg.WebhookSecret))
+    if (!SecretMatches(req.Headers["X-Telegram-Bot-Api-Secret-Token"].ToString(), secretBytes))
     {
         log.LogWarning("rejected webhook call with bad or missing secret token from {Ip}",
             req.HttpContext.Connection.RemoteIpAddress);
@@ -212,7 +265,12 @@ app.MapPost(cfg.WebhookPath, async (HttpRequest req) =>
     catch (JsonException ex)
     {
         // Malformed body: swallow it. Retrying will not make it parse.
-        log.LogWarning(ex, "dropped unparseable update");
+        //
+        // Message only, no stack trace. This endpoint is on the public internet
+        // and anything that guesses the path can post junk at it, so an
+        // unparseable body is expected background noise rather than a defect
+        // here — and the 30-line AOT stack it produced buried everything else.
+        log.LogWarning("dropped unparseable update: {Reason}", ex.Message);
         return Results.Ok();
     }
 
@@ -227,11 +285,28 @@ app.MapGet("/healthz", () => Results.Text("ok"));
 app.Run();
 return 0;
 
-static bool FixedTimeEquals(string a, string b)
+static bool SecretMatches(ReadOnlySpan<char> presented, ReadOnlySpan<byte> expected)
 {
-    var x = Encoding.UTF8.GetBytes(a);
-    var y = Encoding.UTF8.GetBytes(b);
-    return x.Length == y.Length && CryptographicOperations.FixedTimeEquals(x, y);
+    // Telegram caps secret_token at 256 characters and constrains it to
+    // [A-Za-z0-9_-], and the value from .env is validated against exactly that
+    // at startup — so the expected byte length is also its character length.
+    // That lets a wrong-length header be rejected before anything is copied,
+    // which is what keeps the stack buffer below provably in range: `presented`
+    // arrives from the internet and its length is not ours to trust.
+    //
+    // A non-ASCII header of the right character count encodes to more than 256
+    // bytes, TryGetBytes fails, and it is rejected — correct, since it cannot
+    // equal an ASCII secret.
+    //
+    // Comparing lengths up front leaks the secret's length, not the secret, and
+    // CryptographicOperations.FixedTimeEquals requires equal lengths regardless.
+    const int MaxSecretBytes = 256;
+    if (presented.Length != expected.Length) return false;
+
+    Span<byte> buf = stackalloc byte[MaxSecretBytes];
+    return Encoding.UTF8.TryGetBytes(presented, buf, out var n)
+        && n == expected.Length
+        && CryptographicOperations.FixedTimeEquals(buf[..n], expected);
 }
 
 // ===========================================================================
@@ -255,6 +330,11 @@ sealed class Worker(
     // restart drops them, which fails in the safe direction.
     private readonly ConcurrentDictionary<string, Pending> _pending = new();
 
+    // Bounds how many updates are handled at once. Eight is far more than a
+    // handful of operators will ever generate; the point is that the limit
+    // exists, so a burst cannot open an unbounded number of Telegram calls.
+    private readonly SemaphoreSlim _gate = new(8, 8);
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         // Publish the command menu to Telegram. This is what makes commands
@@ -265,15 +345,29 @@ sealed class Worker(
 
         await foreach (var update in queue.Reader.ReadAllAsync(ct))
         {
-            try { await HandleAsync(update, ct); }
-            catch (Exception ex) { log.LogError(ex, "handler failed for update {Id}", update.UpdateId); }
+            // Dedupe stays on this thread, before anything is handed off: _seen
+            // and _seenOrder are a plain HashSet and Queue, and keeping the only
+            // access to them single-threaded is cheaper and clearer than locking.
+            if (!MarkSeen(update.UpdateId)) { log.LogInformation("ignored duplicate update {Id}", update.UpdateId); continue; }
+
+            // Handle concurrently. Awaiting each update in turn meant a second
+            // command sat behind the first one's Telegram round trips — visible
+            // in the log as two updates arriving 114ms apart and the second
+            // answering 800ms later. The gate keeps that bounded, and the
+            // mutating path is already serialised by KeyStore's own lock, so
+            // concurrency here cannot interleave two writes to consumers.conf.
+            await _gate.WaitAsync(ct);
+            _ = Task.Run(async () =>
+            {
+                try { await HandleAsync(update, ct); }
+                catch (Exception ex) { log.LogError(ex, "handler failed for update {Id}", update.UpdateId); }
+                finally { _gate.Release(); }
+            }, ct);
         }
     }
 
     private async Task HandleAsync(Update u, CancellationToken ct)
     {
-        if (!MarkSeen(u.UpdateId)) { log.LogInformation("ignored duplicate update {Id}", u.UpdateId); return; }
-
         if (u.CallbackQuery is { } cb) { await HandleCallbackAsync(cb, ct); return; }
 
         var msg = u.Message;
@@ -295,9 +389,21 @@ sealed class Worker(
             return;
         }
 
-        await TypingAsync(msg.Chat.Id, ct);
-        var reply = await DispatchAsync(msg.From.Id, text.Trim(), ct);
+        var started = Stopwatch.GetTimestamp();
+        var command = Head(text);
+        var reply = await DispatchWithTypingAsync(msg.Chat.Id, msg.From.Id, text.Trim(), ct);
+        var worked = Stopwatch.GetElapsedTime(started);
         if (reply.Text is { Length: > 0 }) await SendAsync(msg.Chat.Id, reply, ct);
+
+        // Both halves, because they fail differently and the split is the whole
+        // diagnosis: `work` is this stack and the services behind it, `total`
+        // adds the round trip to Telegram. A slow `work` is ours to fix; a slow
+        // total with a fast work is the network to Telegram, and no amount of
+        // local optimisation will touch it.
+        log.LogInformation("{Command} from {UserId} work={WorkMs}ms total={TotalMs}ms",
+            command, msg.From.Id,
+            (int)worked.TotalMilliseconds,
+            (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
 
     // A tapped button. Buttons are better than a typed CONFIRM for a
@@ -381,18 +487,26 @@ sealed class Worker(
 
     private async Task<string> StatusAsync(CancellationToken ct)
     {
-        var gw = await TryAsync(async () =>
+        // Four independent probes, so run them at once rather than in turn. They
+        // are all on-host and fast, but a status check exists to be read when
+        // something is wrong — and when a component is wrong it usually hangs to
+        // its timeout instead of failing. Serially that is four timeouts end to
+        // end; concurrently the slowest one sets the bound.
+        var gwTask = TryAsync(async () =>
         {
             using var r = await http.CreateClient("gateway").GetAsync("v1/models", ct);
             return r.IsSuccessStatusCode ? "ok" : $"HTTP {(int)r.StatusCode}";
         });
-        var led = await TryAsync(async () => $"{(await ledger.ListAsync(ct)).Count} consumers");
-        var prom = await TryAsync(async () =>
+        var ledTask = TryAsync(async () => $"{(await ledger.ListAsync(ct)).Count} consumers");
+        var promTask = TryAsync(async () =>
         {
             using var r = await http.CreateClient("prometheus").GetAsync("-/healthy", ct);
             return r.IsSuccessStatusCode ? "ok" : $"HTTP {(int)r.StatusCode}";
         });
-        var api = await TryAsync(async () => $"{(await keys.ReadConsumersAsync(ct)).Count} keys");
+        var apiTask = TryAsync(async () => $"{(await keys.ReadConsumersAsync(ct)).Count} keys");
+
+        await Task.WhenAll(gwTask, ledTask, promTask, apiTask);
+        var (gw, led, prom, api) = (gwTask.Result, ledTask.Result, promTask.Result, apiTask.Result);
 
         string[] rows =
         [
@@ -679,8 +793,34 @@ sealed class Worker(
         }
     }
 
-    // Every command here does network I/O, some of it several round trips.
-    // Without this the chat sits silent and the operator retypes the command.
+    // Show "typing…" only if the answer is actually going to be late.
+    //
+    // This used to be an awaited call in front of every command, and it was the
+    // single largest source of latency in the bot: a round trip to Telegram
+    // costs ~100ms warm and ~300ms cold, while most commands finish their real
+    // work in under 10ms. So the indicator announcing the wait *was* the wait,
+    // and it doubled the time to a reply for every fast command.
+    //
+    // Now the work starts first and the indicator is sent only if the work is
+    // still running after TypingAfter — and never awaited, because nothing about
+    // the reply depends on it. Fast commands make no extra call at all; slow
+    // ones (/newkey, which writes the apiserver, seeds the ledger and re-reads)
+    // still get the feedback that stops an operator retyping the command.
+    private static readonly TimeSpan TypingAfter = TimeSpan.FromMilliseconds(350);
+
+    private async Task<Reply> DispatchWithTypingAsync(long chatId, long userId, string text, CancellationToken ct)
+    {
+        var work = DispatchAsync(userId, text, ct);
+        using var settled = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var late = Task.Delay(TypingAfter, settled.Token);
+
+        if (await Task.WhenAny(work, late) != work)
+            _ = TypingAsync(chatId, ct);
+        settled.Cancel();          // releases the timer; the delay is never awaited
+
+        return await work;
+    }
+
     private async Task TypingAsync(long chatId, CancellationToken ct)
     {
         try
@@ -799,14 +939,38 @@ sealed class Worker(
     private static string Table(string header, IEnumerable<string> rows) =>
         $"{header}\n<pre>" + string.Join("\n", rows.Select(Esc)) + "</pre>";
 
+    // Rejection sampling, not a plain `% 62` — this generates API credentials.
+    //
+    // A uniform byte is 0..255 and 256 is not a multiple of 62, so the modulo on
+    // its own made the first eight letters of the alphabet ~1.6x likelier than
+    // the other 54. That is a small but real loss of entropy in a secret.
+    // Discarding the 248..255 tail and drawing again costs nothing measurable
+    // and makes the distribution exact.
+    //
+    // stackalloc is available here only because this method is synchronous; it
+    // is not an option through most of this file, since a Span cannot live
+    // across an await. The length bound is what makes it safe on the stack.
     private static string Base62(int len)
     {
         const string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        var bytes = RandomNumberGenerator.GetBytes(len);
-        return string.Create(len, bytes, (span, b) =>
+        const int unbiased = 256 - (256 % 62);              // 248
+        ArgumentOutOfRangeException.ThrowIfLessThan(len, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(len, 128);
+
+        Span<char> chars = stackalloc char[len];
+        Span<byte> draw = stackalloc byte[128];
+        var produced = 0;
+        while (produced < len)
         {
-            for (var i = 0; i < span.Length; i++) span[i] = alphabet[b[i] % alphabet.Length];
-        });
+            RandomNumberGenerator.Fill(draw);
+            foreach (var b in draw)
+            {
+                if (b >= unbiased) continue;                // biased tail: redraw
+                chars[produced++] = alphabet[b % alphabet.Length];
+                if (produced == len) break;
+            }
+        }
+        return new string(chars);
     }
 }
 
@@ -993,9 +1157,12 @@ sealed class Ledger(BotConfig cfg)
 
         if (keys.Count == 0) return result;
 
-        var args = new List<string> { "MGET" };
-        args.AddRange(keys);
-        if (await c.CommandAsync(ct, [.. args]) is object?[] values)
+        // Build the argv once at its final size: a List plus AddRange plus a
+        // collection-expression copy was three allocations for a shape we know.
+        var argv = new string[keys.Count + 1];
+        argv[0] = "MGET";
+        keys.CopyTo(argv, 1);
+        if (await c.CommandAsync(ct, argv) is object?[] values)
             for (var i = 0; i < keys.Count && i < values.Length; i++)
                 if (values[i] is string v && long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
                     result[keys[i][Prefix.Length..]] = n;
@@ -1023,16 +1190,55 @@ sealed class RespConnection(TcpClient client) : IDisposable
     private readonly byte[] _buf = new byte[64 * 1024];
     private int _len, _pos;
 
-    public async Task<object?> CommandAsync(CancellationToken ct, params string[] args)
+    public async ValueTask<object?> CommandAsync(CancellationToken ct, params string[] args)
     {
-        var sb = new StringBuilder().Append('*').Append(args.Length).Append("\r\n");
-        foreach (var a in args)
-            sb.Append('$').Append(Encoding.UTF8.GetByteCount(a)).Append("\r\n").Append(a).Append("\r\n");
-        await _s.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), ct);
+        var (buf, n) = EncodeCommand(args);
+        try { await _s.WriteAsync(buf.AsMemory(0, n), ct); }
+        finally { ArrayPool<byte>.Shared.Return(buf); }
         return await ReadAsync(ct);
     }
 
-    private async Task<object?> ReadAsync(CancellationToken ct)
+    // Framing is synchronous ON PURPOSE. `stackalloc` and Span locals are not
+    // allowed to live across an await, so every span operation in this class
+    // sits in a sync helper and the async methods do nothing but await and
+    // bookkeep. That constraint is the whole reason this is shaped the way it
+    // is, rather than a fluent async writer.
+    //
+    // Was: StringBuilder -> string -> Encoding.UTF8.GetBytes, three copies of a
+    // payload whose size is known up front. MGET over every consumer is the
+    // largest command sent here, so it is rented rather than stack-allocated —
+    // its size scales with the consumer count and has no compile-time bound.
+    private static (byte[] Buffer, int Length) EncodeCommand(string[] args)
+    {
+        var max = 16;
+        foreach (var a in args) max += 16 + Encoding.UTF8.GetMaxByteCount(a.Length);
+
+        var buf = ArrayPool<byte>.Shared.Rent(max);
+        var w = 0;
+        buf[w++] = (byte)'*';
+        WriteInt(buf, ref w, args.Length);
+        WriteCrLf(buf, ref w);
+        foreach (var a in args)
+        {
+            buf[w++] = (byte)'$';
+            WriteInt(buf, ref w, Encoding.UTF8.GetByteCount(a));
+            WriteCrLf(buf, ref w);
+            w += Encoding.UTF8.GetBytes(a, buf.AsSpan(w));
+            WriteCrLf(buf, ref w);
+        }
+        return (buf, w);
+    }
+
+    // int.TryFormat's UTF-8 overload: straight to bytes, no intermediate string.
+    private static void WriteInt(byte[] b, ref int w, int v)
+    {
+        v.TryFormat(b.AsSpan(w), out var written);
+        w += written;
+    }
+
+    private static void WriteCrLf(byte[] b, ref int w) { b[w++] = (byte)'\r'; b[w++] = (byte)'\n'; }
+
+    private async ValueTask<object?> ReadAsync(CancellationToken ct)
     {
         var type = (char)await ReadByteAsync(ct);
         var line = await ReadLineAsync(ct);
@@ -1045,10 +1251,7 @@ sealed class RespConnection(TcpClient client) : IDisposable
             {
                 var n = int.Parse(line, CultureInfo.InvariantCulture);
                 if (n < 0) return null;
-                var bytes = new byte[n];
-                for (var i = 0; i < n; i++) bytes[i] = await ReadByteAsync(ct);
-                await ReadByteAsync(ct); await ReadByteAsync(ct); // trailing CRLF
-                return Encoding.UTF8.GetString(bytes);
+                return await ReadBulkAsync(n, ct);
             }
             case '*':
             {
@@ -1062,26 +1265,130 @@ sealed class RespConnection(TcpClient client) : IDisposable
         }
     }
 
-    private async Task<byte> ReadByteAsync(CancellationToken ct)
+    // A bulk string used to be read one byte at a time — one await, and one
+    // state machine, per byte of every balance in the ledger. Copy whole runs
+    // out of the buffer instead, and go to the socket only when it is empty.
+    //
+    // The fast path is the normal one: a RESP reply is small and Redis is on the
+    // same host, so the value and its trailing CRLF are almost always already
+    // buffered and the whole read is a single decode with no await at all.
+    private async ValueTask<string> ReadBulkAsync(int n, CancellationToken ct)
     {
-        if (_pos >= _len)
+        if (_len - _pos >= n + 2)
         {
-            _len = await _s.ReadAsync(_buf, ct);
-            _pos = 0;
-            if (_len <= 0) throw new EndOfStreamException("redis closed the connection");
+            var whole = Encoding.UTF8.GetString(_buf, _pos, n);
+            _pos += n + 2;                                   // value + CRLF
+            return whole;
         }
+
+        var bytes = ArrayPool<byte>.Shared.Rent(n);
+        try
+        {
+            var got = 0;
+            while (got < n)
+            {
+                if (_pos >= _len) await FillAsync(ct);
+                got += TakeInto(bytes, got, n - got);
+            }
+            await ReadByteAsync(ct); await ReadByteAsync(ct); // trailing CRLF
+            return Encoding.UTF8.GetString(bytes, 0, n);
+        }
+        finally { ArrayPool<byte>.Shared.Return(bytes); }
+    }
+
+    // ValueTask, and this is the ONE place in this program where that is the
+    // right call: it is called in a loop over a reply and virtually every call
+    // is answered from the buffer without touching the socket. A synchronously
+    // completing hot path is precisely what ValueTask is for. The buffer hit
+    // below runs no state machine and allocates nothing.
+    //
+    // It is deliberately NOT applied to the command handlers or the HTTP paths.
+    // Those are genuinely async, run a few times a day, and are handed to
+    // Task.WhenAll/WhenAny — which take Task, so a ValueTask there would need
+    // .AsTask() and would allocate MORE than it saves, in exchange for a real
+    // footgun: a ValueTask may be awaited only once.
+    private ValueTask<byte> ReadByteAsync(CancellationToken ct) =>
+        _pos < _len ? new ValueTask<byte>(_buf[_pos++]) : RefillThenReadByteAsync(ct);
+
+    private async ValueTask<byte> RefillThenReadByteAsync(CancellationToken ct)
+    {
+        await FillAsync(ct);
         return _buf[_pos++];
     }
 
-    private async Task<string> ReadLineAsync(CancellationToken ct)
+    private async ValueTask FillAsync(CancellationToken ct)
     {
-        var sb = new StringBuilder();
+        _len = await _s.ReadAsync(_buf, ct);
+        _pos = 0;
+        if (_len <= 0) throw new EndOfStreamException("redis closed the connection");
+    }
+
+    private async ValueTask<string> ReadLineAsync(CancellationToken ct)
+    {
+        if (_pos >= _len) await FillAsync(ct);
+
+        // Normal path: the whole line is buffered. Scan for CR with a vectorised
+        // IndexOf and decode once, rather than appending char by char through a
+        // StringBuilder with an await between each one.
+        var i = IndexOfCr();
+        if (i >= 0)
+        {
+            var line = TakeString(i);
+            _pos++;                                          // the CR
+            if (_pos >= _len) await FillAsync(ct);
+            _pos++;                                          // the LF
+            return line;
+        }
+        return await ReadLineAcrossRefillsAsync(ct);
+    }
+
+    // A header line split by a refill. Against a 64 KB buffer and RESP lines
+    // that are a sigil plus a number this is effectively unreachable, but it
+    // accumulates BYTES rather than decoded text because that is what stays
+    // correct if it ever does happen — a multi-byte sequence can straddle the
+    // split, and decoding each fragment separately would corrupt it.
+    private async ValueTask<string> ReadLineAcrossRefillsAsync(CancellationToken ct)
+    {
+        var acc = new ArrayBufferWriter<byte>(256);
         while (true)
         {
-            var b = await ReadByteAsync(ct);
-            if (b == (byte)'\r') { await ReadByteAsync(ct); return sb.ToString(); }
-            sb.Append((char)b);
+            var i = IndexOfCr();
+            if (i >= 0)
+            {
+                AccumulateTo(acc, i);
+                _pos++;                                      // the CR
+                if (_pos >= _len) await FillAsync(ct);
+                _pos++;                                      // the LF
+                return Encoding.UTF8.GetString(acc.WrittenSpan);
+            }
+            AccumulateTo(acc, _len - _pos);
+            await FillAsync(ct);
         }
+    }
+
+    // The span helpers. Synchronous so no Span local ever has to survive an
+    // await, which the compiler forbids outright.
+    private int IndexOfCr() => _buf.AsSpan(_pos, _len - _pos).IndexOf((byte)'\r');
+
+    private string TakeString(int count)
+    {
+        var s = Encoding.UTF8.GetString(_buf, _pos, count);
+        _pos += count;
+        return s;
+    }
+
+    private int TakeInto(byte[] dest, int offset, int want)
+    {
+        var take = Math.Min(want, _len - _pos);
+        Buffer.BlockCopy(_buf, _pos, dest, offset, take);
+        _pos += take;
+        return take;
+    }
+
+    private void AccumulateTo(ArrayBufferWriter<byte> acc, int count)
+    {
+        acc.Write(_buf.AsSpan(_pos, count));
+        _pos += count;
     }
 
     public void Dispose() { _s.Dispose(); client.Dispose(); }

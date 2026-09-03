@@ -70,11 +70,12 @@ Writes go through the apiserver rather than the filesystem because `conf/` is
 root-owned `0700`, and reaching it would mean running as root or mounting the
 Docker socket. The bot has neither.
 
-**The apiserver accepts unauthenticated requests on `higress-net`** — verified,
-an anonymous GET of the wasmplugins collection returns 200. That is what makes
-this work, and it is also a standing exposure: any container on that network can
-read every consumer credential. Worth fixing on its own merits; the bot does not
-make it worse.
+The apiserver requires authentication (`--auth-enabled`, set 2026-09-03 — before
+that an anonymous GET of the wasmplugins collection returned 200, which meant
+every consumer credential was readable by anything on `higress-net`). The bot
+presents the same client certificate the controller and console use, read from
+the kubeconfig at `../higress-standalone/compose/volumes/kube/config` rather
+than copied — one place to rotate it, not two.
 
 ## Setup
 
@@ -174,3 +175,77 @@ cat data/audit.log               # every key and balance change the bot made
 
 `data/audit.log` is the record of who was issued a key and whose balance moved.
 Without it the only evidence a key exists would be the key itself.
+
+## Latency
+
+Every command logs both halves of its own timing:
+
+```
+/status from 700766285 work=4ms total=190ms
+```
+
+`work` is this stack and the services behind it. `total` adds the round trip to
+Telegram. The split is the diagnosis: a slow `work` is ours, while a slow
+`total` over a fast `work` is the network to api.telegram.org and no local
+change will touch it.
+
+Telegram is ~100 ms away from this host and a *new* connection to it costs
+~200 ms more (TCP 100 ms + TLS 106 ms). Since the commands themselves finish in
+single-digit milliseconds, everything that matters is round trips and whether
+the connection is still open. Three things follow from that, and all three were
+wrong in the first cut:
+
+- **The typing indicator is sent only after 350 ms**, and never awaited. As an
+  awaited call in front of every command it *was* the latency it existed to
+  excuse — a 100–300 ms round trip announcing 6 ms of work.
+- **The connection is held open** with HTTP/2 keep-alive pings.
+  `IHttpClientFactory` rotates handlers every 2 minutes by default and the pool
+  dies with them, so before this every command typed after a gap — which is
+  most of them — paid the full handshake.
+- **Updates are handled concurrently** (bounded at 8). Serially, a second
+  command waited out the first one's Telegram round trips.
+
+Framework request logging is at Warning, because the 30-second healthcheck was
+75% of the log and buried the command traffic. `LOG_HTTP=debug` in `.env`
+restores full per-request tracing, which is what these numbers were measured
+with.
+
+## `ValueTask` and `stackalloc` — where, and where not
+
+Both appear in this file, in a few specific places and deliberately nowhere
+else. The reasoning is worth keeping, because the natural instinct is to apply
+them broadly and that would make this program slower and less safe.
+
+**`stackalloc` is illegal in an `async` method**, and almost everything here is
+async. It is not a style choice: a `Span<T>` cannot live across an `await`. So
+it appears only in synchronous code — `SecretMatches`, `Base62` — and the way
+to use spans near async code is to put the span work in a *synchronous helper*
+and let the async method do nothing but await and bookkeep. That is exactly why
+`RespConnection` is shaped the way it is, with `EncodeCommand`, `IndexOfCr`,
+`TakeString`, `TakeInto` and `AccumulateTo` all synchronous.
+
+Every `stackalloc` here is bounded by a checked constant. `SecretMatches` takes
+its input from the internet, so it rejects on length before it copies anything;
+`Base62` range-checks its argument. An unbounded `stackalloc` is a stack
+overflow, which is not a catchable exception — it kills the process.
+
+**`ValueTask` is used in exactly one place**: the RESP reader. `ReadByteAsync`
+is called in a loop over a reply and is almost always answered from the buffer
+without touching the socket, so it returns a completed `ValueTask<byte>` with no
+state machine and no allocation. A hot path that usually completes
+synchronously is the case `ValueTask` exists for.
+
+It is *not* used for the command handlers or the HTTP paths, and that is not an
+oversight:
+
+- Those are genuinely async — they always suspend on real network I/O, so
+  `ValueTask` saves nothing and adds a struct copy.
+- They are handed to `Task.WhenAll` / `Task.WhenAny`, which take `Task`.
+  Converting them would force `.AsTask()` and allocate **more** than today.
+- A `ValueTask` may be awaited only once. Using it where the payoff is zero
+  buys a real footgun for nothing.
+
+The measurable effect of all of this on command latency is nil — the bot spends
+2–16 ms working and ~100 ms per Telegram round trip. It was worth doing because
+one of the things it replaced was a genuine defect: bulk replies were read **one
+`await` per byte**.
