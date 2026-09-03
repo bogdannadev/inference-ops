@@ -395,13 +395,23 @@ sealed class Worker(
         var worked = Stopwatch.GetElapsedTime(started);
         if (reply.Text is { Length: > 0 }) await SendAsync(msg.Chat.Id, reply, ct);
 
-        // Both halves, because they fail differently and the split is the whole
-        // diagnosis: `work` is this stack and the services behind it, `total`
-        // adds the round trip to Telegram. A slow `work` is ours to fix; a slow
-        // total with a fast work is the network to Telegram, and no amount of
-        // local optimisation will touch it.
-        log.LogInformation("{Command} from {UserId} work={WorkMs}ms total={TotalMs}ms",
-            command, msg.From.Id,
+        // Three numbers, because they fail differently and the split IS the
+        // diagnosis:
+        //   queued  how long Telegram took to hand us the update after the
+        //           operator pressed send. Not ours, and not fixable from in
+        //           here — a large value means inbound delivery to this host is
+        //           failing and Telegram is retrying with backoff.
+        //   work    this stack and the services behind it. Ours to fix.
+        //   total   work plus the round trip back out to Telegram.
+        //
+        // Without `queued`, a delivery that sat in Telegram's retry queue for
+        // twenty minutes is indistinguishable from a fast bot, because every
+        // clock inside this process starts when the update arrives.
+        var queued = msg.Date > 0
+            ? (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() - msg.Date)
+            : -1;
+        log.LogInformation("{Command} from {UserId} queued={QueuedS}s work={WorkMs}ms total={TotalMs}ms",
+            command, msg.From.Id, queued,
             (int)worked.TotalMilliseconds,
             (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
@@ -1422,6 +1432,12 @@ sealed class Message
     [JsonPropertyName("text")] public string? Text { get; set; }
     [JsonPropertyName("from")] public User? From { get; set; }
     [JsonPropertyName("chat")] public Chat? Chat { get; set; }
+
+    // Unix seconds, set by Telegram when the operator pressed send. The gap
+    // between this and the moment we receive the update is the delivery leg,
+    // and it is the only part of the round trip this process cannot measure
+    // from the inside — see the queued= field in the per-command log line.
+    [JsonPropertyName("date")] public long Date { get; set; }
 }
 sealed class User
 {
