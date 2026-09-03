@@ -145,6 +145,58 @@ scrape_configs:
         labels:
           node: a100
 
+  # ---------------------------------------------------------------------------
+  # Higress CONTROL plane. The `higress` job above scrapes the gateway — the
+  # data plane — and that is the half that looks healthy during a control-plane
+  # failure. A wedged controller or a rejected xDS push leaves Envoy serving
+  # its last-known-good config indefinitely: requests still succeed, latency is
+  # normal, and the route you just applied simply never arrives.
+  #
+  # Reachable only on higress_higress-net, which Prometheus joins for this.
+  # ---------------------------------------------------------------------------
+
+  # Kubernetes-style apiserver backing the config store. Watch
+  # apiserver_request_total by code, and the *_inflight gauges — this is where
+  # a stuck write to key-auth or a wasmplugin shows up first.
+  - job_name: higress-apiserver
+    scrape_interval: 30s
+    scheme: https
+    tls_config:
+      # Self-signed, with a SAN that does not cover the compose alias. Nothing
+      # is protected by verifying it: the endpoint accepts unauthenticated
+      # requests from anywhere on this network. Verification here would be
+      # ceremony, not security — the real control is that the network is not
+      # routable from outside the host.
+      insecure_skip_verify: true
+    static_configs:
+      - targets:
+          - apiserver.svc:8443
+        labels:
+          node: a100
+
+  # NO controller job, deliberately. The Higress controller exposes no
+  # Prometheus endpoint in this build: `higress serve --help` has no metrics
+  # flag, 8888 returns 404 for every metrics path, and 8889 answers 200 with
+  # the literal string "Lookit my cool website over HTTPS!" on ANY path — a
+  # placeholder that Prometheus scrapes happily and then fails to parse
+  # ("strconv.ParseFloat: parsing \"my\""). A permanently-down target is worse
+  # than no target: it teaches people to ignore red.
+  #
+  # The controller is not unobserved, though. It feeds pilot, so a wedged or
+  # rejecting controller shows up in the pilot_xds_* series below — which is
+  # the signal that actually matters, since that is what reaches Envoy.
+
+  # Istio pilot: xDS push latency and rejections, plus citadel_* certificate
+  # expiry gauges. The cert expiry series are the ones worth an alert — they
+  # fail silently and then all at once.
+  - job_name: higress-pilot
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - pilot.svc:15014
+        labels:
+          node: a100
+
   - job_name: caddy
     scrape_interval: 15s
     static_configs:
