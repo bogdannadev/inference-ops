@@ -232,8 +232,20 @@ services:
 
     environment:
       # Auth
-      NEXTAUTH_URL: http://localhost:3001
+      #
+      # NEXTAUTH_URL must be the address users actually reach, because NextAuth
+      # builds its sign-in and callback URLs from it. Left at localhost while
+      # served on a public hostname, the login round-trip redirects the browser
+      # to localhost:3001 and authentication simply fails — the page loads, the
+      # form submits, and nothing happens.
+      NEXTAUTH_URL: ${LANGFUSE_PUBLIC_URL:-http://localhost:3001}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env}
+
+      # Signup is OPEN by default in Langfuse. That is fine on loopback, and not
+      # fine on a public hostname: anyone who finds the URL can register an
+      # account. Closed here, so the only accounts are the initialised admin and
+      # whoever it invites.
+      AUTH_DISABLE_SIGNUP: ${LANGFUSE_DISABLE_SIGNUP:-true}
 
       # Database
       DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/postgres
@@ -331,8 +343,17 @@ services:
         max-size: "50m"
         max-file: "5"
 
+    # Both networks, exactly as Grafana does, and for the same reason: Caddy
+    # lives on `edge` and cannot reach `qwen36-27b-backend`, while this service
+    # needs postgres, clickhouse, redis and minio which are backend-only.
+    #
+    # This does NOT weaken the segmentation the compose header describes. That
+    # boundary exists so Caddy cannot reach WORKER ports and ZMQ sockets, and
+    # the workers stay backend-only. Putting a UI on `edge` is what `edge` is
+    # for — it is the same shape as grafana and the router.
     networks:
       - qwen36-27b-backend
+      - edge
 
   # ---------------------------------------------------------------------------
   # Langfuse Worker — async event processing

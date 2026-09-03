@@ -997,6 +997,8 @@ services:
     environment:
       - EDGE_API_KEY=${EDGE_API_KEY:?set EDGE_API_KEY in .env}
       - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
+      # Webhook path for the quota-bot site. Kept out of git — see Caddyfile.
+      - QUOTA_BOT_WEBHOOK_PATH=${QUOTA_BOT_WEBHOOK_PATH:?set QUOTA_BOT_WEBHOOK_PATH in .env}
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
