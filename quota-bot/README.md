@@ -230,30 +230,6 @@ indistinguishable from a fast bot. If the bot feels slow while `work` and
 `total` are in the hundreds of milliseconds, read `queued` — a large value means
 inbound delivery to this host is failing and Telegram is backing off.
 
-### Delivery monitoring
-
-`queued=` only appears when an update eventually lands, and only when someone
-happens to send a command — so a stall with nothing behind it leaves no trace,
-and by the time an operator notices the slow first answer the stall is already
-over.
-
-`DeliveryMonitor` polls `getWebhookInfo` every 60 s and logs **transitions
-only**. A healthy day is completely silent; a stall reads:
-
-```
-warn: telegram delivery failing: Connection timed out (2 update(s) waiting)
-warn: telegram delivery STALLED — 2 update(s) undelivered
-info: telegram delivery RESUMED after ~180s stalled
-```
-
-That is the "wait for the first answer, then everything is instant" pattern,
-written down with a duration on it.
-
-It works because `getWebhookInfo` is an **outbound** call, and outbound from this
-host is reliable (~100 ms, 30/30 measured) — which is exactly what lets it report
-on the direction that is not. It costs ~1 KB/min and reuses the same pooled
-HTTP/2 connection as everything else, so it opens no new sockets.
-
 **That is the known failure mode here.** Telegram reaches this host only
 intermittently: deliveries land in bursts separated by 15–25 minute gaps, with
 `getWebhookInfo` reporting `Connection timed out` in between. Outbound to
