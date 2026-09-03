@@ -42,9 +42,17 @@ spec:
   # Quota ledger. ai-quota addresses this as `quota-redis.dns` and speaks RESP
   # over the cluster, hence protocol tcp. The network is named `higressint`
   # rather than `higress-internal` so this domain clears the regex above.
+  #
+  # PARAMETERISED DELIBERATELY. ai-quota DECREMENTS this ledger on every
+  # completion, so a deployment pointed at the real Redis spends real customer
+  # balances the moment it serves a request. While a second gateway is being
+  # validated alongside the live one, that gateway must point at a throwaway
+  # ledger or a single test call silently bills a paying consumer. Each
+  # deployment sets QUOTA_REDIS_DOMAIN in its own .env; the live stack sets it
+  # to higress-redis.higressint.
   - name: quota-redis
     type: dns
     protocol: tcp
-    domain: higress-redis.higressint
+    domain: ${QUOTA_REDIS_DOMAIN}
     port: 6379
 status: {}
