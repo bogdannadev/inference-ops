@@ -1,0 +1,6 @@
+# Bot token, webhook secret, admin credential, allowlist.
+.env
+
+# Audit log: who was issued a key and whose balance moved. Runtime record,
+# keep it on the box.
+data/
