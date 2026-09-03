@@ -158,7 +158,6 @@ builder.Services.AddSingleton(queue);
 builder.Services.AddSingleton<Ledger>();
 builder.Services.AddSingleton<KeyStore>();
 builder.Services.AddHostedService<Worker>();
-builder.Services.AddHostedService<DeliveryMonitor>();
 
 // api.telegram.org is ~100ms away, and opening a connection to it costs ~200ms
 // more (TCP 100ms + TLS 106ms, measured from this host on 2026-09-03). Every
@@ -1463,80 +1462,6 @@ sealed class RespConnection(TcpClient client) : IDisposable
 }
 
 // ===========================================================================
-// DeliveryMonitor — watches the leg this process cannot otherwise see.
-//
-// THE PROBLEM THIS SOLVES. Inbound webhook delivery to this host is
-// intermittent: you wait a minute for the first answer, then everything after
-// it is instant. That is Telegram failing to open a connection, queueing the
-// update, and retrying with backoff — and once a connection is finally up, the
-// backlog drains and subsequent commands ride the same open connection.
-//
-// None of that is visible from inside the request path, because every clock in
-// this process starts when an update ARRIVES. The per-command `queued=` field
-// shows the delay after the fact, but only for updates that eventually landed,
-// and only once someone happens to send a command. A stall with nothing queued
-// behind it leaves no trace at all.
-//
-// So ask Telegram directly, on a timer. getWebhookInfo is an OUTBOUND call, and
-// outbound from this host is reliable (~100ms, measured 30/30) — which is
-// exactly why it can report on the direction that is not.
-//
-// Logs TRANSITIONS ONLY, never the poll. A healthy day is silent; a stall is
-// two lines with a duration between them.
-// ===========================================================================
-sealed class DeliveryMonitor(IHttpClientFactory http, ILogger<DeliveryMonitor> log) : BackgroundService
-{
-    protected override async Task ExecuteAsync(CancellationToken ct)
-    {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
-        long seenErrorDate = 0;
-        DateTimeOffset? stalledSince = null;
-
-        while (await timer.WaitForNextTickAsync(ct))
-        {
-            WebhookInfo? info = null;
-            try
-            {
-                using var r = await http.CreateClient("telegram").GetAsync("getWebhookInfo", ct);
-                if (r.IsSuccessStatusCode)
-                {
-                    await using var s = await r.Content.ReadAsStreamAsync(ct);
-                    info = (await JsonSerializer.DeserializeAsync(s, BotJson.Default.WebhookInfoResponse, ct))?.Result;
-                }
-            }
-            catch (Exception ex)
-            {
-                // A failed poll is not a delivery failure - it is our own
-                // outbound hiccup, and saying so would be misleading.
-                log.LogDebug(ex, "getWebhookInfo poll failed");
-            }
-            if (info is null) continue;
-
-            // A NEW last_error_date means Telegram tried since the last poll and
-            // failed. Same date = the same old error, so stay quiet.
-            if (info.LastErrorDate > seenErrorDate)
-            {
-                seenErrorDate = info.LastErrorDate;
-                log.LogWarning("telegram delivery failing: {Message} ({Pending} update(s) waiting)",
-                    info.LastErrorMessage ?? "unknown", info.PendingUpdateCount);
-            }
-
-            if (info.PendingUpdateCount > 0 && stalledSince is null)
-            {
-                stalledSince = DateTimeOffset.UtcNow;
-                log.LogWarning("telegram delivery STALLED — {Pending} update(s) undelivered", info.PendingUpdateCount);
-            }
-            else if (info.PendingUpdateCount == 0 && stalledSince is { } since)
-            {
-                log.LogInformation("telegram delivery RESUMED after ~{Seconds}s stalled",
-                    (int)(DateTimeOffset.UtcNow - since).TotalSeconds);
-                stalledSince = null;
-            }
-        }
-    }
-}
-
-// ===========================================================================
 // Types and JSON. Every type crossing the wire needs a [JsonSerializable]
 // entry, or serialisation throws once trimmed.
 // ===========================================================================
@@ -1576,19 +1501,6 @@ sealed class User
     [JsonPropertyName("id")]       public long Id { get; set; }
     [JsonPropertyName("username")] public string? Username { get; set; }
 }
-// Telegram's own account of webhook delivery. Only the fields the monitor
-// reads; the API returns more.
-sealed class WebhookInfoResponse
-{
-    [JsonPropertyName("result")] public WebhookInfo? Result { get; set; }
-}
-sealed class WebhookInfo
-{
-    [JsonPropertyName("pending_update_count")] public int PendingUpdateCount { get; set; }
-    [JsonPropertyName("last_error_date")]      public long LastErrorDate { get; set; }
-    [JsonPropertyName("last_error_message")]   public string? LastErrorMessage { get; set; }
-}
-
 sealed class Chat
 {
     [JsonPropertyName("id")]   public long Id { get; set; }
@@ -1659,6 +1571,4 @@ sealed class QuotaResponse
 [JsonSerializable(typeof(SetMyCommands))]
 [JsonSerializable(typeof(AnswerCallbackQuery))]
 [JsonSerializable(typeof(QuotaResponse))]
-[JsonSerializable(typeof(WebhookInfoResponse))]
-[JsonSerializable(typeof(WebhookInfo))]
 internal partial class BotJson : JsonSerializerContext;
