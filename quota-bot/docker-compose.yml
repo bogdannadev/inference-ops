@@ -28,10 +28,40 @@ services:
 
     restart: unless-stopped
 
+    # Memory ceiling. Without one the .NET GC sizes itself against the WHOLE
+    # machine — measured, it believed it could use 1,008 GiB — and this box runs
+    # paid inference. The working set is ~14 MiB, so 128 MiB is ~9x headroom and
+    # still a hard stop. Setting it also makes the GC treat that as its "total
+    # physical memory", which is what makes the tuning below mean anything.
+    mem_limit: 128m
+    memswap_limit: 128m          # equal to mem_limit = no swap
+
     env_file:
       - .env
 
     environment:
+      # ---- GC tuning -------------------------------------------------------
+      # These have no MSBuild property, so unlike the rest of the build config
+      # they cannot live in bot.cs's #:property directives — the environment is
+      # the only way in. Numeric DOTNET_* values are HEX.
+      #
+      # Measured baseline before these: server=False (Workstation GC already, so
+      # nothing to win there), pinned=0, committed=0MiB, ~14 MiB RSS.
+      #
+      # GCRegionSize=0x100000 (1 MiB): the default SOH region is 4 MiB. The docs
+      # recommend 1 MiB specifically "for processes that have very small GC
+      # heaps", where it reduces the GC's own native bookkeeping. That is exactly
+      # this process.
+      - DOTNET_GCRegionSize=100000
+      # Trade CPU for footprint; the docs suggest starting between 5 and 7. This
+      # bot is idle almost always, and bounded by a ~100ms round trip when it is
+      # not, so CPU is the cheap side of that trade.
+      - DOTNET_GCConserveMemory=5
+      # No background GC thread. Background GC buys shorter pauses, and there is
+      # no pause requirement here that a 100ms round trip has not already dwarfed.
+      - DOTNET_gcConcurrent=0
+      # ----------------------------------------------------------------------
+
       # Service addresses. Each is on a network this container joins below.
       - GATEWAY_URL=http://higress:80
       - APISERVER_URL=https://apiserver.svc:8443
