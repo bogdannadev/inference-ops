@@ -897,6 +897,18 @@ services:
     image: *sglang-image
     container_name: qwen36-27b-router
 
+    # Pinned to the edge partition like everything else that is not a replica.
+    #
+    # This was the ONE unpinned container on the host — cpuset "" — which meant
+    # the scheduler was free to place it on 0-27 or 28-47, the cores r0 and r1
+    # own. Those replicas are latency-critical and the compose header states
+    # nothing may compete with them, so an unpinned process in the middle of the
+    # paid request path contradicted the whole partitioning scheme.
+    #
+    # 48-55 is right for it: the router does prefix hashing and proxying, not
+    # inference, and its steady-state footprint is ~69 MiB.
+    cpuset: "48-55"
+
     expose:
       - "8000"
       - "29000"
@@ -999,6 +1011,8 @@ services:
       - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
       # Webhook path for the quota-bot site. Kept out of git — see Caddyfile.
       - QUOTA_BOT_WEBHOOK_PATH=${QUOTA_BOT_WEBHOOK_PATH:?set QUOTA_BOT_WEBHOOK_PATH in .env}
+      # Retired path, honoured only while the relay is being switched over.
+      - QUOTA_BOT_WEBHOOK_PATH_OLD=${QUOTA_BOT_WEBHOOK_PATH_OLD:-}
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
