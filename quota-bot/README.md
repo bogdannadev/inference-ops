@@ -318,6 +318,23 @@ one heap that cannot defragment itself. `PinnedObjectsCount` on this process is
 finding there was that the buffer was freshly allocated on every command; it is
 `ArrayPool`-rented now, which is the correct fix.
 
+**Redis connects per command on purpose** — decided 2026-09-03, don't "fix" it.
+Measured: one connection per command, and `/keys` runs `work=1-2ms` *including*
+connect, `SCAN` and `MGET`, so setup is sub-millisecond. Redis has `timeout 0`,
+so a persistent connection would survive — the point is not that it couldn't.
+
+Connect-per-command is stateless and self-healing: Redis restarts, or this
+container is redeployed, and the next command just reconnects. A persistent
+connection buys stale sockets, half-open TCP and "the first command after a
+Redis restart fails". A *shared* one would be worse still — `RespConnection`
+holds `_buf/_len/_pos` and is not thread-safe, so with 8 concurrent handlers it
+needs a lock, which serialises them and undoes the concurrency above. The only
+correct alternative is a pool with health checks, reconnect and idle eviction:
+real code in the path that moves customer balances, to save one millisecond.
+
+Revisit only if Redis work becomes a visible share of `work=`, or if something
+starts polling the ledger on a timer (the phase-2 low-balance alerts would).
+
 **The Frozen Object Heap has no public allocation API.** There is no
 `GC.AllocateArray(frozen: true)` equivalent — the FOH is entirely runtime-managed
 for things like string literals and certain statics. Native AOT already gets this
