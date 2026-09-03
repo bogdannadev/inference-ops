@@ -31,9 +31,22 @@ API="https://api.telegram.org/bot${TOKEN}"
 
 case "${1:-info}" in
   set)
-    # allowed_updates is restricted to plain messages: this bot has no inline
-    # queries, no callbacks, no channel posts. Anything else Telegram would send
-    # is queued, delivered, and dropped by the worker for nothing.
+    # allowed_updates MUST list callback_query as well as message.
+    #
+    # An update type that is not listed here is not filtered by us — Telegram
+    # discards it and never sends it at all. The confirmation prompts for
+    # /revoke, /setquota and /clearquota are inline keyboards, and a tapped
+    # button arrives as callback_query. Registered with ["message"] alone, those
+    # buttons do nothing at all: the operator taps Yes, the spinner turns, and
+    # no update ever reaches the host.
+    #
+    # This was live for a while after the typed CONFIRM was replaced with
+    # buttons, because posting a synthetic callback_query straight at the
+    # webhook — the obvious way to test the handler — bypasses this filter
+    # completely and passes. The only honest check is getWebhookInfo, below.
+    #
+    # Anything NOT listed is deliberate: edited_message in particular stays out,
+    # so that editing a sent /topup cannot re-execute it.
     #
     # drop_pending_updates clears the backlog. Without it, a webhook registered
     # after a spell of downtime replays every command sent meanwhile — including
@@ -42,7 +55,7 @@ case "${1:-info}" in
     curl -sS "${API}/setWebhook" \
       -d "url=${URL}" \
       -d "secret_token=${SECRET}" \
-      -d 'allowed_updates=["message"]' \
+      -d 'allowed_updates=["message","callback_query"]' \
       -d 'drop_pending_updates=true' \
       -d 'max_connections=10' | python3 -m json.tool
     echo

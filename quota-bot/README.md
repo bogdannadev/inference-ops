@@ -88,6 +88,41 @@ than copied — one place to rotate it, not two.
    `pending_update_count: 0` and an empty `last_error_message`. A webhook can be
    registered and failing every delivery, and nothing else reports that.
 
+### Telegram-side settings
+
+Everything Telegram holds for this bot lives on *their* servers, not in this
+repo, so `getWebhookInfo` is the only source of truth for what is actually
+registered. Audited against the Bot API docs on 2026-09-03:
+
+| Setting | Value | Why |
+|---|---|---|
+| `url` | `https://<host>/tg/<random>` | 443 + TLS 1.3. Telegram allows only 443, 80, 88, 8443 |
+| `secret_token` | 40 chars | Within the documented 1–256 of `[A-Za-z0-9_-]`; validated at startup |
+| `allowed_updates` | `["message","callback_query"]` | **See the trap below** |
+| `max_connections` | 10 | Default is 40; this bot serves a handful of operators |
+| `drop_pending_updates` | true on `set` | Stops a backlog replaying after downtime — a replayed `/topup` is money |
+| `ip_address` | unset | Would pin Telegram's target IP and skip its DNS lookup. Checked and not useful here: Telegram, DuckDNS and the host all agree on the address |
+| `certificate` | unset | Let's Encrypt via Caddy, so no self-signed upload is needed |
+
+**The `allowed_updates` trap.** An update type absent from that list is not
+filtered by this bot — *Telegram never sends it*. The confirmation prompts for
+`/revoke`, `/setquota` and `/clearquota` are inline keyboards, and a tapped
+button arrives as a `callback_query`. While the webhook was registered with
+`["message"]` alone, those buttons did nothing whatsoever: the spinner turned
+and no update ever left Telegram.
+
+It survived testing because the obvious way to test the handler — POST a
+synthetic `callback_query` at the webhook — bypasses the filter completely and
+passes. **After changing which update types the bot reacts to, re-register and
+check `getWebhookInfo`.** Nothing else reports this.
+
+`edited_message` is deliberately still absent, so that editing an already-sent
+`/topup` cannot re-execute it.
+
+Documented Telegram source subnets are `149.154.160.0/20` and `91.108.4.0/22`;
+the Caddy matcher below carries both, and observed deliveries arrive from
+`91.108.5.110`, inside the second.
+
 ### Caddy
 
 The webhook needs a hostname on 443 — Telegram accepts only 443, 80, 88 and
