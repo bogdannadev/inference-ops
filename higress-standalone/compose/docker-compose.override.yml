@@ -1,0 +1,157 @@
+# =============================================================================
+# Local overrides for the official Higress standalone compose deployment.
+#
+# WHY THIS FILE EXISTS
+#   bin/startup.sh runs `cd compose && docker compose -p higress up -d` with no
+#   -f flag, so Compose auto-loads this file alongside docker-compose.yml.
+#   Crucially, get-higress.sh's update path (`-u`) re-extracts the release
+#   tarball over the install tree and WILL overwrite docker-compose.yml — but
+#   this filename does not exist upstream, so tar never touches it. Every local
+#   deviation from the official file belongs here, never in docker-compose.yml.
+#
+# WHAT IS NOT HERE
+#   Published ports. Compose MERGES `ports` by appending, so an override cannot
+#   remove a base mapping. Binding is controlled from compose/.env instead, by
+#   putting the interface in the port variable itself:
+#       GATEWAY_HTTP_PORT='127.0.0.1:18080'  ->  "127.0.0.1:18080:80/tcp"
+#   That keeps the gateway and console off 0.0.0.0 without fighting the merge.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Bundled observability — OFF.
+  #
+  # Unlike `nacos` and `plugin-server`, these four services declare no
+  # `profiles:` key upstream, so `docker compose up` starts them
+  # unconditionally. There is no O11Y=off equivalent in compose mode. Assigning
+  # them a profile nobody enables is the only way to keep them down without
+  # editing docker-compose.yml.
+  #
+  # The A100 node already runs its own Prometheus and Grafana with tuned
+  # retention and dashboards, and Loki/Promtail duplicate nothing we want. Two
+  # Prometheis scraping one stack is not observability.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    profiles: [ "bundled-o11y" ]
+  promtail:
+    profiles: [ "bundled-o11y" ]
+  loki:
+    profiles: [ "bundled-o11y" ]
+  grafana:
+    profiles: [ "bundled-o11y" ]
+
+  # postcheck has to go with them. It `depends_on` prometheus, loki and grafana
+  # with `condition: service_healthy`, and Compose MERGES depends_on maps — an
+  # override can add entries but cannot remove them, so the dependency on three
+  # disabled services cannot be dropped. Leaving it enabled fails the whole
+  # project with "depends on undefined service prometheus".
+  #
+  # Nothing is lost: compose/scripts/postcheck.sh is, in full,
+  # `#! /bin/bash` + `echo "All good!"`. It is a readiness barrier with no
+  # logic. Per-service healthchecks still gate startup order, and
+  # bin/status.sh reports component health.
+  postcheck:
+    profiles: [ "bundled-o11y" ]
+
+  # ---------------------------------------------------------------------------
+  # Gateway — the data plane, and the only service that carries traffic.
+  #
+  # networks:
+  #   edge        reaches qwen36-27b-router and is reached by Caddy and
+  #               Prometheus. The `higress` alias is what makes the cutover a
+  #               one-line change: Prometheus scrapes `higress:15020` and keeps
+  #               working untouched. Caddy's `reverse_proxy higress:8080` still
+  #               needs :8080 -> :80, because the all-in-one served the gateway
+  #               on 8080 while the official gateway image listens on 80.
+  #   higressint  reaches higress-redis, the ai-quota ledger.
+  #
+  # Envoy resolves the `dns` McpBridge registries itself (resolution: DNS), so
+  # the names must resolve from THIS container, not the controller's.
+  #
+  # cpuset: cores 48-55 are the observability/edge partition. r0 owns 0-27 and
+  # r1 owns 28-47; the data plane must never compete with a replica. In the
+  # all-in-one these 8 cores were shared by gateway, pilot, controller,
+  # apiserver and console at once — splitting them out is the main operational
+  # win of this deployment shape, so keep the pinning per-service.
+  # ---------------------------------------------------------------------------
+  gateway:
+    cpuset: "48-55"
+    restart: unless-stopped
+    networks:
+      higress-net:
+        aliases:
+          - gateway.svc
+      edge:
+        aliases:
+          # DELIBERATELY NOT `higress` UNTIL CUTOVER.
+          #
+          # The all-in-one container is named `higress` and sits on this same
+          # network. Docker's embedded DNS resolves container names and network
+          # aliases from one namespace, so claiming `higress` here while the old
+          # container runs makes the name resolve to BOTH and round-robin
+          # between them — roughly half of Caddy's paid traffic would land on an
+          # unconfigured gateway. Not a theoretical race; it is the default
+          # behaviour.
+          #
+          # Cutover is therefore a one-line change in compose/.env:
+          #   GATEWAY_EDGE_ALIAS='higress'
+          # made only AFTER the old container is stopped. Prometheus scrapes
+          # `higress:15020` and needs no edit at all once the alias moves.
+          - ${GATEWAY_EDGE_ALIAS:-higress-next}
+      higressint:
+
+  # ---------------------------------------------------------------------------
+  # Control plane. No traffic, but the controller resolves service sources when
+  # building ServiceEntries, so it gets the same two networks as the gateway.
+  # ---------------------------------------------------------------------------
+  controller:
+    cpuset: "48-55"
+    restart: unless-stopped
+    networks:
+      higress-net:
+        aliases:
+          - controller.svc
+      edge:
+      higressint:
+
+  pilot:
+    cpuset: "48-55"
+    restart: unless-stopped
+
+  # The apiserver owns the config tree: it runs `--storage file --file-root-dir
+  # /opt/data`, bind-mounted from ../conf on the host, and WATCHES it — an
+  # object written there goes live on the controller's own resync (~6s), no
+  # restart. The exception is configmaps/, which is read once at boot.
+  #
+  # ../conf is created root-owned with 0700 subdirectories, so a script running
+  # as an ordinary user cannot write into it from the host. apply.sh therefore
+  # copies IN-CONTAINER from this read-only mount, exactly as it did against the
+  # all-in-one — only the destination changes, /data -> /opt/data.
+  apiserver:
+    cpuset: "48-55"
+    restart: unless-stopped
+    volumes:
+      - ../rendered:/rendered:ro
+
+  plugin-server:
+    cpuset: "48-55"
+    restart: unless-stopped
+
+  # Console is an admin UI, not a traffic path. Loopback-only via CONSOLE_PORT
+  # in .env, same pattern as Grafana and Langfuse:
+  #   ssh -L 8002:127.0.0.1:8002 <host>
+  console:
+    cpuset: "48-55"
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# Both networks are created and owned by other compose projects on this host,
+# so they are declared external here. `edge` carries the router, Caddy and
+# Prometheus; `higressint` carries the quota ledger.
+# -----------------------------------------------------------------------------
+networks:
+  edge:
+    external: true
+  higressint:
+    external: true

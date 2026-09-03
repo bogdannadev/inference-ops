@@ -1,0 +1,443 @@
+version: '3.9'
+
+networks:
+  higress-net:
+    external: false
+
+services:
+  nacos:
+    hostname: higress-nacos
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/nacos-server:${NACOS_SERVER_TAG}
+    profiles: [ "nacos" ]
+    env_file:
+      - ./env/nacos.env
+    networks:
+      higress-net:
+        aliases:
+          - nacos.svc
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://127.0.0.1:8848/nacos" ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    volumes:
+      - ./volumes/nacos:/home/nacos/data
+    ports:
+      - "${NACOS_CONSOLE_PORT:-8888}:8080/tcp"
+      - "${NACOS_HTTP_PORT:-8848}:8848/tcp"
+      - "${NACOS_GRPC_PORT:-9848}:9848/tcp"
+    restart: always
+
+  initializer:
+    hostname: higress-initializer
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/runner:${HIGRESS_RUNNER_TAG}
+    command:
+      - ./init.sh
+    env_file:
+      - ./.env
+    profiles: [ "init" ]
+    networks:
+      - higress-net
+    volumes:
+      - ./volumes:/mnt/volumes
+      - ./scripts:/workspace
+      - ${FILE_ROOT_DIR:-./volumes/dummy}:/opt/data/:rw
+
+  precheck:
+    hostname: higress-precheck
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/runner:${HIGRESS_RUNNER_TAG}
+    command:
+      - ./precheck.sh
+    env_file:
+      - ./.env
+    networks:
+      - higress-net
+    restart: on-failure
+    volumes:
+      - ./volumes:/mnt/volumes:rw
+      - ./scripts:/workspace:ro
+      - ${FILE_ROOT_DIR:-./volumes/dummy}:/opt/data/:ro
+
+  apiserver:
+    hostname: higress-apiserver
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/api-server:${HIGRESS_API_SERVER_TAG}
+    command:
+      - --secure-port
+      - "8443"
+      - --client-ca-file
+      - /etc/api/ca.crt
+      - --tls-cert-file
+      - /etc/api/server.crt
+      - --tls-private-key-file
+      - /etc/api/server.key
+      - --storage
+      - ${CONFIG_STORAGE:-nacos}
+      - --file-root-dir
+      - /opt/data
+      - --nacos-server
+      - ${NACOS_SERVER_URL}
+      - --nacos-username
+      - "${NACOS_USERNAME}"
+      - --nacos-password
+      - "${NACOS_PASSWORD}"
+      - --nacos-ns-id
+      - "${NACOS_NS}"
+      - --nacos-encryption-key-file
+      - /etc/api/nacos.key
+    depends_on:
+      precheck:
+        condition: service_completed_successfully
+    networks:
+      higress-net:
+        aliases:
+          - apiserver.svc
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-fk", "https://127.0.0.1:8443/readyz" ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    volumes:
+      - ./volumes/api:/etc/api:ro
+      - ${FILE_ROOT_DIR:-./volumes/dummy}:/opt/data/:rw
+
+  prepare:
+    hostname: higress-prepare
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/runner:${HIGRESS_RUNNER_TAG}
+    command:
+      - ./prepare.sh
+    env_file:
+      - ./.env
+    depends_on:
+      apiserver:
+        condition: service_healthy
+    networks:
+      - higress-net
+    restart: on-failure
+    volumes:
+      - ./volumes:/mnt/volumes:rw
+      - ./scripts:/workspace:ro
+      - ${FILE_ROOT_DIR:-./volumes/dummy}:/opt/data/:ro
+
+  controller:
+    hostname: higress-controller
+    image: ${HIGRESS_CONTROLLER_IMAGE}
+    command:
+      - serve
+      - --kubeconfig=/home/higress/.kube/config
+      - --gatewaySelectorKey=higress
+      - --gatewaySelectorValue=higress-system-higress-gateway
+      - --ingressClass=
+      - --enableAutomaticHttps=true
+      - --automaticHttpsEmail=
+    env_file:
+      - ./env/controller.env
+    environment:
+      MCP_SERVER_WASM_IMAGE_URL: "${MCP_SERVER_WASM_URL:-}"
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    networks:
+      higress-net:
+        aliases:
+          - controller.svc
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://127.0.0.1:8888/ready" ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    volumes:
+      - ./volumes/kube:/home/higress/.kube:ro
+      - ./volumes/controller/log/nacos:/var/log/nacos:rw
+
+  pilot:
+    hostname: higress-pilot
+    image: ${HIGRESS_PILOT_IMAGE}
+    command:
+      - discovery
+      - --monitoringAddr=:15014
+      - --log_output_level=default:info
+      - --domain
+      - cluster.local
+      - --keepaliveMaxServerConnectionAge
+      - 30m
+      - --caCertFile
+      - /etc/cacerts/ca-cert.pem
+    depends_on:
+      controller:
+        condition: service_healthy
+    env_file:
+      - ./env/pilot.env
+    networks:
+      higress-net:
+        aliases:
+          - pilot.svc
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-fk", "http://127.0.0.1:8080/ready" ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    volumes:
+      - ./volumes/kube:/var/run/secrets/remote:ro
+      - ./volumes/pilot/cacerts:/etc/cacerts:ro
+      - ./volumes/pilot/config:/etc/istio/config:ro
+
+  gateway:
+    hostname: higress-gateway
+    image: ${HIGRESS_GATEWAY_IMAGE}
+    command:
+      - proxy
+      - router
+      - --concurrency
+      - "16"
+      - --domain
+      - higress-system.svc.cluster.local
+      - --proxyLogLevel=warning
+      - --proxyComponentLogLevel=misc:error
+      - --log_output_level=all:info
+      - --serviceCluster=higress-gateway
+    env_file:
+      - ./env/gateway.env
+    depends_on:
+      pilot:
+        condition: service_healthy
+      plugin-server:
+        condition: service_healthy
+    networks:
+      higress-net:
+        aliases:
+          - gateway.svc
+    restart: always
+    ports:
+      - "${GATEWAY_HTTP_PORT:-80}:80/tcp"
+      - "${GATEWAY_HTTPS_PORT:-443}:443/tcp"
+      - "${GATEWAY_METRICS_PORT:-15020}:15020/tcp"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fk",
+          "http://127.0.0.1:15021/healthz/ready"
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    volumes:
+      - ./volumes/pilot/config:/etc/istio/config:ro
+      - ./volumes/gateway/certs:/etc/certs:ro
+      - ./volumes/gateway/podinfo:/etc/istio/pod:ro
+      - ./volumes/gateway/istio/data:/var/lib/istio/data:rw
+      - ./volumes/gateway/log:/var/log/proxy:rw
+      - ./volumes/gateway/secrets:/var/run/secrets:rw
+      - ./volumes/gateway/proxy:/etc/istio/proxy:rw
+
+  plugin-server:
+    hostname: higress-plugin-server
+    image: ${HIGRESS_PLUGIN_SERVER_IMAGE}
+    profiles: [ "plugin-server" ]
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    networks:
+      higress-net:
+        aliases:
+          - plugin-server.svc
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://127.0.0.1:8080/ || exit 1" ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+  console:
+    hostname: higress-console
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/console:${HIGRESS_CONSOLE_TAG}
+    env_file:
+      - ./env/console.env
+    environment:
+      HIGRESS_ADMIN_WASM_PLUGIN_CUSTOM_IMAGE_URL_PATTERN: "${WASM_PLUGIN_URL_PATTERN:-}"
+    depends_on:
+      controller:
+        condition: service_healthy
+    networks:
+      higress-net:
+        aliases:
+          - console.svc
+    ports:
+      - "${CONSOLE_PORT:-8080}:8080/tcp"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fk",
+          "http://127.0.0.1:8080/"
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    restart: always
+    volumes:
+      - ./volumes/kube:/home/higress/.kube:ro
+
+  prometheus:
+    hostname: higress-prometheus
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/prometheus:${PROMETHEUS_TAG}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--web.external-url=/prometheus"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention=6h"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      higress-net:
+        aliases:
+          - prometheus.svc
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:9090/prometheus/-/healthy/"
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    restart: always
+    volumes:
+      - ./volumes/prometheus/config:/etc/prometheus:ro
+      - ./volumes/prometheus/data:/prometheus:rw
+
+  promtail:
+    hostname: higress-promtail
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/promtail:${PROMTAIL_TAG}
+    command:
+      - -config.file=/etc/promtail/promtail.yaml
+    env_file:
+      - ./env/promtail.env
+    depends_on:
+      gateway:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    networks:
+      higress-net:
+        aliases:
+          - promtail.svc
+    healthcheck:
+      disable: true
+      # There is no curl or wget in the promtail image. We need to find another way to perform health check.
+      # test:
+      #   [
+      #     "CMD",
+      #     "curl",
+      #     "-fk",
+      #     "http://127.0.0.1:3101/ready"
+      #   ]
+      # interval: 1s
+      # timeout: 3s
+      # retries: 60
+    restart: always
+    volumes:
+      - ./volumes/promtail/config:/etc/promtail:ro
+      - ./volumes/promtail/data:/var/promtail:rw
+      - ./volumes/gateway/log:/var/log/proxy:ro
+
+  loki:
+    hostname: higress-loki
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/loki:${LOKI_TAG}
+    command:
+      - -config.file=/etc/loki/config/config.yaml
+      - -target=all
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    networks:
+      higress-net:
+        aliases:
+          - loki.svc
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3100/ready"
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    restart: always
+    volumes:
+      - ./volumes/loki/config:/etc/loki/config:ro
+      - ./volumes/loki/data:/var/loki:rw
+
+  grafana:
+    hostname: higress-grafana
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/grafana:${GRAFANA_TAG}
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    networks:
+      higress-net:
+        aliases:
+          - grafana.svc
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000/api/health"
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    restart: always
+    volumes:
+      - ./volumes/grafana/config:/etc/grafana:ro
+      - ./volumes/grafana/lib:/var/lib/grafana:rw
+
+  postcheck:
+    hostname: higress-postcheck
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/runner:${HIGRESS_RUNNER_TAG}
+    command:
+      - ./postcheck.sh
+    networks:
+      - higress-net
+    depends_on:
+      apiserver:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
+      pilot:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+      console:
+        condition: service_healthy
+      # promtail doesn't support health check at the moment.
+      # promtail:
+      #   condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/workspace:ro
