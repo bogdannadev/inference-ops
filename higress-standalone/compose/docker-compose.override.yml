@@ -134,6 +134,44 @@ services:
     volumes:
       - ../rendered:/rendered:ro
 
+    # --auth-enabled: WITHOUT IT THIS API SERVER IS ANONYMOUS.
+    #
+    # Verified 2026-09-03: an unauthenticated GET of the wasmplugins collection
+    # from any container on higress-net returned 200. The key-auth object embeds
+    # every consumer's credential in plaintext, so that was read access to every
+    # customer API key — and write access to all gateway config — for anything
+    # that could reach the network. The client certificates in volumes/api and
+    # the kubeconfig existed and were simply never required.
+    #
+    # Upstream ships the flag off. It is not in the shipped command, so the whole
+    # command has to be restated here; an override cannot append one argument to
+    # a list. Keep this in step with compose/docker-compose.yml on upgrade —
+    # bin/update.sh rewrites that file and will not touch this one.
+    command:
+      - --secure-port
+      - "8443"
+      - --client-ca-file
+      - /etc/api/ca.crt
+      - --tls-cert-file
+      - /etc/api/server.crt
+      - --tls-private-key-file
+      - /etc/api/server.key
+      - --storage
+      - file
+      - --file-root-dir
+      - /opt/data
+      - --nacos-server
+      - ""
+      - --nacos-username
+      - ""
+      - --nacos-password
+      - ""
+      - --nacos-ns-id
+      - higress-system
+      - --nacos-encryption-key-file
+      - /etc/api/nacos.key
+      - --auth-enabled
+
   plugin-server:
     cpuset: "48-55"
     restart: unless-stopped
