@@ -297,3 +297,59 @@ The measurable effect of all of this on command latency is nil — the bot spend
 2–16 ms working and ~100 ms per Telegram round trip. It was worth doing because
 one of the things it replaced was a genuine defect: bulk replies were read **one
 `await` per byte**.
+
+## Memory: POH, FOH and GC settings
+
+The bot logs its own GC shape at startup, so this is measured rather than
+assumed:
+
+```
+gc: server=False concurrent=- datas=1 conserve=- regionSize=1048576
+gc: committed=0MiB available=96MiB pinned=0 latency=Batch
+```
+
+**The Pinned Object Heap is not applicable here, and using it would be wrong.**
+The POH exists for *long-lived* buffers that would otherwise pin a GC region and
+block compaction. The only candidate was `RespConnection`'s 64 KB socket buffer
+— but a connection is opened per command, so that buffer is short-lived, and the
+POH is never compacted: pushing short-lived allocations through it fragments the
+one heap that cannot defragment itself. `PinnedObjectsCount` on this process is
+**0**, so there is no pinning pressure to relieve in the first place. The real
+finding there was that the buffer was freshly allocated on every command; it is
+`ArrayPool`-rented now, which is the correct fix.
+
+**The Frozen Object Heap has no public allocation API.** There is no
+`GC.AllocateArray(frozen: true)` equivalent — the FOH is entirely runtime-managed
+for things like string literals and certain statics. Native AOT already gets this
+benefit: literals are frozen into the image at build time. Nothing to apply.
+
+**GC settings were the part with something real in them**, though not what you'd
+expect:
+
+| | before | after |
+|---|---|---|
+| GC flavor | Workstation | Workstation (already — nothing to win) |
+| memory the GC believes it may use | **1,032,019 MiB** | **96 MiB** |
+| SOH region size | 4 MiB (default) | 1 MiB |
+| background GC thread | yes (`Interactive`) | no (`Batch`) |
+| RSS idle / under load | 14.29 MiB | 14.05 / 16 MiB |
+
+The headline is the third row of the log, not the RSS: with no container limit
+the GC sized itself against the **whole 1 TB machine**. RSS barely moved because
+Native AOT and Workstation GC had already done the real work — what changed is
+that the process is now *bounded*, which on a box running paid inference is the
+part that matters. `mem_limit: 128m` is what makes the GC's own heuristics
+meaningful; the knobs are secondary to it.
+
+Region size at 1 MiB is a documented recommendation for "processes that have
+very small GC heaps", where it cuts the GC's native bookkeeping. Non-concurrent
+GC drops a thread and trades pause time we do not care about — a 100 ms round
+trip dwarfs any pause this heap can produce.
+
+Those three knobs live in `docker-compose.yml`, not in `bot.cs`, because
+`GCRegionSize`, `GCConserveMemory` and friends have **no MSBuild property** —
+environment variables are the only way to set them, and their numeric values are
+**hex**. `latency=Batch` in the log is the confirmation that `gcConcurrent=0`
+took effect; `GCConserveMemory` is not reported by
+`GC.GetConfigurationVariables()`, so it is set but not independently verifiable
+from inside the process.

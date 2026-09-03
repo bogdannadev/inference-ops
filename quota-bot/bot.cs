@@ -53,6 +53,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Runtime;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -341,6 +342,7 @@ sealed class Worker(
         // discoverable: they appear behind the "/" button with descriptions and
         // autocomplete, instead of the operator having to remember them or
         // scroll back to a /help message.
+        LogRuntimeShape();
         await PublishCommandMenuAsync(ct);
 
         await foreach (var update in queue.Reader.ReadAllAsync(ct))
@@ -364,6 +366,34 @@ sealed class Worker(
                 finally { _gate.Release(); }
             }, ct);
         }
+    }
+
+    // What the GC actually decided, once, at startup.
+    //
+    // Worth logging rather than assuming: the runtime default is Workstation GC,
+    // but the Web SDK flips it to Server, and since .NET 9 DATAS is on by
+    // default and starts Server GC at a single heap — so the mode alone does not
+    // tell you the heap count. TotalAvailableMemoryBytes is what the GC believes
+    // it may use, which is the container limit when one is set and the whole
+    // machine when it is not; on a shared inference box that distinction is the
+    // difference between a bounded process and an unbounded one.
+    private void LogRuntimeShape()
+    {
+        var info = GC.GetGCMemoryInfo();
+        var vars = GC.GetConfigurationVariables();
+        string V(string k) => vars.TryGetValue(k, out var v) ? v?.ToString() ?? "-" : "-";
+
+        log.LogInformation(
+            "gc: server={Server} concurrent={Concurrent} datas={Datas} conserve={Conserve} regionSize={RegionSize}",
+            GCSettings.IsServerGC, V("gcConcurrent"), V("GCDynamicAdaptationMode"),
+            V("GCConserveMemory"), V("GCRegionSize"));
+
+        log.LogInformation(
+            "gc: committed={CommittedMiB}MiB available={AvailableMiB}MiB pinned={Pinned} latency={Latency}",
+            info.TotalCommittedBytes / (1024 * 1024),
+            info.TotalAvailableMemoryBytes / (1024 * 1024),
+            info.PinnedObjectsCount,
+            GCSettings.LatencyMode);
     }
 
     private async Task HandleAsync(Update u, CancellationToken ct)
@@ -1197,7 +1227,18 @@ sealed class Ledger(BotConfig cfg)
 sealed class RespConnection(TcpClient client) : IDisposable
 {
     private readonly NetworkStream _s = client.GetStream();
-    private readonly byte[] _buf = new byte[64 * 1024];
+
+    // Rented, not allocated. A connection is opened per command, so this was a
+    // fresh 64 KB array on every /keys, /status and /balance.
+    //
+    // Deliberately NOT GC.AllocateArray(pinned: true). The Pinned Object Heap
+    // exists for LONG-LIVED buffers that would otherwise pin a GC region and
+    // block compaction. This one lives for a single command, and the POH is
+    // never compacted — so pushing short-lived allocations through it fragments
+    // the one heap that cannot defragment itself. Measured PinnedObjectsCount on
+    // this process is 0: there is no pinning pressure here to relieve, and the
+    // socket read pins the buffer only for the duration of the I/O.
+    private readonly byte[] _buf = ArrayPool<byte>.Shared.Rent(64 * 1024);
     private int _len, _pos;
 
     public async ValueTask<object?> CommandAsync(CancellationToken ct, params string[] args)
@@ -1401,7 +1442,23 @@ sealed class RespConnection(TcpClient client) : IDisposable
         _pos += count;
     }
 
-    public void Dispose() { _s.Dispose(); client.Dispose(); }
+    private bool _returned;
+
+    public void Dispose()
+    {
+        // Guarded because returning a rented array twice hands the same buffer
+        // to two callers, and the symptom would be one command reading another
+        // command's bytes — corrupted balances, with nothing in the logs. The
+        // `using` in Ledger already disposes exactly once; this is here so a
+        // later edit cannot quietly turn that into data corruption.
+        if (!_returned)
+        {
+            _returned = true;
+            ArrayPool<byte>.Shared.Return(_buf);
+        }
+        _s.Dispose();
+        client.Dispose();
+    }
 }
 
 // ===========================================================================
