@@ -87,6 +87,40 @@ embed.example.com {
 }
 
 # -----------------------------------------------------------------------------
+# Telegram webhook for quota-bot — infrastructure and access management.
+#
+# A separate hostname on purpose. The paid inference hostname below is the most
+# delicate block in this file, and a control surface that can mint API keys has
+# no business sharing its site config.
+#
+# TWO INDEPENDENT DEFENCES, and both are needed:
+#   - remote_ip pins Telegram's documented source ranges. Telegram warns these
+#     change, so this is a filter, not a guarantee.
+#   - the bot itself verifies X-Telegram-Bot-Api-Secret-Token on every request
+#     regardless of where it came from.
+# The path is long and random for a third reason: it keeps the endpoint out of
+# opportunistic scan logs entirely.
+#
+# Everything that is not a Telegram-sourced POST to that exact path gets a 404 —
+# not a 403, which would confirm the host is running something worth probing.
+# -----------------------------------------------------------------------------
+bot.example.org {
+	tls contact@example.com
+
+	@telegram {
+		remote_ip 149.154.160.0/20 91.108.4.0/22
+		path /tg/REDACTED-ROTATED-PATH
+	}
+	handle @telegram {
+		reverse_proxy quota-bot:8080
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}
+
+# -----------------------------------------------------------------------------
 # Qwen3.8-27B via the Higress gateway — PAID / EXTERNAL consumers
 #
 # Deliberately NOT importing edge_auth: that snippet asserts the single shared
