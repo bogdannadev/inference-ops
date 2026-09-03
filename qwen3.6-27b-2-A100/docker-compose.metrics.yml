@@ -115,6 +115,18 @@ services:
     networks:
       - qwen36-27b-backend
       - edge
+      # higress-net: the Higress control plane (apiserver, pilot) is reachable
+      # only here — the gateway is on `edge`, but the components that decide
+      # what the gateway does are not. Without this, the entire control plane
+      # is unmonitored: config-push latency, xDS rejections and apiserver
+      # request errors are exactly the failures that make the data plane serve
+      # stale or missing routes while every gateway metric still looks fine.
+      #
+      # Prometheus joins them rather than exposing them on `edge`, because
+      # `edge` carries Caddy — an internet-facing process — and the apiserver
+      # accepts unauthenticated requests. Widening the apiserver's reach to the
+      # network with the public front door would be the wrong direction.
+      - higress-net
 
   # ---------------------------------------------------------------------------
   # Node Exporter — host-level hardware telemetry on :9100
@@ -348,6 +360,11 @@ networks:
   # embedder project, hence external.
   edge:
     name: edge
+    external: true
+
+  # Owned by the higress compose project; Prometheus is only ever a guest here.
+  higress-net:
+    name: higress_higress-net
     external: true
 
 volumes:
