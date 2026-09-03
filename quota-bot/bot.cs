@@ -53,6 +53,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -106,6 +107,7 @@ var cfg = new BotConfig(
     RedisPort:       int.Parse(Opt("REDIS_PORT", "6379"), CultureInfo.InvariantCulture),
     PrometheusUrl:   Opt("PROMETHEUS_URL", "http://qwen36-27b-prometheus:9090").TrimEnd('/'),
     PublicBaseUrl:   Opt("PUBLIC_BASE_URL", "https://gateway.example.org").TrimEnd('/'),
+    KubeConfigPath:  Opt("KUBECONFIG_PATH", "/etc/kube/config"),
     ConsumersPath:   Opt("CONSUMERS_PATH", "/data/consumers.conf"),
     AuditPath:       Opt("AUDIT_PATH", "/data/audit.log"),
     ModelId:         Opt("MODEL_ID", "qwen3.8-27b"),
@@ -153,14 +155,34 @@ builder.Services.AddHttpClient("apiserver", c =>
     c.BaseAddress = new Uri(cfg.ApiServerUrl + "/");
     c.Timeout = TimeSpan.FromSeconds(15);
 })
-// The apiserver presents a self-signed certificate whose SAN does not cover the
-// compose alias, and it accepts unauthenticated requests anyway — verified: an
-// anonymous GET of the wasmplugins collection returns 200. Pinning the CA here
-// would be security theatre over an API that has no authentication to protect.
-// The real control is that higress-net is not routable from outside the host.
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+// Client-certificate auth, using the SAME credential the controller and console
+// present — read from the kubeconfig the deployment already writes, rather than
+// copying the cert into this project. Copying would mean a second place to
+// rotate, and a silent 401 the day someone rotates only one of them.
+//
+// Server-cert validation stays off: the apiserver's certificate is self-signed
+// with a SAN that does not cover the compose alias, and the connection never
+// leaves the host's docker network. The authentication that matters here is
+// ours TO it, which the client certificate provides.
+.ConfigurePrimaryHttpMessageHandler(() =>
 {
-    ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    var handler = new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    };
+    if (KubeClientCertificate.TryLoad(cfg.KubeConfigPath, out var cert) && cert is not null)
+    {
+        handler.ClientCertificates.Add(cert);
+        Console.WriteLine($"apiserver client certificate loaded: subject={cert.Subject} notAfter={cert.NotAfter:O}");
+    }
+    else
+    {
+        // Not fatal while the apiserver still allows anonymous access, but it
+        // WILL be the moment --auth-enabled is set, and the failure then is a
+        // 401 on every key write with nothing explaining why.
+        Console.WriteLine($"WARNING: no apiserver client certificate from {cfg.KubeConfigPath} - key writes will fail once the apiserver requires auth");
+    }
+    return handler;
 });
 
 var app = builder.Build();
@@ -789,6 +811,47 @@ sealed class Worker(
 }
 
 // ===========================================================================
+// Reads the client certificate out of the kubeconfig the Higress deployment
+// generates. Deliberately a few lines of string handling rather than a YAML
+// dependency: the two fields are single-line base64 and a YAML parser is a lot
+// of trim-unfriendly reflection to drag into an AOT build for that.
+// ===========================================================================
+static class KubeClientCertificate
+{
+    public static bool TryLoad(string path, out X509Certificate2? cert)
+    {
+        cert = null;
+        try
+        {
+            if (!File.Exists(path)) return false;
+            var certPem = Extract(path, "client-certificate-data:");
+            var keyPem  = Extract(path, "client-key-data:");
+            if (certPem is null || keyPem is null) return false;
+
+            // Round-trip through PKCS#12. On Linux an HttpClient will not use a
+            // certificate created straight from PEM for TLS client auth — the
+            // private key is not associated with it in the way SslStream needs.
+            using var fromPem = X509Certificate2.CreateFromPem(certPem, keyPem);
+            cert = X509CertificateLoader.LoadPkcs12(fromPem.Export(X509ContentType.Pkcs12), null);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static string? Extract(string path, string key)
+    {
+        foreach (var line in File.ReadLines(path))
+        {
+            var t = line.TrimStart();
+            if (!t.StartsWith(key, StringComparison.Ordinal)) continue;
+            var b64 = t[key.Length..].Trim();
+            return b64.Length == 0 ? null : Encoding.UTF8.GetString(Convert.FromBase64String(b64));
+        }
+        return null;
+    }
+}
+
+// ===========================================================================
 // KeyStore — owns consumers.conf and the live key-auth object.
 //
 // consumers.conf is gitignored and always has been, so the bot owning it breaks
@@ -1030,7 +1093,8 @@ sealed class RespConnection(TcpClient client) : IDisposable
 // ===========================================================================
 sealed record BotConfig(
     string BotToken, string WebhookSecret, string WebhookPath, HashSet<long> AllowedIds,
-    string AdminCredential, string GatewayUrl, string ApiServerUrl, string RedisHost, int RedisPort,
+    string AdminCredential, string GatewayUrl, string ApiServerUrl, string KubeConfigPath,
+    string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int OutputLimit);
 
