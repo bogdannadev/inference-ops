@@ -37,6 +37,7 @@ services:
       - APISERVER_URL=https://apiserver.svc:8443
       - REDIS_HOST=higress-redis
       - PROMETHEUS_URL=http://qwen36-27b-prometheus:9090
+      - KUBECONFIG_PATH=/etc/kube/config
       - CONSUMERS_PATH=/data/consumers.conf
       - AUDIT_PATH=/var/lib/quota-bot/audit.log
 
@@ -60,6 +61,11 @@ services:
       - ../higress-standalone/consumers.conf:/data/consumers.conf
       # Append-only record of every access and balance change the bot makes.
       - ./data:/var/lib/quota-bot
+      # The apiserver client certificate, read from the kubeconfig the Higress
+      # deployment already generates. Mounted rather than copied so there is one
+      # place to rotate, not two. World-readable by design in that tree; the key
+      # material never leaves the host.
+      - ../higress-standalone/compose/volumes/kube/config:/etc/kube/config:ro
 
     healthcheck:
       test: ["CMD", "/app/bot", "--healthcheck"]

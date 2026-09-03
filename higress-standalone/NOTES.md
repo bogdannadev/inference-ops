@@ -84,6 +84,34 @@ stale-cache fix (#4596) and an `ai-proxy` hunyuan SSE bounds guard (#4611).
 **None touch key-auth, ai-quota, ai-statistics or ai-token-ratelimit.** Stay on
 the digest. Revisit when v2.2.5 ships.
 
+## The apiserver was anonymous — FIXED 2026-09-03
+
+It answered unauthenticated requests from any container on `higress-net`. An
+anonymous `GET` of the wasmplugins collection returned **200**, and the
+`key-auth` object embeds every consumer's credential in plaintext — so that was
+read access to every customer API key, and write access to all gateway config,
+for anything that could reach that network. Prometheus and quota-bot both later
+joined it.
+
+The client certificates in `compose/volumes/api/` and the console's kubeconfig
+existed the whole time; they were simply never required. Upstream ships
+`--auth-enabled` off, and the shipped command does not include it.
+
+Fixed in `compose/docker-compose.override.yml` by restating the apiserver
+command with `--auth-enabled` appended — an override cannot add one argument to
+a list, so the whole command is repeated there. **Keep it in step with
+`compose/docker-compose.yml` on upgrade**: `bin/update.sh` rewrites that file
+and never touches the override.
+
+Anonymous now returns **403**; the client certificate returns 200. Everything
+that talks to the apiserver authenticates with the same cert
+(`O=system:masters, CN=higress`), including quota-bot, which reads it from the
+world-readable kubeconfig rather than keeping a second copy to rotate.
+
+Note what this does and does not buy: the credential is a cluster-admin cert
+shared by every component. It closes anonymous access, which was the gaping
+hole, but it is not per-component least privilege.
+
 ## A WasmPlugin whose module cannot be fetched FAILS OPEN
 
 Found the hard way on 2026-09-03, standing up the compose deployment.
