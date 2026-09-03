@@ -145,13 +145,61 @@ services:
     cpuset: "48-55"
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # The ai-quota ledger. Carried over from the retired all-in-one deployment
+  # rather than reprovisioned: the volume holds the per-consumer balances, and
+  # ai-quota has no way to rebuild them.
+  #
+  # A service the upstream compose file does not define, added here so this
+  # project owns it — otherwise the ledger container belongs to a compose
+  # project that no longer has a compose file, and nothing manages its
+  # lifecycle.
+  #
+  # appendonly + everysec, and noeviction: a balance evicted under memory
+  # pressure would silently become "no quota recorded", which ai-quota reads as
+  # zero. Never let this be a cache.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: docker.io/redis:7
+    container_name: higress-redis
+    cpuset: "48-55"
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save ""
+      --maxmemory-policy noeviction
+    expose:
+      - "6379"
+    networks:
+      higressint:
+        aliases:
+          - higress-redis
+    volumes:
+      - quota-ledger:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
 # -----------------------------------------------------------------------------
-# Both networks are created and owned by other compose projects on this host,
-# so they are declared external here. `edge` carries the router, Caddy and
-# Prometheus; `higressint` carries the quota ledger.
+# `edge` and `higressint` are created and owned by other compose projects on
+# this host, so they are declared external. `edge` carries the router, Caddy and
+# Prometheus; `higressint` is the gateway↔ledger link.
 # -----------------------------------------------------------------------------
 networks:
   edge:
     external: true
   higressint:
     external: true
+
+# The ledger volume, created by the all-in-one deployment as
+# `higress-quota-ledger` and adopted here by its real name. External so that a
+# `docker compose down` on this project can never take the balances with it —
+# removing it has to be a deliberate `docker volume rm`.
+volumes:
+  quota-ledger:
+    external: true
+    name: higress-quota-ledger

@@ -124,7 +124,11 @@ gateway.example.org {
 	# without this it would be publicly visible. Everything else dies here
 	# rather than relying on Higress's own route allowlist alone.
 	handle /v1/* {
-		reverse_proxy higress:8080 {
+		# :80, not :8080. The all-in-one image served the gateway on 8080; the
+		# official standalone gateway image listens on 80. The `higress` name
+		# still resolves, because the gateway container claims it as a network
+		# alias on `edge` (compose/.env: GATEWAY_EDGE_ALIAS).
+		reverse_proxy higress:80 {
 			# key-auth ADDS X-Mse-Consumer rather than replacing it, so a
 			# client-supplied value arrives alongside the authenticated one.
 			# Measured: the real identity wins — but by Envoy's duplicate-header
