@@ -74,6 +74,51 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ---------------------------------------------------------------------------
+  # Cloudflare Tunnel connector.
+  #
+  # WHY THIS EXISTS, and it is not a preference: Telegram's servers cannot open
+  # a connection to this host. Measured 2026-09-03 — Telegram reported
+  # "Connection timed out" continuously while its requests never reached Caddy
+  # at all (no access-log entry, flat request counter), yet inbound from a US
+  # checker and from Let's Encrypt both worked. Outbound is filtered too:
+  # 149.154.167.220:443 connects, 91.108.4.1:443 does not. The filtering is
+  # upstream of this box.
+  #
+  # cloudflared dials OUT to Cloudflare's edge, so Telegram delivers to a
+  # Cloudflare hostname and the update is pushed down an outbound-initiated
+  # connection. The webhook design survives intact — push delivery, secret
+  # token, no polling — because nothing has to dial in.
+  #
+  # --protocol http2 rather than the default QUIC: TCP 7844 to the argotunnel
+  # edges is verified reachable here, UDP is not, and a connector that silently
+  # falls back is a connector whose failure mode you learn about during an
+  # incident.
+  # ---------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: quota-bot-tunnel
+    # Behind a profile so a plain `docker compose up -d` cannot start it with an
+    # empty token and crash-loop. Enable once CLOUDFLARE_TUNNEL_TOKEN is set:
+    #   COMPOSE_PROFILES=tunnel docker compose up -d
+    profiles: [ "tunnel" ]
+    cpuset: "48-55"
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - .env
+    networks:
+      # Only needs to reach quota-bot; it has no business on higressint or
+      # higress-net, where the unauthenticated apiserver lives.
+      edge:
+    depends_on:
+      - quota-bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 # -----------------------------------------------------------------------------
 # All three networks are owned by other compose projects. Declared external so
 # this project can never create or remove them.

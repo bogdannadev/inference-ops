@@ -228,12 +228,19 @@ sealed class Worker(
     private readonly HashSet<long> _seen = [];
     private readonly Queue<long> _seenOrder = new();
 
-    // Pending destructive operations awaiting a literal CONFIRM. In memory on
-    // purpose: a restart drops them, which fails in the safe direction.
-    private readonly ConcurrentDictionary<long, Pending> _pending = new();
+    // Destructive operations awaiting confirmation, keyed by an opaque token
+    // that travels in the button's callback_data. In memory on purpose: a
+    // restart drops them, which fails in the safe direction.
+    private readonly ConcurrentDictionary<string, Pending> _pending = new();
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        // Publish the command menu to Telegram. This is what makes commands
+        // discoverable: they appear behind the "/" button with descriptions and
+        // autocomplete, instead of the operator having to remember them or
+        // scroll back to a /help message.
+        await PublishCommandMenuAsync(ct);
+
         await foreach (var update in queue.Reader.ReadAllAsync(ct))
         {
             try { await HandleAsync(update, ct); }
@@ -244,6 +251,8 @@ sealed class Worker(
     private async Task HandleAsync(Update u, CancellationToken ct)
     {
         if (!MarkSeen(u.UpdateId)) { log.LogInformation("ignored duplicate update {Id}", u.UpdateId); return; }
+
+        if (u.CallbackQuery is { } cb) { await HandleCallbackAsync(cb, ct); return; }
 
         var msg = u.Message;
         if (msg?.Text is not { Length: > 0 } text || msg.From is null || msg.Chat is null) return;
@@ -264,22 +273,43 @@ sealed class Worker(
             return;
         }
 
+        await TypingAsync(msg.Chat.Id, ct);
         var reply = await DispatchAsync(msg.From.Id, text.Trim(), ct);
-        if (reply is { Length: > 0 }) await SendAsync(msg.Chat.Id, reply, ct);
+        if (reply.Text is { Length: > 0 }) await SendAsync(msg.Chat.Id, reply, ct);
     }
 
-    private async Task<string> DispatchAsync(long userId, string text, CancellationToken ct)
+    // A tapped button. Buttons are better than a typed CONFIRM for a
+    // destructive action: one tap, nothing to mistype, and the prompt cannot be
+    // answered by accident three messages later.
+    private async Task HandleCallbackAsync(CallbackQuery cb, CancellationToken ct)
     {
-        // A pending CONFIRM consumes the next message from that user outright.
-        if (_pending.TryGetValue(userId, out var p))
+        var chatId = cb.Message?.Chat?.Id;
+        if (cb.From is null || chatId is null) return;
+        if (!cfg.AllowedIds.Contains(cb.From.Id))
         {
-            _pending.TryRemove(userId, out _);
-            if (DateTimeOffset.UtcNow > p.Expires) return "Confirmation expired. Nothing was changed.";
-            if (!string.Equals(text, "CONFIRM", StringComparison.Ordinal))
-                return "Cancelled. Nothing was changed.";
-            return await p.Run(ct);
+            log.LogWarning("DENIED callback from user {UserId}", cb.From.Id);
+            return;
         }
 
+        var data = cb.Data ?? "";
+        var token = data.Length > 3 ? data[3..] : "";
+        _pending.TryRemove(token, out var p);
+
+        string text;
+        if (p is null) text = "That confirmation is no longer valid. Run the command again.";
+        // The token is bound to the user who armed it, so one operator cannot
+        // confirm another's pending destructive action from a shared screen.
+        else if (p.UserId != cb.From.Id) text = "That confirmation belongs to someone else.";
+        else if (DateTimeOffset.UtcNow > p.Expires) text = "Confirmation expired. Nothing was changed.";
+        else if (!data.StartsWith("ok:", StringComparison.Ordinal)) text = "Cancelled. Nothing was changed.";
+        else text = await p.Run(ct);
+
+        await AnswerCallbackAsync(cb.Id, ct);
+        await SendAsync(chatId.Value, new Reply(text), ct);
+    }
+
+    private async Task<Reply> DispatchAsync(long userId, string text, CancellationToken ct)
+    {
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var cmd = parts[0].Split('@')[0].ToLowerInvariant();
         var a1 = parts.Length > 1 ? parts[1] : null;
@@ -287,80 +317,93 @@ sealed class Worker(
 
         return cmd switch
         {
-            "/start" or "/help" => Help(),
-            "/status"     => await StatusAsync(ct),
-            "/keys"       => await KeysAsync(ct),
-            "/balance"    => await BalanceAsync(a1, ct),
-            "/usage"      => await UsageAsync(a1 ?? "24h", ct),
-            "/opencode"   => a1 is null ? "Usage: /opencode <name>" : await OpenCodeAsync(a1, ct),
-            "/newkey"     => a1 is null ? "Usage: /newkey <name> [quota]" : await NewKeyAsync(a1, a2, ct),
-            "/topup"      => (a1 is null || a2 is null) ? "Usage: /topup <name> <tokens>" : await TopUpAsync(a1, a2, ct),
-            "/setquota"   => (a1 is null || a2 is null) ? "Usage: /setquota <name> <tokens>" : Arm(userId, a1, a2, PendingKind.SetQuota, ct),
-            "/clearquota" => a1 is null ? "Usage: /clearquota <name>" : Arm(userId, a1, "0", PendingKind.SetQuota, ct),
-            "/revoke"     => a1 is null ? "Usage: /revoke <name>" : Arm(userId, a1, null, PendingKind.Revoke, ct),
-            _             => $"Unknown command {Head(cmd)}. Try /help."
+            "/start" or "/help" => new Reply(Help()),
+            "/status"     => new Reply(await StatusAsync(ct)),
+            "/keys"       => new Reply(await KeysAsync(ct)),
+            "/balance"    => new Reply(await BalanceAsync(a1, ct)),
+            "/usage"      => new Reply(await UsageAsync(a1 ?? "24h", ct)),
+            "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
+            "/newkey"     => new Reply(a1 is null ? Usage("/newkey &lt;name&gt; [quota]", "/newkey acme 1000000") : await NewKeyAsync(a1, a2, ct)),
+            "/topup"      => new Reply((a1 is null || a2 is null) ? Usage("/topup &lt;name&gt; &lt;tokens&gt;", "/topup acme 500000") : await TopUpAsync(a1, a2, ct)),
+            "/setquota"   => (a1 is null || a2 is null) ? new Reply(Usage("/setquota &lt;name&gt; &lt;tokens&gt;", "/setquota acme 1000000")) : Arm(userId, a1, a2, PendingKind.SetQuota),
+            "/clearquota" => a1 is null ? new Reply(Usage("/clearquota &lt;name&gt;", "/clearquota acme")) : Arm(userId, a1, "0", PendingKind.SetQuota),
+            "/revoke"     => a1 is null ? new Reply(Usage("/revoke &lt;name&gt;", "/revoke acme")) : Arm(userId, a1, null, PendingKind.Revoke),
+            _             => new Reply($"Unknown command <code>{Esc(Head(cmd))}</code>.\n\nSend /help to see what this bot can do.")
         };
     }
 
-    private static string Help() => """
-        Access management
+    private static string Help() =>
+        """
+        <b>Gateway access management</b>
 
-        /status               infrastructure health
-        /keys                 consumers and balances
-        /balance [name]       one or all
-        /usage [24h|7d]       tokens and requests
+        <b>Look</b>
+        /status — infrastructure health
+        /keys — consumers and balances
+        /balance [name] — one or all
+        /usage [1h|24h|7d|30d] — tokens and requests
 
-        /newkey <name> [n]    create a key, seed quota, return OpenCode config
-        /opencode <name>      re-emit the OpenCode config for a consumer
-        /revoke <name>        delete a key and its ledger entry (confirm)
+        <b>Grant</b>
+        /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
+        /opencode &lt;name&gt; — re-send an existing consumer's config
+        /topup &lt;name&gt; &lt;tokens&gt; — add to a balance
 
-        /topup <name> <n>     add tokens
-        /setquota <name> <n>  overwrite the balance (confirm)
-        /clearquota <name>    set the balance to zero (confirm)
+        <b>Destructive — these ask first</b>
+        /setquota &lt;name&gt; &lt;tokens&gt; — <i>replaces</i> a balance
+        /clearquota &lt;name&gt; — sets a balance to zero
+        /revoke &lt;name&gt; — deletes a key and its balance
+
+        Credentials are shown once, by /newkey. /keys lists names only.
         """;
 
     // ---- reads ------------------------------------------------------------
 
     private async Task<string> StatusAsync(CancellationToken ct)
     {
-        var sb = new StringBuilder("Infrastructure\n\n");
-
         var gw = await TryAsync(async () =>
         {
             using var r = await http.CreateClient("gateway").GetAsync("v1/models", ct);
-            return r.IsSuccessStatusCode ? "reachable" : $"HTTP {(int)r.StatusCode}";
+            return r.IsSuccessStatusCode ? "ok" : $"HTTP {(int)r.StatusCode}";
         });
-        sb.Append("gateway   ").Append(gw).Append('\n');
-
         var led = await TryAsync(async () => $"{(await ledger.ListAsync(ct)).Count} consumers");
-        sb.Append("ledger    ").Append(led).Append('\n');
-
         var prom = await TryAsync(async () =>
         {
             using var r = await http.CreateClient("prometheus").GetAsync("-/healthy", ct);
-            return r.IsSuccessStatusCode ? "healthy" : $"HTTP {(int)r.StatusCode}";
+            return r.IsSuccessStatusCode ? "ok" : $"HTTP {(int)r.StatusCode}";
         });
-        sb.Append("prometheus ").Append(prom).Append('\n');
+        var api = await TryAsync(async () => $"{(await keys.ReadConsumersAsync(ct)).Count} keys");
 
-        var api = await TryAsync(async () => $"{(await keys.ReadConsumersAsync(ct)).Count} entries in key-auth");
-        sb.Append("key-auth  ").Append(api);
-        return sb.ToString();
+        string[] rows =
+        [
+            $"{"gateway",-12}{gw}",
+            $"{"ledger",-12}{led}",
+            $"{"prometheus",-12}{prom}",
+            $"{"key-auth",-12}{api}"
+        ];
+        var body = Table("<b>Infrastructure</b>", rows);
+
+        // A failed ledger is not a degraded feature, it is an outage on the
+        // billable routes: ai-quota has no fail-open, so every chat request 403s.
+        if (led.StartsWith("FAILED", StringComparison.Ordinal))
+            body += "\n\u26a0\ufe0f <b>Ledger unreachable</b> \u2014 ai-quota has no fail-open, so billable routes are returning 403 right now.";
+        return body;
     }
 
     private async Task<string> KeysAsync(CancellationToken ct)
     {
         var balances = await ledger.ListAsync(ct);
         var consumers = await keys.ReadConsumersAsync(ct);
-        if (consumers.Count == 0) return "No consumers configured.";
+        if (consumers.Count == 0)
+            return "No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.";
 
-        var sb = new StringBuilder("Consumers\n\n");
-        foreach (var name in consumers.Keys.OrderBy(k => k, StringComparer.Ordinal))
+        var rows = consumers.Keys.OrderBy(k => k, StringComparer.Ordinal).Select(name =>
         {
-            var bal = balances.TryGetValue(name, out var b) ? b.ToString("N0", CultureInfo.InvariantCulture) : "not seeded";
-            sb.Append(name.PadRight(16)).Append(bal).Append('\n');
-        }
-        sb.Append("\nCredentials are not shown here. Use /opencode <name>.");
-        return sb.ToString();
+            var bal = balances.TryGetValue(name, out var b)
+                ? b.ToString("N0", CultureInfo.InvariantCulture)
+                : "not seeded";
+            return $"{name,-16}{bal,14}";
+        });
+        return Table($"<b>Consumers</b> ({consumers.Count})", rows)
+             + "\nCredentials are not shown. Use /opencode &lt;name&gt;.";
     }
 
     private async Task<string> BalanceAsync(string? name, CancellationToken ct)
@@ -368,46 +411,48 @@ sealed class Worker(
         if (name is not null)
         {
             var q = await QuotaGetAsync(name, ct);
-            return q is null ? $"{name}: no balance recorded (never seeded, or Redis is unreachable)"
-                             : $"{name}: {q.Value:N0} tokens";
+            // Three different causes, one 403 from ai-quota. Say so rather than
+            // asserting one of them.
+            return q is null
+                ? $"<b>{Esc(name)}</b> has no balance recorded.\n\nEither it was never seeded, or the ledger is unreachable. "
+                  + $"Seed it with <code>/topup {Esc(name)} 1000000</code>."
+                : $"<b>{Esc(name)}</b>\n<code>{q.Value:N0}</code> tokens remaining";
         }
         var all = await ledger.ListAsync(ct);
-        if (all.Count == 0) return "No balances recorded.";
-        var sb = new StringBuilder("Balances\n\n");
-        foreach (var (k, v) in all.OrderBy(x => x.Key, StringComparer.Ordinal))
-            sb.Append(k.PadRight(16)).Append(v.ToString("N0", CultureInfo.InvariantCulture)).Append('\n');
-        return sb.ToString();
+        if (all.Count == 0) return "No balances recorded yet.";
+        var rows = all.OrderBy(x => x.Key, StringComparer.Ordinal)
+                      .Select(x => $"{x.Key,-16}{x.Value,14:N0}");
+        return Table("<b>Balances</b>", rows);
     }
 
     private async Task<string> UsageAsync(string window, CancellationToken ct)
     {
-        if (window is not ("24h" or "7d" or "1h" or "30d")) return "Window must be one of 1h, 24h, 7d, 30d.";
+        if (window is not ("24h" or "7d" or "1h" or "30d"))
+            return $"Unknown window <code>{Esc(window)}</code>.\n\nUse one of <code>1h</code>, <code>24h</code>, <code>7d</code>, <code>30d</code>.";
+
         var tokens = await PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_total_token[{window}]))", ct);
         var reqs   = await PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[{window}]))", ct);
-        if (tokens.Count == 0) return $"No usage recorded in the last {window}.";
+        if (tokens.Count == 0) return $"No usage in the last {window}.";
 
-        var sb = new StringBuilder($"Usage, last {window}\n\n");
-        foreach (var (k, v) in tokens.OrderByDescending(x => x.Value))
-        {
-            var r = reqs.TryGetValue(k, out var rv) ? rv : 0;
-            sb.Append(k.PadRight(16))
-              .Append(v.ToString("N0", CultureInfo.InvariantCulture)).Append(" tok  ")
-              .Append(r.ToString("N0", CultureInfo.InvariantCulture)).Append(" req\n");
-        }
-        sb.Append("\nCounters reset when the gateway restarts; balances are the billing record.");
-        return sb.ToString();
+        var rows = tokens.OrderByDescending(x => x.Value).Select(x =>
+            $"{x.Key,-16}{x.Value,12:N0} tok{(reqs.TryGetValue(x.Key, out var r) ? r : 0),8:N0} req");
+        return Table($"<b>Usage</b> \u2014 last {window}", rows)
+             + "\n<i>Counters reset when the gateway restarts. Balances are the billing record.</i>";
     }
 
     // ---- key lifecycle ----------------------------------------------------
 
     private async Task<string> NewKeyAsync(string name, string? quotaArg, CancellationToken ct)
     {
-        if (!IsValidName(name)) return "Name must be 1-32 chars of a-z, 0-9, - or _.";
+        if (!IsValidName(name))
+            return $"<code>{Esc(name)}</code> is not a valid name.\n\nUse 1\u201332 characters: lowercase letters, digits, <code>-</code> or <code>_</code>.";
         var existing = await keys.ReadConsumersAsync(ct);
-        if (existing.ContainsKey(name)) return $"{name} already exists. Use /revoke first, or /opencode to re-read its config.";
+        if (existing.ContainsKey(name))
+            return $"<b>{Esc(name)}</b> already exists.\n\nUse <code>/opencode {Esc(name)}</code> to re-send its config, or <code>/revoke {Esc(name)}</code> to replace it.";
 
         var quota = 1_000_000L;
-        if (quotaArg is not null && !TryParseTokens(quotaArg, out quota)) return "Quota must be a positive whole number.";
+        if (quotaArg is not null && !TryParseTokens(quotaArg, out quota))
+            return $"<code>{Esc(quotaArg)}</code> is not a token count.\n\nGive a whole number, like <code>1000000</code>.";
 
         var credential = "Bearer sk-" + Base62(32);
         await keys.AddAsync(name, credential, ct);
@@ -418,15 +463,22 @@ sealed class Worker(
         await QuotaSetAsync(name, quota, ct);
         await AuditAsync($"newkey name={name} quota={quota}", ct);
 
-        return $"Created {name} with {quota:N0} tokens.\n\nOpenCode config — this credential is shown once:\n\n{OpenCodeJson(credential)}";
+        // Tell them it is shown once BEFORE the block, so the warning is not
+        // below the fold on a phone.
+        return $"Created <b>{Esc(name)}</b> with <code>{quota:N0}</code> tokens.\n\n"
+             + "\u26a0\ufe0f <b>This credential is shown once.</b> Tap the block to copy it.\n\n"
+             + $"<pre>{Esc(OpenCodeJson(credential))}</pre>\n"
+             + $"Save as <code>~/.config/opencode/opencode.json</code>.";
     }
 
     private async Task<string> OpenCodeAsync(string name, CancellationToken ct)
     {
         var consumers = await keys.ReadConsumersAsync(ct);
-        if (!consumers.TryGetValue(name, out var credential)) return $"No consumer named {name}.";
+        if (!consumers.TryGetValue(name, out var credential))
+            return $"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.";
         await AuditAsync($"opencode name={name}", ct);
-        return $"OpenCode config for {name}:\n\n{OpenCodeJson(credential)}";
+        return $"<b>{Esc(name)}</b> \u2014 OpenCode config\n\n<pre>{Esc(OpenCodeJson(credential))}</pre>\n"
+             + $"Save as <code>~/.config/opencode/opencode.json</code>.";
     }
 
     private string OpenCodeJson(string credential)
@@ -472,53 +524,77 @@ sealed class Worker(
         return doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
-    private string Arm(long userId, string name, string? amount, PendingKind kind, CancellationToken _)
+    private Reply Arm(long userId, string name, string? amount, PendingKind kind)
     {
-        var expires = DateTimeOffset.UtcNow.AddSeconds(60);
+        var expires = DateTimeOffset.UtcNow.AddSeconds(120);
+        var token = Base62(16);
+        string prompt;
+
         switch (kind)
         {
             case PendingKind.SetQuota:
-                if (amount is null || !TryParseTokens(amount, out var target)) return "Amount must be a whole number of tokens.";
-                _pending[userId] = new Pending(expires, async ct =>
+                if (amount is null || !TryParseTokens(amount, out var target))
+                    return new Reply("Amount must be a whole number of tokens, like <code>1000000</code>.");
+                _pending[token] = new Pending(userId, expires, async ct =>
                 {
                     var before = await QuotaGetAsync(name, ct);
                     await QuotaSetAsync(name, target, ct);
                     await AuditAsync($"setquota name={name} from={before?.ToString(CultureInfo.InvariantCulture) ?? "none"} to={target}", ct);
-                    return $"{name}: balance set to {target:N0} (was {before?.ToString("N0", CultureInfo.InvariantCulture) ?? "unset"}).";
+                    return $"<b>{Esc(name)}</b> balance set to <code>{target:N0}</code> (was {before?.ToString("N0", CultureInfo.InvariantCulture) ?? "unset"}).";
                 });
-                return $"This OVERWRITES {name}'s balance with {target:N0} tokens — it does not add to it.\nReply CONFIRM within 60s to apply.";
+                // Say what it REPLACES, not just what it sets. The whole reason
+                // this needs confirming is that people reach for it expecting
+                // /topup's additive behaviour.
+                prompt = $"<b>Overwrite {Esc(name)}\u2019s balance?</b>\n\n"
+                       + $"This <b>replaces</b> the balance with <code>{target:N0}</code> tokens. It does not add to it.\n"
+                       + $"Use /topup to add.";
+                break;
 
             case PendingKind.Revoke:
-                _pending[userId] = new Pending(expires, async ct =>
+                _pending[token] = new Pending(userId, expires, async ct =>
                 {
-                    if (!await keys.RemoveAsync(name, ct)) return $"No consumer named {name}.";
+                    if (!await keys.RemoveAsync(name, ct)) return $"No consumer named <b>{Esc(name)}</b>.";
                     await ledger.DeleteAsync(name, ct);
                     await AuditAsync($"revoke name={name}", ct);
-                    return $"Revoked {name}. Its key no longer authenticates and its ledger entry is gone.";
+                    return $"Revoked <b>{Esc(name)}</b>. The key no longer authenticates and the balance is gone.";
                 });
-                return $"This permanently revokes {name}'s key and deletes its balance.\nReply CONFIRM within 60s to apply.";
+                prompt = $"<b>Revoke {Esc(name)}?</b>\n\n"
+                       + "Their key stops working immediately and their balance is deleted. "
+                       + "This cannot be undone \u2014 a new key would be a different credential.";
+                break;
 
             default:
-                return "Unsupported operation.";
+                return new Reply("Unsupported operation.");
         }
+
+        var keyboard = new InlineKeyboardMarkup([[
+            new InlineKeyboardButton(kind == PendingKind.Revoke ? "Revoke" : "Overwrite", "ok:" + token),
+            new InlineKeyboardButton("Cancel", "no:" + token)
+        ]]);
+        return new Reply(prompt, keyboard);
     }
 
     private async Task<string> TopUpAsync(string name, string amount, CancellationToken ct)
     {
-        if (!TryParseTokens(amount, out var delta)) return "Amount must be a positive whole number of tokens.";
+        if (!TryParseTokens(amount, out var delta))
+            return $"<code>{Esc(amount)}</code> is not a token count.\n\nGive a whole number, like <code>500000</code>.";
         var consumers = await keys.ReadConsumersAsync(ct);
-        if (!consumers.ContainsKey(name)) return $"No consumer named {name}.";
+        if (!consumers.ContainsKey(name))
+            return $"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.";
 
         var body = new FormUrlEncodedContent([
             new KeyValuePair<string, string>("consumer", name),
             new KeyValuePair<string, string>("value", delta.ToString(CultureInfo.InvariantCulture))
         ]);
         using var r = await http.CreateClient("gateway").PostAsync("v1/chat/completions/quota/delta", body, ct);
-        if (!r.IsSuccessStatusCode) return $"Top-up failed: HTTP {(int)r.StatusCode}.";
+        if (!r.IsSuccessStatusCode)
+            return $"Top-up failed \u2014 the gateway returned HTTP {(int)r.StatusCode}.\n\nRun /status to check the ledger.";
 
         var now = await QuotaGetAsync(name, ct);
         await AuditAsync($"topup name={name} delta={delta}", ct);
-        return $"{name}: +{delta:N0}, balance now {now?.ToString("N0", CultureInfo.InvariantCulture) ?? "unknown"}.";
+        // Echo the resulting balance, not just the delta: after an overdraft the
+        // consumer can still be negative and "+500,000" alone reads as fixed.
+        return $"<b>{Esc(name)}</b>  +{delta:N0}\n\nBalance now <code>{now?.ToString("N0", CultureInfo.InvariantCulture) ?? "unknown"}</code>.";
     }
 
     // ---- upstream calls ---------------------------------------------------
@@ -561,13 +637,16 @@ sealed class Worker(
         return result;
     }
 
-    private async Task SendAsync(long chatId, string text, CancellationToken ct)
+    private async Task SendAsync(long chatId, Reply reply, CancellationToken ct)
     {
         // Telegram caps a message at 4096 characters. Chunk on line boundaries so
         // a long /keys listing does not lose its last consumer to a hard cut.
-        foreach (var chunk in Chunk(text, 3800))
+        // The keyboard rides on the final chunk, where the question is.
+        var chunks = Chunk(reply.Text, 3500).ToList();
+        for (var i = 0; i < chunks.Count; i++)
         {
-            var payload = new SendMessage(chatId, chunk);
+            var last = i == chunks.Count - 1;
+            var payload = new SendMessage(chatId, chunks[i], "HTML", last ? reply.Keyboard : null);
             using var content = new StringContent(
                 JsonSerializer.Serialize(payload, BotJson.Default.SendMessage), Encoding.UTF8);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -576,6 +655,64 @@ sealed class Worker(
                 log.LogError("sendMessage failed: HTTP {Code} {Body}",
                     (int)r.StatusCode, await r.Content.ReadAsStringAsync(ct));
         }
+    }
+
+    // Every command here does network I/O, some of it several round trips.
+    // Without this the chat sits silent and the operator retypes the command.
+    private async Task TypingAsync(long chatId, CancellationToken ct)
+    {
+        try
+        {
+            using var content = new StringContent(
+                JsonSerializer.Serialize(new ChatAction(chatId, "typing"), BotJson.Default.ChatAction), Encoding.UTF8);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var _ = await http.CreateClient("telegram").PostAsync("sendChatAction", content, ct);
+        }
+        catch (Exception ex) { log.LogDebug(ex, "sendChatAction failed"); }
+    }
+
+    // Clears the button's loading spinner. Without it the client shows a
+    // progress ring on the tapped button for several seconds.
+    private async Task AnswerCallbackAsync(string? id, CancellationToken ct)
+    {
+        if (id is null) return;
+        try
+        {
+            using var content = new StringContent(
+                JsonSerializer.Serialize(new AnswerCallbackQuery(id), BotJson.Default.AnswerCallbackQuery), Encoding.UTF8);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var _ = await http.CreateClient("telegram").PostAsync("answerCallbackQuery", content, ct);
+        }
+        catch (Exception ex) { log.LogDebug(ex, "answerCallbackQuery failed"); }
+    }
+
+    private async Task PublishCommandMenuAsync(CancellationToken ct)
+    {
+        // Ordered by how often they are reached for, not alphabetically:
+        // Telegram shows this list verbatim.
+        BotCommand[] menu =
+        [
+            new("status",     "Infrastructure health"),
+            new("keys",       "Consumers and their balances"),
+            new("balance",    "Balance for one consumer or all"),
+            new("usage",      "Tokens and requests over a window"),
+            new("topup",      "Add tokens to a consumer"),
+            new("newkey",     "Create a key and return its OpenCode config"),
+            new("opencode",   "Re-send a consumer's OpenCode config"),
+            new("setquota",   "Overwrite a balance (asks to confirm)"),
+            new("clearquota", "Set a balance to zero (asks to confirm)"),
+            new("revoke",     "Delete a key and its balance (asks to confirm)"),
+            new("help",       "Show all commands")
+        ];
+        try
+        {
+            using var content = new StringContent(
+                JsonSerializer.Serialize(new SetMyCommands(menu), BotJson.Default.SetMyCommands), Encoding.UTF8);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var r = await http.CreateClient("telegram").PostAsync("setMyCommands", content, ct);
+            log.LogInformation("published command menu: HTTP {Code}", (int)r.StatusCode);
+        }
+        catch (Exception ex) { log.LogWarning(ex, "could not publish command menu"); }
     }
 
     private async Task AuditAsync(string line, CancellationToken ct)
@@ -620,7 +757,25 @@ sealed class Worker(
     private static bool TryParseTokens(string s, out long v) =>
         long.TryParse(s.Replace("_", "").Replace(",", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out v) && v >= 0;
 
-    private static string Head(string s) => s.Length <= 40 ? s : s[..40] + "…";
+    private static string Head(string s) => s.Length <= 40 ? s : s[..40] + "\u2026";
+
+    // HTML parse_mode needs exactly three characters escaped. Consumer names
+    // and upstream error strings both reach the wire, and one stray '<' makes
+    // Telegram reject the entire message with a 400.
+    private static string Esc(string s) =>
+        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+    // One shape for every usage error: what it takes, then a real example.
+    // "Usage: /topup <name> <tokens>" alone still leaves people guessing
+    // whether tokens are thousands or millions.
+    private static string Usage(string form, string example) =>
+        $"<b>Usage</b>\n<code>{form}</code>\n\n<b>Example</b>\n<code>{Esc(example)}</code>";
+
+    // Telegram renders message text in a PROPORTIONAL font, so space-padded
+    // columns do not line up — they look ragged on every client. A <pre> block
+    // is the only way to get a real table, and it also gets tap-to-copy.
+    private static string Table(string header, IEnumerable<string> rows) =>
+        $"{header}\n<pre>" + string.Join("\n", rows.Select(Esc)) + "</pre>";
 
     private static string Base62(int len)
     {
@@ -880,12 +1035,16 @@ sealed record BotConfig(
     string ModelId, int ContextLimit, int OutputLimit);
 
 enum PendingKind { SetQuota, Revoke }
-sealed record Pending(DateTimeOffset Expires, Func<CancellationToken, Task<string>> Run);
+sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<string>> Run);
+
+// A command's answer: text plus an optional inline keyboard.
+sealed record Reply(string Text, InlineKeyboardMarkup? Keyboard = null);
 
 sealed class Update
 {
-    [JsonPropertyName("update_id")] public long UpdateId { get; set; }
-    [JsonPropertyName("message")]   public Message? Message { get; set; }
+    [JsonPropertyName("update_id")]     public long UpdateId { get; set; }
+    [JsonPropertyName("message")]       public Message? Message { get; set; }
+    [JsonPropertyName("callback_query")] public CallbackQuery? CallbackQuery { get; set; }
 }
 sealed class Message
 {
@@ -903,9 +1062,45 @@ sealed class Chat
     [JsonPropertyName("id")]   public long Id { get; set; }
     [JsonPropertyName("type")] public string? Type { get; set; }
 }
+// Outgoing message. parse_mode is HTML rather than MarkdownV2 on purpose:
+// MarkdownV2 requires escaping ~15 characters, and an unescaped one from a
+// consumer name or an error string makes Telegram reject the whole message with
+// a 400. HTML needs three.
 sealed record SendMessage(
     [property: JsonPropertyName("chat_id")] long ChatId,
-    [property: JsonPropertyName("text")] string Text);
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("parse_mode")] string ParseMode = "HTML",
+    [property: JsonPropertyName("reply_markup")] InlineKeyboardMarkup? ReplyMarkup = null);
+
+sealed record InlineKeyboardMarkup(
+    [property: JsonPropertyName("inline_keyboard")] InlineKeyboardButton[][] Keyboard);
+
+sealed record InlineKeyboardButton(
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("callback_data")] string CallbackData);
+
+sealed record ChatAction(
+    [property: JsonPropertyName("chat_id")] long ChatId,
+    [property: JsonPropertyName("action")] string Action);
+
+sealed record BotCommand(
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("description")] string Description);
+
+sealed record SetMyCommands(
+    [property: JsonPropertyName("commands")] BotCommand[] Commands);
+
+sealed record AnswerCallbackQuery(
+    [property: JsonPropertyName("callback_query_id")] string Id,
+    [property: JsonPropertyName("text")] string? Text = null);
+
+sealed class CallbackQuery
+{
+    [JsonPropertyName("id")]      public string? Id { get; set; }
+    [JsonPropertyName("data")]    public string? Data { get; set; }
+    [JsonPropertyName("from")]    public User? From { get; set; }
+    [JsonPropertyName("message")] public Message? Message { get; set; }
+}
 
 sealed class QuotaResponse
 {
@@ -913,11 +1108,23 @@ sealed class QuotaResponse
     [JsonPropertyName("quota")]    public long Quota { get; set; }
 }
 
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
+// WhenWritingNull is not cosmetic: Telegram rejects an explicit
+// "reply_markup": null with 400 "object expected as reply markup", so every
+// message without a keyboard would fail. Measured 2026-09-03.
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(Update))]
 [JsonSerializable(typeof(Message))]
 [JsonSerializable(typeof(User))]
 [JsonSerializable(typeof(Chat))]
 [JsonSerializable(typeof(SendMessage))]
+[JsonSerializable(typeof(InlineKeyboardMarkup))]
+[JsonSerializable(typeof(InlineKeyboardButton))]
+[JsonSerializable(typeof(CallbackQuery))]
+[JsonSerializable(typeof(ChatAction))]
+[JsonSerializable(typeof(BotCommand))]
+[JsonSerializable(typeof(SetMyCommands))]
+[JsonSerializable(typeof(AnswerCallbackQuery))]
 [JsonSerializable(typeof(QuotaResponse))]
 internal partial class BotJson : JsonSerializerContext;
