@@ -16,11 +16,8 @@
 # resync (~6s) with no restart. Same behaviour that was measured against the
 # all-in-one.
 #
-# SOURCE OF TRUTH IS SHARED, DELIBERATELY. While both deployments exist, the
-# config and the consumer credentials live in ../higress and are read from
-# here. Copying them would mean two files holding the same customer API keys,
-# drifting apart — the one failure mode worth avoiding above tidiness. At
-# cutover, git mv them into this directory and drop the ../higress paths.
+# ./config is the source of truth: hand-authored, committed, and installed only
+# from here. Nothing is authored through the console.
 #
 #   ./apply.sh            render, install
 #   ./apply.sh --dry-run  render only, print what would be installed
@@ -40,12 +37,11 @@ for a in "$@"; do
 done
 
 RENDERED=./rendered
-UPSTREAM=../higress            # shared config + consumer table, see above
 
 # --- inputs -----------------------------------------------------------------
 
 [ -f .env ] || { echo "missing .env (copy .env.example)" >&2; exit 1; }
-[ -f "$UPSTREAM/consumers.conf" ] || { echo "missing $UPSTREAM/consumers.conf" >&2; exit 1; }
+[ -f consumers.conf ] || { echo "missing consumers.conf (copy consumers.conf.example)" >&2; exit 1; }
 
 # .env values in this stack are double-quoted. compose strips those quotes for
 # us; every other reader has to do it itself, and a credential carrying literal
@@ -88,7 +84,7 @@ fi
 # --- consumer table ---------------------------------------------------------
 # Emitted as YAML rather than templated, because the list is variable length.
 
-read_consumers() { grep -vE '^\s*(#|$)' "$UPSTREAM/consumers.conf"; }
+read_consumers() { grep -vE '^\s*(#|$)' consumers.conf; }
 
 CONSUMER_COUNT=$(read_consumers | wc -l)
 [ "$CONSUMER_COUNT" -gt 0 ] || { echo "consumers.conf has no entries" >&2; exit 1; }
@@ -120,7 +116,7 @@ emit_allow_list() {      # indent
 # installs nothing. Same trap as editing the Caddyfile out from under Caddy.
 mkdir -p "$RENDERED"
 find "$RENDERED" -mindepth 1 -delete
-cp -r "$UPSTREAM/config/." "$RENDERED"/
+cp -r config/. "$RENDERED"/
 
 export SGLANG_API_KEY QUOTA_ADMIN_CONSUMER QUOTA_REDIS_DOMAIN WASM_PLUGIN_BASE
 while IFS= read -r -d '' f; do
@@ -146,7 +142,7 @@ open(path, 'w').write(s)
 PY
 fi
 
-echo "rendered $(find "$RENDERED" -name '*.yaml' | wc -l) object(s) from $UPSTREAM/config"
+echo "rendered $(find "$RENDERED" -name '*.yaml' | wc -l) object(s) from ./config"
 echo "  project      : $COMPOSE_PROJECT  (apiserver: $CONTAINER)"
 echo "  quota ledger : $QUOTA_REDIS_DOMAIN"
 echo "  plugin base  : $WASM_PLUGIN_BASE"

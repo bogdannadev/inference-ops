@@ -39,3 +39,10 @@ compose/env_new
 
 # ./apply.sh settings. Points at a consumer table and an engine credential.
 .env
+
+# Real consumer credentials.
+consumers.conf
+
+# Ledger snapshots taken before risky operations. Runtime data, and they
+# carry per-consumer balances - keep them on the box, not in git.
+backups/
