@@ -579,6 +579,9 @@ sealed class Worker(
             "/top"        => new Reply(await TopAsync(a1 ?? "24h", ct)),
             "/p95"        => new Reply(await LatencyAsync(a1, ct)),
             "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
+            "/tier"       => new Reply((a1 is null || a2 is null)
+                                 ? Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service")
+                                 : await TierAsync(a1, a2, ct)),
             "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
             "/newkey"     => new Reply(a1 is null ? Usage("/newkey &lt;name&gt; [quota]", "/newkey acme 1000000") : await NewKeyAsync(a1, a2, ct)),
             "/topup"      => new Reply((a1 is null || a2 is null) ? Usage("/topup &lt;name&gt; &lt;tokens&gt;", "/topup acme 500000") : await TopUpAsync(a1, a2, ct)),
@@ -603,6 +606,7 @@ sealed class Worker(
         /top [1h|24h|7d] — busiest consumers, with errors
         /p95 [name] — latency percentiles, per consumer
         /errors [1h|24h|7d] — status mix per consumer
+        /tier &lt;name&gt; &lt;tier&gt; — record a consumer's intended policy tier
 
         <b>Grant</b>
         /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
@@ -728,20 +732,33 @@ sealed class Worker(
 
     private async Task<string> KeysAsync(CancellationToken ct)
     {
-        var balances = await ledger.ListAsync(ct);
-        var consumers = await keys.ReadConsumersAsync(ct);
+        var balancesT = ledger.ListAsync(ct);
+        var tiersT = ledger.TiersAsync(ct);
+        var consumersT = keys.ReadConsumersAsync(ct);
+        await Task.WhenAll(balancesT, tiersT, consumersT);
+        var balances = balancesT.Result; var tiers = tiersT.Result; var consumers = consumersT.Result;
+
         if (consumers.Count == 0)
             return "No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.";
 
+        var header = $"{"consumer",-16}{"balance",14}  tier";
         var rows = consumers.Keys.OrderBy(k => k, StringComparer.Ordinal).Select(name =>
         {
             var bal = balances.TryGetValue(name, out var b)
                 ? b.ToString("N0", CultureInfo.InvariantCulture)
                 : "not seeded";
-            return $"{name,-16}{bal,14}";
+            // "-" rather than a guessed default: an unassigned consumer is a
+            // real state and should look like one.
+            var tier = tiers.GetValueOrDefault(name, "\u2014");
+            return $"{name,-16}{bal,14}  {tier}";
         });
-        return Table($"<b>Consumers</b> ({consumers.Count})", rows)
-             + "\nCredentials are not shown. Use /opencode &lt;name&gt;.";
+
+        var untiered = consumers.Keys.Count(n => !tiers.ContainsKey(n));
+        var body = Table($"<b>Consumers</b> ({consumers.Count})", new[] { header }.Concat(rows))
+                 + "\nCredentials are not shown. Use /opencode &lt;name&gt;.";
+        if (untiered > 0)
+            body += $"\n<i>{untiered} without a tier \u2014 set with /tier &lt;name&gt; &lt;tier&gt;.</i>";
+        return body;
     }
 
     private async Task<string> BalanceAsync(string? name, CancellationToken ct)
@@ -1033,6 +1050,64 @@ sealed class Worker(
     // backend-only, and putting an internet-reachable bot on the backend would
     // give it a route to the worker ports. ClickHouse stays the durable record
     // behind Grafana; these are the operator's glance.
+
+    // The draft tiers from docs/KEY-TIERS.md, sized against measurements taken
+    // on this node: an output token costs ~68x an uncached input token, the
+    // engine sustains ~387 output tok/s, and concurrency is 8.
+    //
+    // Quota and TPM are RECORDED, not enforced. ai-quota deducts a flat
+    // input+output total and cannot vary by tier; ai-token-ratelimit is bundled
+    // but not installed. Writing the intent down is what makes it reviewable
+    // and is the prerequisite for enforcing it later — it is not the enforcement.
+    private static readonly Dictionary<string, (long Quota, int Tpm, int MaxTokens, string For)> Tiers =
+        new(StringComparer.Ordinal)
+        {
+            ["trial"]   = (   100_000,   3_000,  2_048, "evaluation, unvetted third parties"),
+            ["team"]    = (10_000_000,  60_000, 32_768, "internal humans via OpenCode"),
+            ["service"] = (50_000_000, 120_000, 16_384, "production integrations"),
+            ["batch"]   = (100_000_000, 30_000, 70_000, "offline, latency-tolerant"),
+            ["admin"]   = (         0,       0,      0, "management only, never inference"),
+        };
+
+    private async Task<string> TierAsync(string name, string tier, CancellationToken ct)
+    {
+        tier = tier.ToLowerInvariant();
+        if (!Tiers.TryGetValue(tier, out var t))
+            return $"Unknown tier <code>{Esc(tier)}</code>.\n\nOne of: "
+                 + string.Join(", ", Tiers.Keys.Select(k => $"<code>{k}</code>"));
+
+        var balances = await ledger.ListAsync(ct);
+        if (!balances.ContainsKey(name))
+            return $"<b>{Esc(name)}</b> has no balance recorded, so it is not a live consumer.\n\n"
+                 + "Create it with <code>/newkey</code> first.";
+
+        await ledger.SetTierAsync(name, tier, ct);
+        await AuditAsync($"tier name={name} tier={tier}", ct);
+
+        var body = $"<b>{Esc(name)}</b> is now recorded as <b>{Esc(tier)}</b> \u2014 {Esc(t.For)}.";
+        if (tier == "admin")
+            return body + "\n\n<i>Management only. Nothing enforces that; it is a note to operators.</i>";
+
+        string[] rows =
+        [
+            $"{"quota",-12}{t.Quota,14:N0}",
+            $"{"tokens/min",-12}{t.Tpm,14:N0}",
+            $"{"max_tokens",-12}{t.MaxTokens,14:N0}"
+        ];
+        body += "\n" + Table("", rows);
+
+        // Say plainly where the balance stands against the tier, and do NOT
+        // move it. Changing a balance is money, and it is a separate decision
+        // from recording what tier someone is on.
+        var bal = balances[name];
+        if (bal != t.Quota)
+            body += $"\n\u26a0\ufe0f Balance is <code>{bal:N0}</code>, tier says <code>{t.Quota:N0}</code>. "
+                  + $"Nothing was changed \u2014 run <code>/setquota {Esc(name)} {t.Quota}</code> to align.";
+
+        body += "\n<i>Recorded only. ai-quota charges a flat input+output total and cannot vary by tier; "
+              + "rate limits need ai-token-ratelimit, which is bundled but not installed.</i>";
+        return body;
+    }
 
     private static bool ValidWindow(string w) => w is "1h" or "24h" or "7d" or "30d";
 
@@ -1376,6 +1451,7 @@ sealed class Worker(
             new("top",        "Busiest consumers over a window"),
             new("p95",        "Latency percentiles per consumer"),
             new("errors",     "Status mix per consumer"),
+            new("tier",       "Record a consumer's policy tier"),
             new("topup",      "Add tokens to a consumer"),
             new("newkey",     "Create a key and return its OpenCode config"),
             new("opencode",   "Re-send a consumer's OpenCode config"),
@@ -1643,6 +1719,52 @@ sealed class Ledger(BotConfig cfg)
 {
     private const string Prefix = "chat_quota:";
 
+    // Tiers live in the same Redis as the balances, under their own prefix.
+    //
+    // Deliberately NOT in consumers.conf: that file is gitignored because it
+    // holds credentials, so a tier recorded there would be invisible to review,
+    // and apply.sh parses its format to build key-auth. Deliberately not a new
+    // mounted file either — that would be a compose change for what is one
+    // string per consumer.
+    //
+    // A tier is DESCRIPTIVE here, not enforced. ai-quota cannot vary behaviour
+    // by tier, and ai-token-ratelimit is bundled but not installed. This
+    // records the intended policy so it is visible in /keys and reviewable,
+    // ahead of anything enforcing it.
+    private const string TierPrefix = "chat_tier:";
+
+    public async Task<Dictionary<string, string>> TiersAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var c = await ConnectAsync(ct);
+        var keys = new List<string>();
+        var cursor = "0";
+        do
+        {
+            var reply = await c.CommandAsync(ct, "SCAN", cursor, "MATCH", TierPrefix + "*", "COUNT", "200");
+            if (reply is not object?[] { Length: 2 } page) break;
+            cursor = page[0] as string ?? "0";
+            if (page[1] is object?[] batch)
+                foreach (var k in batch) if (k is string t) keys.Add(t);
+        } while (cursor != "0");
+        if (keys.Count == 0) return result;
+
+        var argv = new string[keys.Count + 1];
+        argv[0] = "MGET";
+        keys.CopyTo(argv, 1);
+        if (await c.CommandAsync(ct, argv) is object?[] values)
+            for (var i = 0; i < keys.Count && i < values.Length; i++)
+                if (values[i] is string v && v.Length > 0)
+                    result[keys[i][TierPrefix.Length..]] = v;
+        return result;
+    }
+
+    public async Task SetTierAsync(string name, string tier, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        await c.CommandAsync(ct, "SET", TierPrefix + name, tier);
+    }
+
     public async Task<Dictionary<string, long>> ListAsync(CancellationToken ct)
     {
         var result = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -1677,7 +1799,9 @@ sealed class Ledger(BotConfig cfg)
     public async Task DeleteAsync(string name, CancellationToken ct)
     {
         using var c = await ConnectAsync(ct);
-        await c.CommandAsync(ct, "DEL", Prefix + name);
+        // Both keys. Otherwise a consumer re-created under the same name
+        // silently inherits the revoked one's tier.
+        await c.CommandAsync(ct, "DEL", Prefix + name, TierPrefix + name);
     }
 
     private async Task<RespConnection> ConnectAsync(CancellationToken ct)

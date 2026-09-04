@@ -1,6 +1,22 @@
 # Key tiers — draft for review
 
-**Status: draft.** Nothing here is applied. It proposes tiers for consumer and
+**Status: tiers are RECORDED, not ENFORCED, as of 2026-09-04.**
+
+`/tier <name> <tier>` writes the assignment to `chat_tier:<consumer>` in the
+same Redis as the balances, and `/keys` shows it. Nothing reads it at request
+time: ai-quota still charges a flat input+output total and cannot vary by tier,
+and `ai-token-ratelimit` is bundled but not installed. Recording the intent is
+what makes it reviewable and is the prerequisite for enforcing it — it is not
+the enforcement.
+
+Assigned so far: `quota-admin` → admin, `testafter` → team, `danila` → team.
+`acme` and `legacy-shared` are deliberately unassigned — see "Unassigned" below.
+
+**No balance was changed.** `/tier` reports when a balance differs from its
+tier's quota and tells you the `/setquota` to align it, but never moves money on
+its own.
+
+The tier table below remains a draft. It proposes tiers for consumer and
 production workloads, sized against measurements taken on this node on
 2026-09-04 rather than copied from a commercial price list.
 
@@ -133,6 +149,22 @@ fixed here: SGLang returns `prompt_tokens_details: null`, so cached tokens are
 not attributable per request even though they are measurable node-wide.
 Anthropic's approach — exclude cached input from rate limits entirely — is the
 right model and is closed to us until SGLang reports it.
+
+## Unassigned, and why
+
+Two consumers were left without a tier rather than guessed at, because the tier
+implies a quota and getting it wrong is either a lockout or a giveaway:
+
+- **`acme`** — balance 499,637. Sits between `trial` (100 K) and `service`
+  (50 M). The name suggests an external customer, which would be `service`, but
+  that is a 100× increase from what they hold today.
+- **`legacy-shared`** — balance 100,000,000, matching `batch` exactly, but the
+  name suggests it is the shared credential the team used before per-person
+  keys. If so it should be retired rather than tiered, and its traffic moved
+  onto individual consumers.
+
+`/keys` shows both with `—` and counts them, so they cannot be quietly
+forgotten.
 
 ## To apply
 
