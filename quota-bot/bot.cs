@@ -1022,26 +1022,36 @@ sealed class Worker(
     {
         if (!ValidWindow(window)) return BadWindow(window);
 
+        // Split by direction. A single total hides the thing that matters: the
+        // ledger charges input and output identically, and a consumer at 40:1
+        // is paying almost entirely for context it re-sent, most of which the
+        // radix cache served for free.
         var tokensT = PromAsync($"sum by (consumer) (increase(gateway_tokens_total[{window}]))", ct, "consumer");
+        var inT     = PromAsync($"sum by (consumer) (increase(gateway_tokens_total{{direction=\"input\"}}[{window}]))", ct, "consumer");
+        var outT    = PromAsync($"sum by (consumer) (increase(gateway_tokens_total{{direction=\"output\"}}[{window}]))", ct, "consumer");
         var reqsT   = PromAsync($"sum by (consumer) (increase(gateway_requests_total[{window}]))", ct, "consumer");
         var errsT   = PromAsync(
             $"sum by (consumer) (increase(gateway_requests_total{{status_class=~\"4xx|5xx\"}}[{window}]))", ct, "consumer");
-        await Task.WhenAll(tokensT, reqsT, errsT);
+        await Task.WhenAll(tokensT, reqsT, errsT, inT, outT);
 
         var tokens = tokensT.Result; var reqs = reqsT.Result; var errs = errsT.Result;
         if (reqs.Count == 0) return $"No gateway traffic in the last {window}.";
 
-        var max = tokens.Values.DefaultIfEmpty(0).Max();
+        var header = $"{"consumer",-14}{"in",9}{"out",8}{"i:o",6}{"req",6}";
         var rows = reqs.OrderByDescending(x => tokens.GetValueOrDefault(x.Key)).Select(x =>
         {
-            var tok = tokens.GetValueOrDefault(x.Key);
+            var inp = inT.Result.GetValueOrDefault(x.Key);
+            var outp = outT.Result.GetValueOrDefault(x.Key);
+            var ratio = outp > 0 ? inp / outp : 0;
             var err = errs.GetValueOrDefault(x.Key);
-            return $"{x.Key,-16}{tok,11:N0} tok{x.Value,7:N0} req{(err > 0 ? $"{err,6:N0} err" : "           ")}  "
-                 + Fmt.Bar((int)tok, (int)Math.Max(max, 1), 8);
+            return $"{x.Key,-14}{inp,9:N0}{outp,8:N0}{ratio,6:N1}{x.Value,6:N0}"
+                 + (err > 0 ? $"  {err:N0} err" : "");
         });
 
-        return Table($"<b>Top consumers</b> \u2014 last {window}", rows)
-             + "\n<i>From the access log. Counters reset if Vector restarts; balances are the billing record.</i>";
+        return Table($"<b>Top consumers</b> \u2014 last {window}", new[] { header }.Concat(rows))
+             + "\n<i>i:o is input per output token. The ledger charges both the same, but input is "
+             + "prefilled and mostly cache-served \u2014 a high ratio means the bill is context re-sent, "
+             + "not work done.</i>";
     }
 
     private async Task<string> LatencyAsync(string? name, CancellationToken ct)
