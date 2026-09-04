@@ -31,6 +31,7 @@ ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <host>
 | `otel-collector` | `otel-collector:8888` | 15s | trace-pipeline self-telemetry |
 | `alertmanager` | `qwen36-27b-alertmanager:9093` | 30s | alert **delivery** health — see below |
 | `clickhouse` | `qwen36-27b-langfuse-clickhouse:9363` | 30s | trace-store disk, parts, queries — see below |
+| ~~`higress-apiserver`~~ | — | — | **removed 2026-09-04** — see below |
 | `prometheus` | `localhost:9090` | 15s | self-scrape (`up{job="prometheus"}` exempted from the down alert) |
 
 `global` also sets `external_labels: {node: a100, stack: qwen36-27b}`, stamped
@@ -127,14 +128,14 @@ Sampling is 1000 ms (`--collect-interval 1000`). The container needs
 ## Prometheus-native alerts — `prometheus/alerts.yml`
 
 Infra/GPU health rules. These are the **operational signal** (page-worthy
-events). 16 rules in six groups (17 until the `413` rule went with the request-body
-cap on 2026-08-15):
+events). 15 rules in six groups — 17 until the `413` rule went with the
+request-body cap on 2026-08-15, and 16 until `GpuMemoryPressure` was removed on
+2026-09-04 (see below):
 
 **`endpoints` / `gpu` / `host`**
 
 - `PrometheusTargetDown` — any scrape target `up == 0` for 2m (critical)
 - `GpuHighTemperature` — DCGM temp > 85°C for 5m (critical)
-- `GpuMemoryPressure` — framebuffer > 95% for 5m (warning)
 - `GpuXidError` — any XID error increase in 5m (critical)
 - `HostLowDiskSpace` — root fs < 10% free for 10m (warning)
 - `HostMemoryPressure` — host RAM > 95% for 10m (warning)
@@ -155,6 +156,38 @@ why it fails silently:
 - `TraceQueueFilling` — export queue > 50% for 10m (warning)
 - `TraceSpansRefused` — `memory_limiter` rejecting at the receiver for 5m (warning)
 
+### Two things removed on 2026-09-04
+
+Both were permanently true, and neither was noticed until Alertmanager started
+delivering. An alert that always fires is not monitoring; it is training to
+ignore the channel.
+
+**`higress-apiserver` scrape job.** Anonymous scrapes returned 403 from the day
+`--auth-enabled` landed. It could not be re-armed with a scoped credential —
+measured:
+
+| Identity | `/metrics` |
+|---|---|
+| anonymous | 403 |
+| `CN=higress, O=system:masters` | 200 |
+| any other CA-signed identity | 403 |
+
+The apiserver authorizes rather than merely authenticating, and serves no
+`rbac.authorization.k8s.io` group, so the only credential that can scrape it is
+the shared cluster-admin one — which also reads every consumer's plaintext API
+key out of the key-auth object. Seven series does not justify putting that
+credential inside Prometheus. The question the job was meant to answer is better
+answered by `pilot_xds_*`, which covers the hop that actually matters.
+
+**`GpuMemoryPressure`.** Alerted on framebuffer > 95%, which is this node's
+healthy steady state: the replicas run `--mem-fraction-static 0.92`, so SGLang
+preallocates weights and KV pool at startup and holds them for the process
+lifetime. Measured at removal: GPU 0 at 98.5%, GPU 1 at 97.6%, both idle to
+normal. The rule's "OOM risk on next request burst" had the causality backwards
+for a preallocating server — real exhaustion happens *inside* that reservation,
+and the Grafana SLO rules on KV pool utilisation and full token usage already
+cover it against `sglang:*` series that actually move.
+
 **`storage`**
 
 - `ClickHouseDiskFilling` — data disk > 85% for 15m (warning)
@@ -174,7 +207,7 @@ ingest outage ran for roughly fourteen hours with `TraceExportFailing` firing
 correctly the entire time and nobody told. Evaluation is not monitoring.
 
 ```text
-Prometheus (17 rules) ─┐
+Prometheus (15 rules) ─┐
                        ├─► Alertmanager ──webhook──► quota-bot /alert ──► Telegram
 Grafana (7 SLO rules) ─┘        :9093                    (bearer auth)
 ```
