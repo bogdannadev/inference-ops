@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Per-consumer usage and health for the paid Higress gateway. Source of truth for billing is the gateway access log (it carries cached_tokens); this board is for watching, alerting and spotting anomalies.",
+  "description": "Per-consumer usage and health for the paid Higress gateway. Billing truth is the Redis ledger, which ai-quota decrements by input+output tokens 1:1 (hardcoded in v2.2.4 \u2014 there is no weighting option). Per-request detail lives in the gateway.requests fact table. NOTE: an earlier version of this text claimed the access log carries cached_tokens; it does not \u2014 SGLang returns prompt_tokens_details: null, so ai-statistics' input_token_details is always empty.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

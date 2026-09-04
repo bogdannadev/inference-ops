@@ -503,8 +503,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Token rate by consumer",
-      "description": "Total tokens/s attributed to each consumer at the gateway. Only the metered hostname appears here.",
+      "title": "Token rate by consumer, split by direction",
+      "description": "Input and output are charged identically \u2014 ai-quota deducts input+output 1:1 and v2.2.4 has no weighting option \u2014 but they cost nothing alike. Each output token is a forward pass, and decode here is bandwidth-bound at ~50ms. Input is prefilled in one pass and, for a multi-turn agent that re-sends its context, mostly hits the radix cache: node-wide 84.8% of prompt tokens have been cache hits. A consumer sitting at 40:1 input:output is paying mostly for the cheapest thing the node does.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -540,8 +540,7 @@
           "displayMode": "table",
           "placement": "right",
           "calcs": [
-            "lastNotNull",
-            "max"
+            "lastNotNull"
           ],
           "showLegend": true
         },
@@ -556,8 +555,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_total_token[$__rate_interval]))",
-          "legendFormat": "{{ai_consumer}}",
+          "expr": "sum by (consumer,direction) (rate(gateway_tokens_total[$__rate_interval]))",
+          "legendFormat": "{{consumer}} {{direction}}",
           "refId": "A",
           "instant": false,
           "format": "time_series",
@@ -996,6 +995,130 @@
           "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"5xx\"}[$__range]))",
           "legendFormat": "",
           "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Input : output ratio",
+      "description": "How much of each consumer's bill is context re-sent rather than tokens generated. High values are agent traffic replaying a growing conversation; those input tokens are largely cache hits and cost a fraction of what they are charged.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 9,
+        "x": 15,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "in : out"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 10
+                    },
+                    {
+                      "color": "orange",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "in : out",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "consumer",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true
+            },
+            "renameByName": {
+              "consumer": "Consumer",
+              "Value #A": "in : out"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (increase(gateway_tokens_total{direction=\"input\"}[$__range])) / clamp_min(sum by (consumer) (increase(gateway_tokens_total{direction=\"output\"}[$__range])), 1)",
+          "legendFormat": "",
+          "refId": "A",
           "instant": true,
           "format": "table",
           "range": false

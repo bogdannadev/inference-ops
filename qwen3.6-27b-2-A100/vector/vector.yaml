@@ -200,14 +200,41 @@ transforms:
           route: "{{route}}"
           status_class: "{{status_class}}"
 
+      # SPLIT BY DIRECTION, not a single total.
+      #
+      # ai-quota deducts input+output 1:1 and cannot be configured otherwise —
+      # in v2.2.4 that is literally `totalToken := int(inputToken + outputToken)`
+      # followed by a DECRBY, with no weighting field on QuotaConfig. Whether
+      # that is the right price is a business decision, but it cannot even be
+      # discussed while the metric reports one undifferentiated number.
+      #
+      # It matters here because the two are not remotely alike in cost. Output
+      # tokens each cost a forward pass, and decode on this node is
+      # bandwidth-bound at ~50ms. Input tokens are prefilled in one pass and,
+      # on a multi-turn agent conversation that re-sends its context, mostly hit
+      # the radix cache — node-wide, 190.6M of 224.7M prompt tokens have been
+      # cache hits, 84.8%.
+      #
+      # First real consumer measured 97.9% input: 334,210 in against 7,293 out.
       - type: counter
-        field: total_tokens
+        field: input_tokens
         name: tokens_total
         namespace: gateway
         increment_by_value: true
         tags:
           consumer: "{{consumer}}"
           model: "{{model}}"
+          direction: input
+
+      - type: counter
+        field: output_tokens
+        name: tokens_total
+        namespace: gateway
+        increment_by_value: true
+        tags:
+          consumer: "{{consumer}}"
+          model: "{{model}}"
+          direction: output
 
       # The distribution ai-statistics cannot give us. Percentiles are computed
       # by the exporter below, so p95 per consumer becomes a real query.
