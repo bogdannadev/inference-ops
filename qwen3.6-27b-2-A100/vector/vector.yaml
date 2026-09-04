@@ -279,6 +279,20 @@ sinks:
     flush_period_secs: 600
     quantiles: [0.5, 0.95, 0.99]
 
+    # BUCKETS FOR LLM LATENCY, not web latency.
+    #
+    # The exporter's defaults stop at le="10", which is right for an HTTP API
+    # and wrong here. Caught on the first real agent traffic: a consumer whose
+    # exact p95 was 16.7s and whose slowest request took 35.7s reported a
+    # Prometheus p95 of exactly 10.00s — histogram_quantile cannot interpolate
+    # past the highest finite bucket, so a saturated histogram silently pins to
+    # its top edge and reads like a healthy number.
+    #
+    # A 36k-token prompt legitimately takes tens of seconds on this node, and
+    # --context-length is 169000, so the tail is genuinely long. These run to
+    # 300s so the ceiling is the request timeout rather than the bucket set.
+    buckets: [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0]
+
   dead_letter:
     type: console
     inputs: [gateway_rows.dropped]
