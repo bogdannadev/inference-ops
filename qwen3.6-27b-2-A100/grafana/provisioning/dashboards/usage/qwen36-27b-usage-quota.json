@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Per-consumer usage and quota. Balance comes from the durable ai-quota ledger via redis_exporter; rates come from Higress ai-statistics counters, which reset on gateway restart. Billing reads the ledger, never the counters.",
+  "description": "Per-consumer usage and quota. Balance comes from the durable ai-quota ledger via redis_exporter; rates from Higress ai-statistics; per-consumer latency and status mix from the access-log fact table via Vector. Billing reads the ledger, never the counters.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -771,8 +771,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Gateway responses by status class",
-      "description": "Envoy's :80 listener. Repointed 2026-09-04 from the retired :8080 listener the cutover replaced, which had been rendering a flat line off stale series.",
+      "title": "Latency p95 by consumer",
+      "description": "Whole-request duration as Envoy saw it, from the access-log fact table via Vector. This did not exist before Stage B: ai-statistics emits sums and counts but no histogram, so a single 40-second request among a hundred fast ones was invisible in the per-consumer mean.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -790,16 +790,12 @@
             "lineWidth": 2,
             "fillOpacity": 0,
             "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            }
+            "spanNulls": true
           },
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "reqps"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -824,8 +820,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (response_code_class) (rate(envoy_listener_http_outbound_0_0_0_0_80_downstream_rq[$__rate_interval]))",
-          "legendFormat": "{{response_code_class}}",
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
           "format": "time_series",
@@ -834,8 +830,9 @@
       ]
     },
     {
-      "type": "text",
-      "title": "What this board cannot tell you yet",
+      "type": "table",
+      "title": "Status mix by consumer",
+      "description": "Per-consumer outcomes, which Prometheus could not answer at all before Stage B. `unauthenticated` is the 401 path \u2014 a wrong or missing key has no consumer to attribute to, and naming it keeps that traffic visible instead of vanishing from the breakdown.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -846,10 +843,164 @@
         "x": 12,
         "y": 27
       },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4xx"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
       "options": {
-        "mode": "markdown",
-        "content": "### Two known gaps\n\n**Errors are not attributable.** `ai-statistics` emits seven counters and none carries a status code, so the status panel to the left is gateway-wide. \"Which consumer is getting 422s\" cannot be answered from Prometheus at all today.\n\n**Latency has no tail.** The TTFT panel is a mean over a windowed count. A single 40-second request among a hundred fast ones does not move it \u2014 and that is the request people complain about.\n\nBoth close in **Stage B**, when the gateway access log (already carrying `request_id`, tokens, status and duration per request) gains a `consumer` field and is tailed into ClickHouse.\n\n**Also:** balances are exact and durable; spend and share are not. Envoy counters reset on a gateway restart, so anything derived from them under-reports across one. Invoices read the balance."
-      }
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "4xx",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "consumer",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true
+            },
+            "renameByName": {
+              "consumer": "Consumer",
+              "Value #A": "2xx",
+              "Value #B": "4xx",
+              "Value #C": "5xx"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"2xx\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"4xx\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"5xx\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ]
     }
   ]
 }
