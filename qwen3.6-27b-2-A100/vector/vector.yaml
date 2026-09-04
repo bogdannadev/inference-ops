@@ -1,0 +1,203 @@
+# =============================================================================
+# Vector — gateway access log -> ClickHouse fact table
+# Location in repo: ./vector/vector.yaml
+#
+# Mounted as a DIRECTORY, like ./prometheus and ./alertmanager, so an editor
+# that writes-then-renames cannot leave the container bound to a dead inode.
+#
+# One job: turn the JSON line Envoy already writes per request into one row in
+# gateway.requests. It is the only component in this stack that makes per-request
+# usage durable and attributable — Prometheus counters reset on gateway restart,
+# and the Redis ledger holds a balance with no history.
+#
+# It must never be able to affect serving. It reads a file the gateway has
+# already finished writing, on a network with no route to the workers, and if it
+# stops, the only consequence is that the fact table stops growing.
+# =============================================================================
+
+data_dir: /var/lib/vector
+
+# -----------------------------------------------------------------------------
+# Secrets backend, NOT ${ENV} interpolation.
+#
+# Vector 0.57.0 disabled environment-variable interpolation by default as a
+# security change. A config written with ${VAR} does not fail loudly on 0.58 —
+# it substitutes nothing and sends the literal text. That is how this first
+# presented: ClickHouse logged `user: clickhouse ... WRONG_PASSWORD` while the
+# variable was demonstrably correct in the container, and the Authorization
+# header on the wire decoded to `clickhouse:${CLICKHOUSE_PASSWORD}`.
+#
+# The flag that restores the old behaviour is named
+# `--dangerously-allow-env-var-interpolation`, which is upstream being explicit
+# about what it thinks of the idea. Their guidance is to use this backend
+# instead, because anything that can read /proc/<pid>/environ can read a
+# password passed that way.
+#
+# secrets.json is generated from .env by deploy/render-vector-secrets.sh and is
+# gitignored. The committed config names the secret; it never contains it.
+# -----------------------------------------------------------------------------
+secret:
+  ch:
+    type: file
+    path: /etc/vector/secrets.json
+
+sources:
+  gateway_access:
+    type: file
+    include:
+      - /var/log/proxy/access.log
+
+    # Checkpoints live in data_dir and survive a restart, so a restart resumes
+    # at the last acknowledged byte rather than re-reading the file. This is the
+    # difference between a Vector restart being free and it duplicating every
+    # row currently on disk.
+    #
+    # Fingerprinting by checksum of the first line, NOT by device+inode.
+    # logrotate renames access.log to access.log.1 and Envoy creates a fresh
+    # inode via its /reopen_logs admin call; with inode fingerprinting Vector
+    # treats the rotated file as brand new and re-reads it end to end.
+    fingerprint:
+      strategy: checksum
+      lines: 1
+
+    # Keep reading a rotated file briefly so the tail written between the last
+    # read and the rename is not lost.
+    ignore_older_secs: 3600
+    read_from: beginning
+
+    # END-TO-END ACKNOWLEDGEMENTS. Not optional for this pipeline.
+    #
+    # Without them the file source advances its checkpoint as soon as an event
+    # enters the topology, not when ClickHouse has durably accepted it. Observed
+    # exactly that while the sink was misconfigured: the checkpoint sat at
+    # position 820 — the whole file — while the table held zero rows. The line
+    # had been read, failed delivery through all its retries, and been dropped,
+    # and nothing would ever re-read it.
+    #
+    # With acknowledgements the checkpoint only moves once the sink confirms, so
+    # a ClickHouse outage becomes a replay rather than a hole. This is the
+    # difference between a fact table that can be reconciled against the ledger
+    # and one that is quietly missing whatever failed.
+    acknowledgements:
+      enabled: true
+
+transforms:
+  # ---------------------------------------------------------------------------
+  # Shape the Envoy line into the table's columns.
+  #
+  # Two things about this log make the parsing less obvious than it looks:
+  #
+  #   1. Envoy writes EVERY field as a string, including numbers, so
+  #      "response_code":"200" and "duration":"220" need coercing. The nested
+  #      ai_log object is written by the wasm plugin and DOES carry real
+  #      numbers, so the two halves of the line disagree about types.
+  #
+  #   2. "-" is Envoy's marker for a field it could not fill. It appears in
+  #      `consumer` on the 401 path (no valid consumer to name) and in `ai_log`
+  #      on any request that never reached an LLM route. Treated as empty, not
+  #      as the literal string "-", so nobody has to remember that when querying.
+  # ---------------------------------------------------------------------------
+  gateway_rows:
+    type: remap
+    inputs: [gateway_access]
+    # Drop a line we cannot parse rather than killing the pipeline. A malformed
+    # line is a bug to find in the dead-letter log, not a reason to stop
+    # ingesting every subsequent request.
+    drop_on_error: true
+    drop_on_abort: true
+    reroute_dropped: true
+    source: |
+      raw = parse_json!(string!(.message))
+
+      # ai_log is a JSON document embedded as a string inside the line.
+      ai = {}
+      al = string(raw.ai_log) ?? ""
+      if al != "" && al != "-" {
+        ai = object(parse_json(al) ?? {}) ?? {}
+      }
+
+      consumer = string(raw.consumer) ?? ""
+      if consumer == "-" { consumer = "" }
+
+      # ClickHouse's basic datetime parser wants "YYYY-MM-DD hh:mm:ss.sss".
+      # Emitting that directly avoids depending on date_time_best_effort being
+      # set server-side, which is not something this config controls.
+      ts = parse_timestamp!(string!(raw.start_time), "%Y-%m-%dT%H:%M:%S%.3fZ")
+
+      . = {
+        "ts":             format_timestamp!(ts, "%Y-%m-%d %H:%M:%S%.3f"),
+        "request_id":     string(raw.request_id) ?? "",
+        "consumer":       consumer,
+        "route":          string(raw.route_name) ?? "",
+        "model":          string(ai.model) ?? "",
+        "status":         to_int(raw.response_code) ?? 0,
+        "duration_ms":    to_int(raw.duration) ?? 0,
+        "llm_ms":         to_int(ai.llm_service_duration) ?? 0,
+        "input_tokens":   to_int(ai.input_token) ?? 0,
+        "output_tokens":  to_int(ai.output_token) ?? 0,
+        "total_tokens":   to_int(ai.total_token) ?? 0,
+        "chat_id":        string(ai.chat_id) ?? "",
+        "chat_round":     to_int(ai.chat_round) ?? 0,
+        "upstream":       string(raw.upstream_cluster) ?? "",
+        "authority":      string(raw.authority) ?? "",
+        "response_flags": string(raw.response_flags) ?? "",
+        "user_agent":     string(raw.user_agent) ?? ""
+      }
+
+sinks:
+  clickhouse:
+    type: clickhouse
+    inputs: [gateway_rows]
+    endpoint: http://qwen36-27b-langfuse-clickhouse:8123
+    database: gateway
+    table: requests
+
+    auth:
+      strategy: basic
+      user: clickhouse
+      password: "SECRET[ch.clickhouse_password]"
+
+    # Reject rows carrying a column the table does not have, rather than
+    # silently discarding the value. If this starts failing, the transform and
+    # the schema have diverged and that should be loud.
+    skip_unknown_fields: false
+
+    # DISK, not memory. A ClickHouse restart — which this stack does, for
+    # retention work and version pins — must be a delay, not a data loss. The
+    # buffer outlives a Vector restart too, because it is on disk in data_dir.
+    buffer:
+      type: disk
+      # 268 MB. At ~850 bytes per request that is far more than any plausible
+      # outage on this node, and it is bounded so a long ClickHouse absence
+      # cannot fill the disk that ClickHouse itself needs to come back.
+      max_size: 268435488
+      # Block rather than drop when the buffer is full. The whole point of this
+      # table is that it is complete enough to reconcile against the ledger;
+      # silently dropping the newest rows would make it quietly wrong. Vector
+      # blocking only stops Vector — the gateway never waits on it.
+      when_full: block
+
+    batch:
+      # Small and frequent. This is a low-volume, high-value stream: a few
+      # thousand rows a day, each one billable evidence. Latency to the table
+      # matters more than insert efficiency, and ClickHouse is local.
+      max_events: 1000
+      timeout_secs: 5
+
+    request:
+      retry_attempts: 10
+      retry_initial_backoff_secs: 1
+      retry_max_duration_secs: 300
+
+# The parse failures rerouted above. Written to the container log rather than
+# dropped, so a format change shows up as visible noise instead of a table that
+# quietly stops growing.
+  dead_letter:
+    type: console
+    inputs: [gateway_rows.dropped]
+    encoding:
+      codec: json
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
