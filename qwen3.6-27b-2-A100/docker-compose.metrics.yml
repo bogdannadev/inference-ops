@@ -39,7 +39,11 @@ services:
   # Scrape config lives in ./prometheus/prometheus.yml
   # ---------------------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
+    # v3.13.1 -> v3.14.0 on 2026-09-04. Carries the sanitize-html bump for
+    # CVE-2026-44990 (stored XSS via a disallowed `xmp` element). Exposure here
+    # was low — the UI binds 127.0.0.1 and is reached over an SSH tunnel — but
+    # the fix is free and the TSDB is untouched by the upgrade.
+    image: prom/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
     container_name: qwen36-27b-prometheus
 
     # Observability CPU load is in the noise; park it on the NUMA-node-1
@@ -134,7 +138,9 @@ services:
   # Runs on the loopback + backend network only; Prometheus scrapes it there.
   # ---------------------------------------------------------------------------
   node-exporter:
-    image: prom/node-exporter:v1.12.1
+    # Digest added 2026-09-04. v1.12.1 is current; the tag alone still allowed
+    # a rebuild to move under us.
+    image: prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
     container_name: qwen36-27b-node-exporter
 
     cpuset: "48-55"
