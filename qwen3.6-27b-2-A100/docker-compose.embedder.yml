@@ -5,7 +5,8 @@
 services:
   qwen3-emb:
     # Pin ≥1.9 (past the Qwen3 CPU FP16 / last-token nondeterminism bugs). Digest-pin for prod.
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    # Digest added 2026-09-04. `cpu-1.9` is a moving branch tag upstream.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:ad950d30878eceb72aaf32024d26fa2b1d04a75304fa0b4776b49aa1941fea07
     container_name: qwen3-emb
 
     # --- NUMA isolation: TEI/ORT is NUMA-blind, so the OS draws the cage ---

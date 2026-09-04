@@ -990,7 +990,10 @@ services:
   # the router (and qwen3-emb from the embedding project), never a worker.
   # ---------------------------------------------------------------------------
   caddy:
-    image: caddy:2-alpine
+    # Pinned 2026-09-04. `caddy:2-alpine` floated: it happened to resolve to
+    # the current 2.11.4, but nothing guaranteed that, and the edge is the one
+    # container whose surprise restart takes every hostname down at once.
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
 
     cpuset: "48-55"
 
