@@ -198,7 +198,7 @@ and the fact table is dominated by requests with no consumer.
   aggregates that cannot resolve a single request, it hands over the Langfuse
   URL and the exact ClickHouse query, and explains the split-trace behaviour.
 
-## Stage R — resilience ✅ AUDIT DONE 2026-09-04, reboot test outstanding
+## Stage R — resilience ✅ DONE 2026-09-04, reboot test PASSED
 
 No systemd units. The work is removing reasons order matters.
 
@@ -222,9 +222,10 @@ recreated them unexpectedly, Caddy included. Now 0 drift.
 external, because the collector joined it so the gateway could push spans. If
 that network disappears, the metrics/langfuse stack stops starting too.
 
-**Manual reboot test** — run by Danila. Full host restart, then verify every
-service is up, every scrape target green, no data gap in the fact table, and no
-alert left firing that should not be.
+**Manual reboot test — PASSED 2026-09-04.** Full recovery in 5m14s, bounded by
+model load. 27/27 containers, 14/14 targets, 0 alerts, 0 duplicate rows, no
+fail-open, and an end-to-end request whose ledger delta matched the fact table
+exactly. Results in `docs/REBOOT-CHECKLIST.md`.
 
 ## Stage D — converged OTel
 
