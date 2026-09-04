@@ -127,7 +127,8 @@ var cfg = new BotConfig(
     OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture),
     AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
     AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
-    AlertChatIds:    alertChatIds);
+    AlertChatIds:    alertChatIds,
+    LangfuseUrl:     Opt("LANGFUSE_PUBLIC_URL", "https://langfuse.example.org").TrimEnd('/'));
 
 // Encoded once, not on every delivery — and validated here because the
 // comparison's fast path assumes one byte per character. That holds for the
@@ -580,6 +581,9 @@ sealed class Worker(
             "/p95"        => new Reply(await LatencyAsync(a1, ct)),
             "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
             "/tiers"      => new Reply(TiersHelp()),
+            "/trace"      => new Reply(a1 is null
+                                 ? Usage("/trace &lt;request-id&gt;", "/trace efd62f54-d5e3-9fe3-be99-b3945d617414")
+                                 : TraceHelp(a1)),
             "/tier"       => new Reply((a1 is null || a2 is null)
                                  ? Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service")
                                  : await TierAsync(a1, a2, ct)),
@@ -608,6 +612,7 @@ sealed class Worker(
         /top [1h|24h|7d] — busiest consumers, with errors
         /p95 [name] — latency percentiles, per consumer
         /errors [1h|24h|7d] — status mix per consumer
+        /trace &lt;request-id&gt; — where to look one request up
 
         <b>Is it healthy</b>
         /status — can I still operate the gateway
@@ -1077,6 +1082,38 @@ sealed class Worker(
             ["admin"]   = (         0,       0,      0, "management only, never inference"),
         };
 
+    // Deliberately a signpost, not a lookup.
+    //
+    // The per-request record lives in ClickHouse and the spans live in
+    // Langfuse, and this bot can reach neither: it runs on `edge`, both stores
+    // are backend-only, and putting an internet-reachable bot on the backend
+    // would give it a route to the worker ports. Rather than half-answer from
+    // the aggregates — which cannot resolve a single request at all — this
+    // hands over the two exact places the answer is, and the query to run.
+    private string TraceHelp(string requestId)
+    {
+        // Cheap sanity check. A mistyped id produces an empty result in both
+        // stores, which reads like "the request did not happen" rather than
+        // "you typed it wrong".
+        var looksLikeId = requestId.Length is >= 8 and <= 64
+            && requestId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
+        if (!looksLikeId)
+            return $"<code>{Esc(Head(requestId))}</code> does not look like a request id.\n\n"
+                 + "They are the x-request-id Envoy mints per request — a UUID, and the same value "
+                 + "appears on the gateway span and in the fact table.";
+
+        var id = Esc(requestId);
+        return $"<b>Request</b> <code>{id}</code>\n\n"
+             + $"<b>Trace</b> — {Esc(cfg.LangfuseUrl)}\n"
+             + $"Search for <code>{id}</code>. The gateway span carries it as "
+             + "<code>attributes.guid:x-request-id</code>, alongside the consumer and the token counts.\n\n"
+             + "<b>Exact record</b> — ClickHouse, on the host:\n"
+             + $"<pre>SELECT * FROM gateway.requests FINAL\nWHERE request_id = '{id}';</pre>"
+             + "\n<i>Engine spans carry the same request_id but a zero trace id: the router does not "
+             + "propagate trace context, so gateway and engine spans are separate traces joined on "
+             + "this value rather than one waterfall.</i>";
+    }
+
     // Rendered from the same Tiers table the /tier command validates against,
     // so the description and the thing being applied cannot drift apart.
     private static string TiersHelp()
@@ -1485,6 +1522,7 @@ sealed class Worker(
             new("p95",        "Latency percentiles per consumer"),
             new("errors",     "Status mix per consumer"),
             new("tiers",      "What each policy tier means"),
+            new("trace",      "Where to look one request up"),
             new("tier",       "Record a consumer's policy tier"),
             new("topup",      "Add tokens to a consumer"),
             new("newkey",     "Create a key and return its OpenCode config"),
@@ -2277,7 +2315,8 @@ sealed record BotConfig(
     string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int OutputLimit,
-    string AlertSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds);
+    string AlertSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds,
+    string LangfuseUrl);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<string>> Run);

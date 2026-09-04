@@ -50,6 +50,20 @@ spec:
   # ledger or a single test call silently bills a paying consumer. Each
   # deployment sets QUOTA_REDIS_DOMAIN in its own .env; the live stack sets it
   # to higress-redis.higressint.
+  # The Higress gateway's own trace target (Stage C). Registered here rather
+  # than named directly in the tracing config: Higress builds the tracer's
+  # cluster as `outbound|<port>||<registry-name>.<registry-type>`, so a raw
+  # hostname produces a cluster nothing ever creates. Tried that first — the
+  # tracer config appeared in config_dump referencing
+  # `outbound|4317||qwen36-27b-otel-collector.higressint`, which was absent
+  # from /clusters. Same cluster_not_found shape as the original router bug.
+  #
+  # The domain still needs its dot: the dns watcher rejects single-label hosts.
+  - name: otel-collector
+    type: dns
+    protocol: grpc
+    domain: qwen36-27b-otel-collector.higressint
+    port: 4317
   - name: quota-redis
     type: dns
     protocol: tcp

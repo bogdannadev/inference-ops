@@ -551,6 +551,23 @@ services:
       - "4318"
       - "8888"
 
+    networks:
+      - qwen36-27b-backend
+      # higressint, added 2026-09-04 for Stage C: the Higress gateway pushes
+      # its own spans here, and the two containers had NO network in common —
+      # the gateway is on edge/higress-net/higressint, this was backend-only.
+      #
+      # higressint rather than `edge`, deliberately. Both would work. `edge`
+      # carries Caddy, the internet-facing process, and an OTLP receiver there
+      # would take spans from anything reaching that network. higressint holds
+      # the ledger redis, the gateway and the control plane — no public front
+      # door — so it is the narrower of the two.
+      #
+      # NOT the reverse (gateway onto the backend): that hands an
+      # internet-facing proxy a route to the worker ports and ZMQ sockets,
+      # which is the whole reason the split exists.
+      - higressint
+
     # No healthcheck, deliberately. The core collector image is distroless —
     # no shell, no wget — so CMD-SHELL cannot run, and the `health_check`
     # extension that would answer an HTTP probe lives in the contrib
@@ -566,9 +583,6 @@ services:
         max-size: "50m"
         max-file: "5"
 
-    networks:
-      - qwen36-27b-backend
-
 networks:
   # References the existing backend network from docker-compose.yml.
   # Do NOT set external: true — compose will create it if it doesn't exist,
@@ -576,3 +590,10 @@ networks:
   qwen36-27b-backend:
     name: qwen36-27b-backend
     external: false
+
+  # Owned by the higress deployment — and unowned in the sense that the compose
+  # project which created it no longer exists. Declared, never created, here.
+  # If it is ever removed, this stack and the gateway both fail to start.
+  higressint:
+    name: higressint
+    external: true
