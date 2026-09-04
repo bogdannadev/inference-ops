@@ -179,24 +179,38 @@ scrape_configs:
   # Reachable only on higress_higress-net, which Prometheus joins for this.
   # ---------------------------------------------------------------------------
 
-  # Kubernetes-style apiserver backing the config store. Watch
-  # apiserver_request_total by code, and the *_inflight gauges — this is where
-  # a stuck write to key-auth or a wasmplugin shows up first.
-  - job_name: higress-apiserver
-    scrape_interval: 30s
-    scheme: https
-    tls_config:
-      # Self-signed, with a SAN that does not cover the compose alias. Nothing
-      # is protected by verifying it: the endpoint accepts unauthenticated
-      # requests from anywhere on this network. Verification here would be
-      # ceremony, not security — the real control is that the network is not
-      # routable from outside the host.
-      insecure_skip_verify: true
-    static_configs:
-      - targets:
-          - apiserver.svc:8443
-        labels:
-          node: a100
+  # NO apiserver job, deliberately — REMOVED 2026-09-04 after being permanently
+  # red for a day. It is kept out for the same reason the controller has never
+  # had one: a target that is always down teaches people to ignore red.
+  #
+  # History: this job worked while the apiserver answered anonymously. Adding
+  # `--auth-enabled` on 2026-09-03 closed that hole (an anonymous GET of the
+  # wasmplugins collection returned every consumer's plaintext credential), and
+  # every scrape has returned 403 since. The comment that used to live here
+  # still described the endpoint as anonymous, which the fix had made false the
+  # day before.
+  #
+  # Why it was not simply re-armed with a certificate. Measured 2026-09-04:
+  #
+  #   anonymous                                -> 403
+  #   client.crt (CN=higress, O=system:masters) -> 200
+  #   a CA-signed cert with any other identity  -> 403, on /metrics too
+  #
+  # The apiserver authorizes, it does not merely authenticate, and it serves no
+  # rbac.authorization.k8s.io API group — so there is no way to mint a
+  # read-only or metrics-only credential. The only cert that can scrape this is
+  # the shared cluster-admin one, which can also read every consumer's API key
+  # out of the key-auth object and rewrite all gateway config.
+  #
+  # Seven series is not worth putting that credential inside Prometheus, which
+  # is also attached to `edge`. The question this job was supposed to answer —
+  # "did my config change actually reach the gateway" — is answered better by
+  # the pilot_xds_* series below, because that is the hop that matters. Config
+  # write failures also surface directly: quota-bot reports them to Telegram,
+  # and apply.sh blocks until every object is verified.
+  #
+  # Reopen only if apiserver-side metrics become genuinely necessary, and treat
+  # "Prometheus holds a cluster-admin credential" as the cost being accepted.
 
   # NO controller job, deliberately. The Higress controller exposes no
   # Prometheus endpoint in this build: `higress serve --help` has no metrics
