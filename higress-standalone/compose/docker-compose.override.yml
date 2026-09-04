@@ -198,7 +198,14 @@ services:
   # zero. Never let this be a cache.
   # ---------------------------------------------------------------------------
   redis:
-    image: docker.io/redis:7
+    # Pinned 2026-09-04. This container holds the ai-quota ledger — the
+    # billing record — in the external `higress-quota-ledger` volume. It is the
+    # last thing on the host that should change version by accident. 8.x exists
+    # and is a major; it is not being taken casually.
+    #
+    # Correctly lives in the OVERRIDE: bin/update.sh rewrites
+    # compose/docker-compose.yml on every release and would discard a pin there.
+    image: docker.io/redis:7.4.10@sha256:e9b2e45ecd47fbb69b877cf8d045d5cccaaaed52524b6e098b4abe8212994f73
     container_name: higress-redis
     cpuset: "48-55"
     restart: unless-stopped

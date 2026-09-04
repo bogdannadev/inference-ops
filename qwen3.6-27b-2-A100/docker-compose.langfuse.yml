@@ -38,7 +38,11 @@ services:
   # Postgres — OLTP: users, projects, API keys, prompts, scores metadata
   # ---------------------------------------------------------------------------
   langfuse-postgres:
-    image: docker.io/postgres:17
+    # Pinned 2026-09-04. `:17` floats across patch releases; harmless in
+    # itself, but a Postgres container that silently changes version under a
+    # live data directory is not a risk worth carrying for free. 18.6 exists and
+    # is a MAJOR upgrade — it needs pg_upgrade, not an image swap.
+    image: docker.io/postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
     container_name: qwen36-27b-langfuse-postgres
 
     cpuset: "48-55"
@@ -77,7 +81,9 @@ services:
   # Redis — cache + BullMQ async queue
   # ---------------------------------------------------------------------------
   langfuse-redis:
-    image: docker.io/redis:7
+    # Pinned 2026-09-04. Queues only, so less precious than the higress ledger
+    # — pinned to the same version for consistency across the host.
+    image: docker.io/redis:7.4.10@sha256:e9b2e45ecd47fbb69b877cf8d045d5cccaaaed52524b6e098b4abe8212994f73
     container_name: qwen36-27b-langfuse-redis
 
     cpuset: "48-55"
@@ -113,7 +119,10 @@ services:
   # ClickHouse — OLAP: traces, observations, scores (high-volume analytics)
   # ---------------------------------------------------------------------------
   langfuse-clickhouse:
-    image: docker.io/clickhouse/clickhouse-server:25.12
+    # Pinned 2026-09-04 to the exact build. `25.12` floats within the series,
+    # and this container holds every trace. 26.x exists; moving there is gated
+    # on the Langfuse compatibility matrix, not on it being newer.
+    image: docker.io/clickhouse/clickhouse-server:25.12.11.4@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
     container_name: qwen36-27b-langfuse-clickhouse
 
     cpuset: "48-55"
@@ -173,7 +182,10 @@ services:
   # Auto-creates the `langfuse` bucket on boot.
   # ---------------------------------------------------------------------------
   langfuse-minio:
-    image: cgr.dev/chainguard/minio
+    # Pinned 2026-09-04. This was declared with NO TAG AT ALL, i.e. `:latest`
+    # — the loosest reference on the host, on the container holding trace blobs.
+    # Chainguard rebuilds continuously, so this moved on every pull.
+    image: cgr.dev/chainguard/minio@sha256:66d17146a8c0c4ab97ec8e0b0ae03390be0311644032830d67d580359bde5764
     container_name: qwen36-27b-langfuse-minio
 
     cpuset: "48-55"
@@ -215,7 +227,19 @@ services:
   # Receives traces from clients, writes events to S3, persists refs to Redis.
   # ---------------------------------------------------------------------------
   langfuse-web:
-    image: docker.io/langfuse/langfuse:4
+    # Pinned to the version ACTUALLY RUNNING, 2026-09-04. The `:4` tag is a
+    # major-version float and had drifted a long way: this container was on
+    # 4.5.0 while `:4` resolved to 4.28.1 — 23 minor versions, with forward-only
+    # schema migrations between them.
+    #
+    # That is not theoretical. langfuse-web was recreated earlier the same day
+    # to fix a bind bug; it reused the cached local image, but on a host where
+    # the image had been pruned that recreate would have pulled 4.28.1 and run
+    # every migration in between, unattended, mid-incident.
+    #
+    # Upgrading is now a deliberate decision with a rollback plan, not a side
+    # effect of `up -d`.
+    image: docker.io/langfuse/langfuse:4.5.0@sha256:d6ae613e435a1fbb7cc47e0648bedb71da9079e48ea2b59516714bd20a75384d
     container_name: qwen36-27b-langfuse-web
 
     cpuset: "48-55"
@@ -381,7 +405,9 @@ services:
   # Picks up events from S3, ingests into ClickHouse.
   # ---------------------------------------------------------------------------
   langfuse-worker:
-    image: docker.io/langfuse/langfuse-worker:4
+    # Same float, same drift, same pin. Worker and web MUST move together —
+    # they share the ClickHouse and Postgres schema.
+    image: docker.io/langfuse/langfuse-worker:4.5.0@sha256:a3656ff75471b7835f70b56f4425990f6b1430b8253f92b40bb907e950ad1b8a
     container_name: qwen36-27b-langfuse-worker
 
     cpuset: "48-55"
@@ -496,7 +522,9 @@ services:
   # making services resilient rather than by sequencing them.
   # ---------------------------------------------------------------------------
   otel-collector:
-    image: otel/opentelemetry-collector:0.158.0@sha256:5b97e6e3550ec6e48a71dba6f6304d349a293af8df4ee1f51da67be94fce2ecd
+    # 0.158.0 -> 0.160.0 on 2026-09-04. Stateless bridge; a restart drops only
+    # what is in the send queue, which was 0 at the time.
+    image: otel/opentelemetry-collector:0.160.0@sha256:e495787f07dbe432ce763ebaf5bc3d113850e9eee2250ade7a3da6a882d0d69a
     container_name: qwen36-27b-otel-collector
 
     cpuset: "48-55"
