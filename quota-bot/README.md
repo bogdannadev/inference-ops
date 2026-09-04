@@ -47,6 +47,7 @@ same reason.
 /usage [1h|24h|7d|30d]   input/output split and the i:o ratio
 /alerts                  what is firing right now, with a severity histogram
 /health                  stack and telemetry health on one screen
+/tier <name> <tier>      record a consumer's policy tier (recorded, not enforced)
 
 /newkey <name> [quota]   create, install, seed, return OpenCode config
 /opencode <name>         re-emit the OpenCode config for a consumer
