@@ -1,0 +1,76 @@
+apiVersion: v1
+data:
+  higress: |-
+    mcpServer:
+      enable: false
+      sse_path_suffix: /sse
+      redis:
+        address: redis-address:6379
+        username: ""
+        password: ""
+        db: 0
+      match_list: []
+      servers: []
+    downstream:
+      connectionBufferLimits: 32768
+      http2:
+        initialConnectionWindowSize: 1048576
+        initialStreamWindowSize: 65535
+        maxConcurrentStreams: 100
+      idleTimeout: 180
+      maxRequestHeadersKb: 60
+      routeTimeout: 0
+    upstream:
+      connectionBufferLimits: 10485760
+      idleTimeout: 10
+  mesh: |-
+    accessLogEncoding: TEXT
+    accessLogFile: /var/log/proxy/access.log
+    accessLogFormat: |
+      {"ai_log":"%FILTER_STATE(wasm.ai_log:PLAIN)%","authority":"%REQ(X-ENVOY-ORIGINAL-HOST?:AUTHORITY)%","bytes_received":"%BYTES_RECEIVED%","bytes_sent":"%BYTES_SENT%","consumer":"%REQ(X-MSE-CONSUMER)%","downstream_local_address":"%DOWNSTREAM_LOCAL_ADDRESS%","downstream_remote_address":"%DOWNSTREAM_REMOTE_ADDRESS%","duration":"%DURATION%","istio_policy_status":"%DYNAMIC_METADATA(istio.mixer:status)%","method":"%REQ(:METHOD)%","path":"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%","protocol":"%PROTOCOL%","request_id":"%REQ(X-REQUEST-ID)%","requested_server_name":"%REQUESTED_SERVER_NAME%","response_code":"%RESPONSE_CODE%","response_flags":"%RESPONSE_FLAGS%","route_name":"%ROUTE_NAME%","start_time":"%START_TIME%","trace_id":"%REQ(X-B3-TRACEID)%","upstream_cluster":"%UPSTREAM_CLUSTER%","upstream_host":"%UPSTREAM_HOST%","upstream_local_address":"%UPSTREAM_LOCAL_ADDRESS%","upstream_service_time":"%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%","upstream_transport_failure_reason":"%UPSTREAM_TRANSPORT_FAILURE_REASON%","user_agent":"%REQ(USER-AGENT)%","x_forwarded_for":"%REQ(X-FORWARDED-FOR)%"}
+    configSources:
+    - address: xds://controller:15051
+    - address: k8s://
+    defaultConfig:
+      disableAlpnH2: true
+      discoveryAddress: pilot:15012
+      proxyStatsMatcher:
+        inclusionRegexps:
+        - .*
+    dnsRefreshRate: 200s
+    enableAutoMtls: false
+    enablePrometheusMerge: true
+    ingressControllerMode: "OFF"
+    mseIngressGlobalConfig:
+      enableH3: false
+      enableProxyProtocol: false
+    protocolDetectionTimeout: 100ms
+    rootNamespace: higress-system
+    trustDomain: cluster.local
+  meshNetworks: 'networks: {}'
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2026-09-03T07:12:52Z"
+  labels:
+    app: higress-gateway
+    higress: higress-system-higress-gateway
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:data:
+        .: {}
+        f:higress: {}
+        f:mesh: {}
+        f:meshNetworks: {}
+      f:metadata:
+        f:labels:
+          .: {}
+          f:app: {}
+          f:higress: {}
+    manager: curl
+    operation: Update
+    time: "2026-09-03T07:12:52Z"
+  name: higress-config
+  namespace: higress-system
+  resourceVersion: "1"

@@ -20,6 +20,39 @@ checkExitCode() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# LOCAL DEVIATION (2026-09-04). Upstream calls the apiserver with a bare
+# `curl -k` and no client certificate. That worked while the apiserver answered
+# anonymously; it stopped the moment `--auth-enabled` was added on 2026-09-03,
+# and every apiserver call here has returned 403 since.
+#
+# The consequence is a boot-time landmine, not a cosmetic error. `controller`
+# and `plugin-server` both declare
+#   depends_on: prepare: { condition: service_completed_successfully }
+# so `docker compose up -d` — the documented restart procedure — blocks forever
+# instead of starting them. A plugin-server that never starts means the wasm
+# modules cannot be fetched, and an unfetchable WasmPlugin FAILS OPEN: the
+# gateway would serve completions with no key-auth and no ai-quota at all.
+#
+# A FUNCTION, not a variable of flags. This script sets `IFS=$'\n'` while
+# materialising the ConfigMap keys and never restores it, so an unquoted
+# "$OPTS" further down stops word-splitting on spaces and curl receives the
+# whole string as one argument ("option --cert ... --key ...: is unknown").
+# Positional parameters are immune to that.
+#
+# The certificate is the same cluster-admin one the controller and console
+# present; ./volumes is already mounted here read-write, so nothing new is
+# exposed. Guarded on the files existing so this still runs on a deployment
+# that has not enabled auth.
+apicurl() {
+  if [ -f /mnt/volumes/api/client.crt ] && [ -f /mnt/volumes/api/client.key ]; then
+    curl --cert /mnt/volumes/api/client.crt --key /mnt/volumes/api/client.key "$@"
+  else
+    curl "$@"
+  fi
+}
+# ---------------------------------------------------------------------------
+
 checkConfigExists() {
   # $1 namespace
   # $2 configGroupVersion
@@ -40,7 +73,7 @@ checkConfigExists() {
   else
     url="${API_SERVER_BASE_URL}${uriPrefix}/${configGroupVersion}/namespaces/${namespace}/${configType}/${configName}"
   fi
-  statusCode=$(curl -s -o /dev/null -w "%{http_code}" "${url}" -k)
+  statusCode=$(apicurl -s -o /dev/null -w "%{http_code}" "${url}" -k)
   if [ $statusCode -eq 200 ]; then
     return 0
   elif [ $statusCode -eq 404 ]; then
@@ -73,7 +106,7 @@ getConfig() {
     url="${API_SERVER_BASE_URL}${uriPrefix}/${configGroupVersion}/namespaces/${namespace}/${configType}/${configName}"
   fi
   local tmpFile=$(mktemp /tmp/higress-precheck-config.XXXXXXXXX.cfg)
-  local statusCode=$(curl -s -o "$tmpFile" -w "%{http_code}" "${url}" -k -H "Accept: application/yaml")
+  local statusCode=$(apicurl -s -o "$tmpFile" -w "%{http_code}" "${url}" -k -H "Accept: application/yaml")
   if [ $statusCode -eq 200 ]; then
     config=$(cat "$tmpFile")
     rm "$tmpFile"
@@ -109,7 +142,7 @@ publishConfig() {
   else
     url="${API_SERVER_BASE_URL}${uriPrefix}/${configGroupVersion}/namespaces/${namespace}/${configType}"
   fi
-  statusCode="$(curl -s -o /dev/null -w "%{http_code}" "$url" -k -X POST -H "Content-Type: application/yaml" -d "$content")"
+  statusCode="$(apicurl -s -o /dev/null -w "%{http_code}" "$url" -k -X POST -H "Content-Type: application/yaml" -d "$content")"
   if [ $statusCode -ne 201 ]; then
     echo "  Publishing config ${configType}.${configName} to namespace ${namespace} failed with ${statusCode}"
     exit -1
