@@ -78,8 +78,12 @@ flowchart LR
 - Collector queue drained 1000 → 0; `sent_spans` 2,272,818 → 2,290,440.
 - ClickHouse `events_core` writing live again (+17,659 rows on the flush).
 - `/alert` returns 401 without a bearer, 401 with a wrong one, 200 with the right one.
-- End to end through the real Alertmanager: `notifications_total{webhook}` 4 → 5
-  with `failed` unchanged, and the bot logged the delivery.
+- End to end through the real Alertmanager: `notifications_total{webhook}` 4 → 8
+  with `failed` frozen at 4 (all of them the pre-deployment 404s).
+- Both directions delivered: FIRING for `PrometheusTargetDown` and
+  `GpuMemoryPressure` (real rules, not synthetic), and RESOLVED for the smoke
+  test at 09:45:18.
+- Grouping behaved: two `GpuMemoryPressure` instances arrived as one message.
 
 **Bot integration**
 - `POST /alert` — Alertmanager webhook receiver, verifies a shared secret,
