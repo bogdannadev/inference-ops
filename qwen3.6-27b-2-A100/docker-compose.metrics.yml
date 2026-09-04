@@ -354,6 +354,80 @@ services:
       - qwen36-27b-backend
       - edge
 
+  # ---------------------------------------------------------------------------
+  # Alertmanager — the delivery path that did not exist until 2026-09-04.
+  #
+  # Before this, Prometheus evaluated 17 rules and Grafana 7 more, and NOTHING
+  # was ever notified: no `alerting:` block, no Alertmanager, no Grafana contact
+  # point. A 14-hour Langfuse ingest outage passed unnoticed with the correct
+  # alert firing throughout. Rules that fire into a UI nobody has open are not
+  # monitoring.
+  #
+  # NETWORK: `edge` only, deliberately, and this is the whole reason it is not
+  # on the backend with the rest of the metrics tier. Alertmanager has exactly
+  # two conversations — Prometheus talks to it, it talks to quota-bot — and the
+  # bot is on `edge`/`higress-net`/`higressint`, never the backend. Putting the
+  # bot on the backend instead would hand an internet-reachable service a route
+  # to the worker ports and ZMQ sockets, which is precisely the lateral-movement
+  # path the network split closes. So Alertmanager comes to the bot. It ends up
+  # with strictly less reach than Prometheus, which spans both networks.
+  #
+  # No host port. The web UI (silences, the alert list) is reachable over the
+  # SSH tunnel through Prometheus's own network only if you add one; day-to-day
+  # the surface is the Telegram group and `/alerts` in the bot.
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d
+    container_name: qwen36-27b-alertmanager
+
+    cpuset: "48-55"
+
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      # Alertmanager builds silence and notification URLs from this. It has no
+      # public site; this only has to be a stable, resolvable identity.
+      - --web.external-url=http://qwen36-27b-alertmanager:9093
+
+    # NOTE: there is no --web.enable-lifecycle here. That is a PROMETHEUS flag;
+    # Alertmanager rejects it and crash-loops with "unknown long flag". A config
+    # reload is `POST /-/reload` (or SIGHUP), which Alertmanager serves by
+    # default with no flag at all.
+
+    volumes:
+      # DIRECTORY mount, not a file — see the header of alertmanager.yml for
+      # the inode trap this avoids. The gitignored `webhook_secret` lands in
+      # the same directory and is read via credentials_file.
+      #
+      # webhook_secret must be world-readable (644): this image runs as
+      # `nobody`, so a 600 file owned by the operator is unreadable and the
+      # container fails at config load. It is gitignored and lives on a
+      # single-operator host.
+      - ./alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Resilience, not ordering: Alertmanager has no dependency worth gating on.
+    # Prometheus retries delivery on its own, so an Alertmanager that starts
+    # late loses nothing but the notifications for that window, and one that
+    # starts early simply waits.
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - edge
+
 networks:
   # Declared here so the Prometheus service above can attach to it. Created
   # once outside compose (`docker network create edge`) and shared with the
@@ -370,3 +444,6 @@ networks:
 volumes:
   prometheus_data:
   grafana_data:
+  # Notification log and silences. Persisted so a restart does not re-notify
+  # everything currently firing, and does not silently drop active silences.
+  alertmanager_data:

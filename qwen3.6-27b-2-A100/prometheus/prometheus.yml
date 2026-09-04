@@ -30,6 +30,30 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# -----------------------------------------------------------------------------
+# Alert DELIVERY. Added 2026-09-04, and its absence was the most consequential
+# gap in this file.
+#
+# Until now every rule below evaluated correctly and notified nobody: there was
+# no alerting block, no Alertmanager, and the Grafana SLO rules were
+# evaluation-only with no contact point. A Langfuse ingest outage ran ~14 hours
+# with TraceExportFailing firing the whole time. Evaluation is not monitoring.
+#
+# Alertmanager is on `edge` rather than the backend because it has to reach
+# quota-bot, which lives there; see the service comment in
+# docker-compose.metrics.yml for why the bot must NOT be moved to the backend
+# instead. Prometheus already spans both networks, so it reaches this either way.
+#
+# Delivery is push-with-retry from here: an Alertmanager that is down or
+# restarting costs the notifications for that window and nothing else. No rule
+# evaluation depends on it.
+# -----------------------------------------------------------------------------
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - qwen36-27b-alertmanager:9093
+
 scrape_configs:
   # ---------------------------------------------------------------------------
   # SGLang workers — engine-level metrics (--enable-metrics / --enable-mfu-metrics)
@@ -248,6 +272,27 @@ scrape_configs:
     static_configs:
       - targets:
           - qwen36-27b-langfuse-clickhouse:9363
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager — the delivery path itself.
+  #
+  # Worth scraping for exactly one reason: alertmanager_notifications_failed_total.
+  # A webhook the bot is rejecting (wrong bearer, bot down, endpoint renamed)
+  # otherwise looks identical to a quiet system — alerts fire, Alertmanager
+  # accepts them, and nothing arrives. That failure mode is how this stack got
+  # into a 14-hour silent outage in the first place, one layer up.
+  #
+  # Also: alertmanager_notification_latency_seconds and
+  # alertmanager_alerts{state="active"} for a sanity check against
+  # `curl /api/v1/alerts` on this server.
+  # ---------------------------------------------------------------------------
+  - job_name: alertmanager
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - qwen36-27b-alertmanager:9093
         labels:
           node: a100
 
