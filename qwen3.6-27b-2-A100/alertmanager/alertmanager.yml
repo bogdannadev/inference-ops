@@ -1,0 +1,94 @@
+# =============================================================================
+# Alertmanager — routes every alert to the Telegram group via quota-bot
+# Location in repo: ./alertmanager/alertmanager.yml
+#
+# Mounted as a DIRECTORY, not a file. Single-file bind mounts resolve to an
+# inode at container start, and any editor that writes-then-renames leaves the
+# container bound to the old unlinked inode — the host file changes and the
+# container never sees it, while every health signal reports success. The same
+# trap is documented for ./prometheus and the Caddyfile.
+#
+# Why this exists at all: before 2026-09-04 the stack evaluated 24 alert rules
+# and delivered none of them. Prometheus had no `alerting:` block, no
+# Alertmanager existed, and the Grafana rules were evaluation-only with no
+# contact point. A Langfuse ingest outage ran for ~14 hours with the correct
+# alert firing the entire time.
+# =============================================================================
+
+global:
+  # How long after the last evaluation an alert is considered resolved when
+  # Prometheus stops sending it. Must exceed Prometheus's evaluation_interval
+  # (15s) by a comfortable margin or alerts flap resolved/firing.
+  resolve_timeout: 5m
+
+route:
+  receiver: quota-bot
+
+  # Group by the rule and its severity, NOT by instance. On a single-node
+  # stack, per-instance grouping produces one message per GPU for the same
+  # condition — which is exactly the noise that trains people to mute a
+  # channel. GpuMemoryPressure firing on both GPUs is one message.
+  group_by: ['alertname', 'severity']
+
+  # Wait this long for other alerts in a new group before sending, so a host
+  # event that trips several rules at once arrives as one message.
+  group_wait: 30s
+
+  # Minimum spacing between messages for a group that has already fired and
+  # gained a new member.
+  group_interval: 5m
+
+  # Re-notify about a still-firing alert this often. Four hours is chosen
+  # against the audience: a handful of operators reading a Telegram group, for
+  # whom hourly repeats of a known-ongoing condition are noise.
+  repeat_interval: 4h
+
+  routes:
+    # Informational SLO rules (radix hit rate, spec accept rate) are worth
+    # knowing and not worth repeating. They still page once.
+    - matchers:
+        - severity = "info"
+      receiver: quota-bot
+      repeat_interval: 24h
+
+receivers:
+  - name: quota-bot
+    webhook_configs:
+      # The bot is on `edge`, as is Prometheus; Alertmanager joins only that
+      # network. It never needs the backend, so it never gets a route to the
+      # worker ports or ZMQ sockets.
+      - url: http://quota-bot:8080/alert
+
+        # Send the resolved notification too. Half the value of this channel is
+        # learning that something recovered without having to go and look.
+        send_resolved: true
+
+        # 0 = no cap. The bot renders a summary line per alert; a large group
+        # is still one readable message, and truncating would hide the tail.
+        max_alerts: 0
+
+        http_config:
+          authorization:
+            type: Bearer
+            # NOT inline. This file is committed; the credential is not.
+            # Regenerate it from .env with:
+            #   grep '^ALERT_WEBHOOK_SECRET=' .env | cut -d= -f2- \
+            #     > alertmanager/webhook_secret
+            credentials_file: /etc/alertmanager/webhook_secret
+
+inhibit_rules:
+  # A target that is down cannot report anything else truthfully. Without this,
+  # one dead exporter produces both "target down" and a cascade of derived
+  # warnings from its now-stale series.
+  - source_matchers:
+      - alertname = "PrometheusTargetDown"
+    target_matchers:
+      - severity =~ "warning|info"
+    equal: ['instance']
+
+  # A critical and a warning about the same rule are the same event.
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['alertname']

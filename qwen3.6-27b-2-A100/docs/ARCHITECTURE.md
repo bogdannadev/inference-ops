@@ -100,6 +100,7 @@ shared prefix caches on both replicas.
 | `grafana` | host `127.0.0.1:3000` | 7 dashboards + SLO alert rules, auto-provisioned |
 | `node-exporter` | `qwen36-27b-node-exporter:9100` | host CPU/RAM/disk/network |
 | `dcgm-exporter` | `dcgm-exporter:9400` | per-GPU telemetry, 1000ms sampling |
+| `alertmanager` | `qwen36-27b-alertmanager:9093` | alert delivery to Telegram via quota-bot; on `edge` only — see `docs/OBSERVABILITY.md` |
 
 ### Langfuse tier — `docker-compose.langfuse.yml`
 

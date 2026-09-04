@@ -214,12 +214,31 @@ Two mounting rules worth not relearning:
   `clickhouse-server.err.log`. Its retention is set by ALTER in the script
   instead.
 
-**Operational coupling.** SGLang raises on exporter *initialisation* failure
-rather than logging and continuing, so bringing the inference tier up without
-this overlay is not a supported combination while `--enable-trace` is set.
-Either keep the overlays together (the documented rule anyway) or set
-`SGLANG_TRACE_LEVEL=0`. Because this touches the serving tier, apply it with
-`deploy/roll-replica.sh` one replica at a time rather than a full restart.
+**Operational coupling — corrected 2026-09-04.** This section previously
+claimed that SGLang raises on exporter *initialisation* failure, making it
+unsupported to bring the inference tier up without this overlay. **That is
+wrong**, and it was wrong in a way that discouraged testing boot order.
+
+Measured against the pinned engine image:
+
+```bash
+docker exec qwen36-27b-r0 python3 -c \
+  "from sglang.srt.observability.trace import process_tracing_init; \
+   process_tracing_init('http://this-host-does-not-exist:4317','test')"
+# returns successfully in 0.01s
+```
+
+`get_otlp_span_exporter` builds a `GRPCSpanExporter` whose channel is lazy — no
+connection is attempted until the first export. `process_tracing_init` raises
+only on a malformed endpoint, an unsupported protocol, or a missing
+`opentelemetry` package; never on an unreachable one. A collector that is down
+costs dropped spans and nothing else.
+
+**Replica startup therefore does not depend on this overlay.** Keeping the
+overlays together is still the operational rule for other reasons, and
+`SGLANG_TRACE_LEVEL=0` is still the kill-switch. Because changes here touch the
+serving tier, apply them with `deploy/roll-replica.sh` one replica at a time
+rather than a full restart.
 
 **Health.** The collector is scraped by Prometheus on `:8888`; watch
 `otelcol_exporter_send_failed_spans` and `otelcol_exporter_queue_size`. The

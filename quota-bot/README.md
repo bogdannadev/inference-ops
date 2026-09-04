@@ -11,19 +11,27 @@ Built as a single .NET 10 file-based app (`bot.cs`), published Native AOT.
 Webhook, not long polling, and asynchronous end to end:
 
 ```
-Telegram --POST--> Caddy :443            TLS + Telegram source-IP filter
-                     |
-                     v
-                   quota-bot :8080       verify secret -> enqueue -> 200
-                     |                   (nothing slow in the request path)
-                     v
-                   Worker                authorize -> dispatch -> reply
-                     +--> higress:80             quota get / delta / refresh
-                     +--> apiserver.svc:8443     key-auth object read + write
-                     +--> higress-redis:6379     enumerate + delete ledger keys
-                     +--> prometheus:9090        usage windows
-                     +--> api.telegram.org       sendMessage
+Telegram   --POST--> Caddy :443          TLS + Telegram source-IP filter
+                       |
+Alertmanager --POST--> | (edge network, not public)
+                       v
+                     quota-bot :8080     verify secret -> enqueue -> 200
+                       |                 (nothing slow in the request path)
+          +------------+------------+
+          v                         v
+        Worker                  AlertWorker
+   authorize -> dispatch        render group -> send
+     +--> higress:80             quota get / delta / refresh
+     +--> apiserver.svc:8443     key-auth object read + write
+     +--> higress-redis:6379     enumerate + delete ledger keys
+     +--> prometheus:9090        usage windows
+     +--> alertmanager:9093      what is firing now (/alerts)
+     +--> api.telegram.org       sendMessage
 ```
+
+Two independent queues on purpose: an operator waiting on `/keys` should not
+queue behind an alert storm, and an alert must not be dropped because a command
+is mid-flight.
 
 The handler answers 200 and does no work. Telegram redelivers anything that is
 not 2xx, so work in the request path means retry storms *and* duplicate
@@ -37,6 +45,7 @@ same reason.
 /keys                    consumers and balances (never credentials)
 /balance [name]
 /usage [1h|24h|7d|30d]
+/alerts                  what is firing right now, with a severity histogram
 
 /newkey <name> [quota]   create, install, seed, return OpenCode config
 /opencode <name>         re-emit the OpenCode config for a consumer
@@ -52,6 +61,25 @@ returns the same 403 *No quota left* for "never seeded", "exhausted" and "Redis
 is down", so an unseeded key looks broken in a way that wastes an afternoon.
 
 Credentials are printed once, by `/newkey`. `/keys` lists names only.
+
+## Alert delivery
+
+`POST /alert` receives Alertmanager webhooks and renders one Telegram message
+per alert group. It is reachable only from the `edge` docker network — Caddy
+proxies `/tg/<random>` to this process and nothing else — but it authenticates
+anyway with a bearer, because that bearer is all that stands between "anything
+on edge" and the operators' alert channel.
+
+`ALERT_WEBHOOK_SECRET` must match the `credentials_file` Alertmanager presents.
+Set `ALERT_CHAT_IDS` to send one copy to a group chat; it defaults to every id
+in `TELEGRAM_ALLOWED_IDS`, on the principle that an alert nobody is guaranteed
+to see is the failure this path exists to remove.
+
+A payload that will not deserialise is answered **200**, deliberately.
+Alertmanager retries non-2xx, and a body that cannot be parsed will not parse on
+the third attempt — it would just pin one group in a retry loop forever. Real
+delivery failures (the bot being down) never reach that line and are retried
+normally.
 
 ## How keys are written
 
