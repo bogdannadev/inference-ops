@@ -318,6 +318,60 @@ Two quirks of the framework, both cost time:
   `exp_samples`. It is absent only where `sum()` or a `bool` comparison dropped
   it.
 
+## Per-consumer latency and status — the Vector aggregates
+
+`ai-statistics` emits seven counters and none carries a status code or a
+histogram, so "which consumer is getting 422s" and "what is p95 for this
+consumer" had no answer in Prometheus at all. Vector now derives both from the
+access log alongside its ClickHouse writes:
+
+```
+gateway_requests_total{consumer,route,status_class}
+gateway_tokens_total{consumer,model}
+gateway_request_duration_seconds{consumer,route}   # histogram
+```
+
+They live in Prometheus rather than being read from ClickHouse because
+quota-bot is on `edge` and the trace store is backend-only — and putting an
+internet-reachable bot on the backend would give it a route to the worker ports.
+The aggregates come to where the bot already looks.
+
+`consumer="unauthenticated"` is the 401 path: a wrong or missing key has no
+consumer to attribute to, and naming it keeps that traffic in the breakdown
+instead of vanishing.
+
+### The histogram is an approximation; the fact table is exact
+
+Two things to know before trusting a p95 from Prometheus here.
+
+**Buckets must fit LLM latency.** The exporter's defaults stop at `le="10"`,
+which is right for an HTTP API and wrong for this workload. Caught on the first
+real agent traffic: a consumer whose exact p95 was 16.7s and whose slowest
+request took 35.7s reported a Prometheus p95 of exactly **10.00s**.
+`histogram_quantile` cannot interpolate past the highest finite bucket, so a
+saturated histogram pins to its top edge and reads like a healthy number.
+Buckets now run to 300s.
+
+**Changing buckets invalidates comparison across the change.** Old and new
+`le` series coexist until the old ones go stale, and `sum by (le)` merges them
+— so a query spanning a bucket change silently mixes two different histograms.
+
+**And it stays coarse at low n.** Measured right after the change, with three
+observations: Prometheus said 29.00s where the exact p95 was 19.45s. That is
+bucket interpolation, not a bug.
+
+So: Prometheus for trends and alerting, `gateway.requests` in ClickHouse for
+any number that has to be right:
+
+```sql
+SELECT consumer, count() n,
+       round(quantile(0.95)(duration_ms)/1000, 2) AS p95_s,
+       round(max(duration_ms)/1000, 2)            AS max_s
+FROM gateway.requests FINAL
+WHERE ts > now() - INTERVAL 1 DAY
+GROUP BY consumer;
+```
+
 ## Grafana dashboards — `grafana/provisioning/dashboards/`
 
 Seven dashboards, one per folder, auto-provisioned (read-only):

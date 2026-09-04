@@ -1073,7 +1073,9 @@ sealed class Worker(
 
         var header = $"{"consumer",-16}{"p50",8}{"p95",9}{"p99",9}";
         return Table("<b>Latency</b>", new[] { header }.Concat(rows))
-             + "\n<i>Seconds, whole request as Envoy saw it. Cumulative since Vector started.</i>";
+             + "\n<i>Seconds, whole request as Envoy saw it. Cumulative since Vector started.</i>"
+             + "\n<i>Bucketed, so approximate at low request counts \u2014 the exact figure is in the "
+             + "fact table.</i>";
     }
 
     private async Task<string> ErrorsAsync(string window, CancellationToken ct)
