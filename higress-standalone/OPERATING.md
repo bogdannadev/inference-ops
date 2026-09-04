@@ -143,6 +143,42 @@ labels which is which.
 ./apply.sh --restart     # also restart apiserver + controller — configmaps only
 ```
 
+### Changing `higress-config` takes four steps, not two
+
+`--restart` is **not sufficient** for the mesh config, and the way it fails is
+silent: the object updates, the control plane restarts, every health check
+passes, and the gateway carries on with the old config indefinitely.
+
+Pilot does not read the ConfigMap. It reads three files —
+`compose/volumes/pilot/config/{higress,mesh,meshNetworks}` — which the
+`prepare` service materialises from the ConfigMap's `data` keys at stack
+startup and at no other time.
+
+The full sequence:
+
+```bash
+# 1. edit config/configmaps/higress-config.yaml, then
+./apply.sh --restart
+
+# 2. re-materialise pilot's files from the updated ConfigMap
+cd compose && COMPOSE_PROFILES='plugin-server' \
+  docker compose -p higress up prepare --no-deps
+
+# 3. pilot reads those files only at boot
+docker restart higress-pilot-1
+
+# 4. confirm it actually reached Envoy — not that the object changed
+docker exec higress-gateway-1 curl -s localhost:15000/config_dump | grep <your-change>
+```
+
+Step 4 is the one that matters. Steps 1-3 all report success while the gateway
+serves the old config.
+
+Re-running `prepare` against a live stack is safe: it checks whether pilot and
+the gateway are up and skips certificate renewal if so ("Gateway is running.
+Skip certificate renewal"). Do **not** run it while the gateway is down unless
+you intend to regenerate the CA.
+
 The apiserver watches its store, so ordinary objects go live on the
 controller's resync (~6s) with no restart. `apply.sh` prunes objects you
 deleted from `./config` (tracked in `/opt/data/.apply-manifest`) and verifies

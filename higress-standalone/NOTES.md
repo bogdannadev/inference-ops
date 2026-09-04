@@ -147,6 +147,44 @@ assume a plugin is enforcing because the object exists and the route answers.
 The same reasoning applies to the seeded `key-auth.internal`: its URL 404s, and
 it is harmless only because it also carries `defaultConfigDisable: true`.
 
+## `--auth-enabled` broke `prepare`, and it was a boot-time landmine
+
+Found 2026-09-04 while adding a field to the access log format.
+
+`compose/scripts/prepare.sh` calls the apiserver with a bare `curl -k` and no
+client certificate. That was fine while the apiserver answered anonymously. The
+`--auth-enabled` fix on 2026-09-03 closed that hole and, unnoticed, locked
+`prepare` out: **every apiserver call in it had returned 403 ever since**.
+
+It went unnoticed because `prepare` only runs at stack startup, and the stack
+had not been fully restarted since. What made it dangerous is the dependency
+edge:
+
+```yaml
+controller:      depends_on: { prepare: { condition: service_completed_successfully } }
+plugin-server:   depends_on: { prepare: { condition: service_completed_successfully } }
+```
+
+`docker compose up -d` — the documented restart procedure — would have blocked
+forever on a `prepare` that can never succeed, leaving the controller and the
+plugin-server down. And a plugin-server that never starts means the wasm modules
+cannot be fetched, which per the section above **fails open**: the gateway would
+serve completions with no key-auth and no ai-quota.
+
+(A plain host reboot would not have hit this, because the Docker daemon restarts
+containers by policy and ignores `depends_on`. The documented operator command
+would have.)
+
+Fixed by giving `prepare.sh` the same client certificate the controller and
+console present, via an `apicurl()` wrapper. **A function, not a variable of
+flags** — the script sets `IFS=$'\n'` while materialising the ConfigMap keys and
+never restores it, so an unquoted `"$OPTS"` later stops splitting on spaces and
+curl reports `option --cert ... --key ...: is unknown`. That was the first
+attempt; positional parameters are immune.
+
+`prepare.sh` comes from the release tarball. Re-check this patch after any
+`bin/update.sh`.
+
 ## Plugin version identity — two traps
 
 **A plugin's directory version is a distribution label, not the source
