@@ -38,6 +38,12 @@ tests:
         values: '7200000x200'
       - series: 'route_upstream_model_consumer_metric_total_token{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
         values: '0+100000x200'
+      # 96k input / 4k output per step: a 24:1 ratio, the shape real agent
+      # traffic showed (45.8:1 on the first live consumer).
+      - series: 'route_upstream_model_consumer_metric_input_token{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
+        values: '0+96000x200'
+      - series: 'route_upstream_model_consumer_metric_output_token{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
+        values: '0+4000x200'
       - series: 'route_upstream_model_consumer_metric_llm_duration_count{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
         values: '0+10x200'
 
@@ -92,6 +98,19 @@ tests:
             value: 0
           - labels: '{__name__="consumer:quota_days_left", ai_consumer="carol"}'
             value: 5000000
+
+      # The direction split, and the ratio derived from it. 96000/4000 = 24
+      # exactly at every step, so unlike the days-left quotient this one is
+      # clean under increase()'s extrapolation.
+      # round(), because increase() extrapolates: the raw quotient comes back as
+      # 24.000000000000004 and this framework has no tolerance option. Same
+      # lesson as the days-left assertion above — assert the property, not the
+      # float. round() also strips __name__, hence the bare label set.
+      - expr: 'round(consumer:token_ratio:in_per_out24h{ai_consumer="alice"})'
+        eval_time: 25h
+        exp_samples:
+          - labels: '{ai_consumer="alice"}'
+            value: 24
 
       # alice is asserted on the property that actually matters — under one day
       # of headroom — rather than on the exact quotient. `< bool 1` yields 1 or
