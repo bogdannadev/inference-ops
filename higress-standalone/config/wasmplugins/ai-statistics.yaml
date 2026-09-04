@@ -53,3 +53,35 @@ spec:
         # route.<r>.upstream.<c>.model.<m>.consumer.<n>.metric.{input,output,total}_token
         # keep working. Verified after the change.
         use_default_attributes: false
+
+        # Explicit attributes, added 2026-09-04 for Stage C. NOT the same thing
+        # as use_default_attributes above: that switch turns on the builtin set,
+        # which writes question / answer / reasoning — every prompt and every
+        # completion, verbatim — and makes the plugin buffer both bodies. These
+        # name specific fields and touch no message content.
+        #
+        # Schema, from the Attribute struct at v2.2.4:
+        #   key, value_source, value, apply_to_span, apply_to_log, rule,
+        #   default_value, trace_span_key, as_separate_log_field
+        #
+        # apply_to_log is false throughout: the consumer already reaches the
+        # access log as a top-level field via %REQ(X-MSE-CONSUMER)% in
+        # higress-config, and duplicating it into the ai_log blob would give the
+        # fact table two sources for one column.
+        attributes:
+          # Our canonical name, for querying spans directly.
+          - key: consumer
+            value_source: request_header
+            value: x-mse-consumer
+            apply_to_span: true
+            apply_to_log: false
+            default_value: unauthenticated
+
+          # The same value under the key Langfuse maps to its own user field,
+          # so per-user views populate without a query being written by hand.
+          - key: langfuse.user.id
+            value_source: request_header
+            value: x-mse-consumer
+            apply_to_span: true
+            apply_to_log: false
+            default_value: unauthenticated

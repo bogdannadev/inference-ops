@@ -421,8 +421,16 @@ services:
       - "9598"
       - "8686"
 
+    # NOT `vector top` — that is an interactive TUI and exits 74 with
+    # "Terminal must be a teletype (TTY) to display a Vector dashboard" when
+    # run by a healthcheck. It reported this container unhealthy for an hour
+    # while it was ingesting perfectly, which is the same shape of mistake as
+    # probing a distroless image with wget.
+    #
+    # The API's own /health returns {"ok":true} and the alpine image has
+    # busybox wget, so this is a real probe.
     healthcheck:
-      test: ["CMD", "vector", "top", "--url", "http://127.0.0.1:8686/graphql", "--interval", "1000"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8686/health"]
       interval: 30s
       timeout: 5s
       retries: 3

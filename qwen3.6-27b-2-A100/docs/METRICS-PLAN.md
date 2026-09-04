@@ -166,19 +166,37 @@ repointed from the retired `:8080` listener to `:80`).
 off the shared key on the direct hostname, ~87% of traffic stays unattributed
 and the fact table is dominated by requests with no consumer.
 
-## Stage C — identity in traces
+## Stage C — identity in traces ✅ DONE 2026-09-04
 
 **Setup**
 1. Envoy OTLP tracer in `higress-config` mesh config → existing collector.
 2. Consumer and `chat_id` as span attributes; sampling policy.
 
-**Test**
-- Spans in Langfuse carry consumer; per-user views populate.
-- Confirm the router still drops trace context, so gateway and engine spans stay
-  separate traces joined on `request_id` — expected, not a regression.
+**Test — all passed**
+- Gateway spans arrive: `random_sampling: 3` for 3 requests, `spans_sent: 12`.
+- Spans carry `user_id = quota-admin`, plus `attributes.consumer`,
+  `attributes.guid:x-request-id` and `gen_ai.usage.*` token counts.
+- **The join closes.** Gateway span joined to the fact table on request_id:
+  same consumer, same token count (67 = 67), for the same id.
+- Router trace-context drop confirmed in the data rather than assumed: gateway
+  spans carry a real trace_id, engine spans carry `000000000000`.
 
-**Bot integration**
-- `/trace <request_id>` — deep link into Langfuse.
+**Three things this needed that the plan did not anticipate**
+1. The collector was backend-only and the gateway has no route there. It now
+   also sits on `higressint` — narrower than `edge`, which carries Caddy.
+2. Higress builds the tracer's cluster as
+   `outbound|<port>||<registry-name>.<registry-type>`, so a raw hostname
+   produced a cluster nothing created. The collector had to be registered in
+   McpBridge and referenced as `otel-collector.dns`.
+3. The consumer is not automatic. ai-statistics needed explicit `attributes`
+   with `apply_to_span: true` — distinct from `use_default_attributes`, which
+   would have written every prompt and completion into the log.
+
+**Bot integration — done**
+- `/trace <request-id>` — a signpost, deliberately not a lookup. The bot is on
+  `edge` and both stores are backend-only, so rather than half-answer from
+  aggregates that cannot resolve a single request, it hands over the Langfuse
+  URL and the exact ClickHouse query, and explains the split-trace behaviour.
 
 ## Stage R — resilience, then a manual reboot test
 
