@@ -140,9 +140,51 @@ and decrement that consumer's balance by exactly the token count.
 - **Vector re-reads from its checkpoint,** not from the top of the file. A
   handful of duplicate rows would be collapsed by ReplacingMergeTree anyway.
 
-## Known-unverified
+## Result — reboot performed 2026-09-04 20:40 local (15:40:29Z). PASSED.
 
-Nothing in this stack has survived a full host restart since the metrics work
-began — five new containers, a collector on two networks, a patched `prepare`,
-and cross-project dependencies have all been added and never cold-started
-together. That is what this reboot tests.
+**Full recovery in 5m14s**, bounded entirely by model load. Nothing needed a
+hand.
+
+| Check | Result |
+|---|---|
+| Containers running | 27/27 |
+| Crash loops | none — `restarts=0` everywhere except langfuse-web at 1 |
+| Scrape targets | 14/14 up |
+| Alerts | 2 × `PrometheusTargetDown` while replicas loaded, then **0** |
+| Quota balances | 5 keys intact |
+| Consumer tiers | 3 keys intact |
+| Fact table | 63 rows, 63 unique ids, **0 duplicates** |
+| Trace ingest | writing, collector queue 0 |
+| Wasm plugins | 8 counters, **none at zero** — no fail-open |
+| Replicas ready | 15:45:43Z, `restarts=0` on both |
+
+End to end through every layer — auth, quota, routing, engine, access log,
+Vector, ClickHouse, ledger:
+
+```
+HTTP 200 in 0.254s     usage: 54 prompt + 6 completion = 60
+ledger delta:  60      fact table row: quota-admin / 60 / 200 / 250ms
+```
+
+The ledger moved by exactly the token count and the fact table agrees. Billing
+reconciles across a cold boot.
+
+### Every prediction held
+
+- **langfuse-web restarted once** (47 error lines) waiting for its data stores,
+  then settled — exactly as written above.
+- **`PrometheusTargetDown` fired and resolved itself** as the replicas came up.
+- **Envoy counters reset**: 1,075,183 → 60. The Redis balances and the
+  ClickHouse rows did not. That asymmetry is precisely why billing reads the
+  ledger and never the counters.
+- **Vector resumed from its checkpoint** with no gap and no duplicates across
+  the restart.
+- **`prepare` did not re-run**, correctly: `restart: on-failure` means a
+  container that exited 0 stays exited, and pilot's config files persist on
+  disk. Nothing needed re-materialising.
+
+### The one thing worth remembering
+
+Recovery is bounded by weight loading and CUDA graph capture — about five
+minutes — during which the replicas are down, two targets are red and an alert
+fires. That is normal and self-clearing. Do not intervene before ~6 minutes.
