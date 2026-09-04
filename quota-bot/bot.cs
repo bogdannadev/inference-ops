@@ -575,6 +575,7 @@ sealed class Worker(
             "/balance"    => new Reply(await BalanceAsync(a1, ct)),
             "/usage"      => new Reply(await UsageAsync(a1 ?? "24h", ct)),
             "/alerts"     => new Reply(await AlertsAsync(ct)),
+            "/health"     => new Reply(await HealthAsync(ct)),
             "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
             "/newkey"     => new Reply(a1 is null ? Usage("/newkey &lt;name&gt; [quota]", "/newkey acme 1000000") : await NewKeyAsync(a1, a2, ct)),
             "/topup"      => new Reply((a1 is null || a2 is null) ? Usage("/topup &lt;name&gt; &lt;tokens&gt;", "/topup acme 500000") : await TopUpAsync(a1, a2, ct)),
@@ -595,6 +596,7 @@ sealed class Worker(
         /balance [name] — one or all
         /usage [1h|24h|7d|30d] — tokens and requests
         /alerts — what is firing right now
+        /health — stack and telemetry health on one screen
 
         <b>Grant</b>
         /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
@@ -650,6 +652,74 @@ sealed class Worker(
         return body;
     }
 
+    // Deliberately NOT the same thing as /status.
+    //
+    // /status answers "can I still operate the gateway" by probing the four
+    // things this bot talks to. /health answers "is the stack healthy, and can
+    // I believe what it is telling me" — which includes the telemetry itself.
+    // Both matter: for fourteen hours in September 2026 the second was false
+    // while the first was true, and nothing said so.
+    private async Task<string> HealthAsync(CancellationToken ct)
+    {
+        // One round trip each, all at once. A health check is read when
+        // something is wrong, and a wedged component hangs to its timeout
+        // rather than failing fast — serially that is nine timeouts.
+        var upT     = PromScalarAsync("count(up == 1)", ct);
+        var totalT  = PromScalarAsync("count(up)", ct);
+        var alertsT = PromScalarAsync("count(ALERTS{alertstate=\"firing\"}) or vector(0)", ct);
+        var ledgerT = PromScalarAsync("max(redis_up)", ct);
+        var queueT  = PromScalarAsync("max(otelcol_exporter_queue_size)", ct);
+        var capT    = PromScalarAsync("max(otelcol_exporter_queue_capacity)", ct);
+        var failT   = PromScalarAsync("sum(rate(otelcol_exporter_send_failed_spans[5m])) or vector(0)", ct);
+        var genT    = PromScalarAsync("sum(sglang:gen_throughput)", ct);
+        var ttftT   = PromScalarAsync(
+            "histogram_quantile(0.95, sum(rate(sglang:time_to_first_token_seconds_bucket[5m])) by (le))", ct);
+        var kvT     = PromScalarAsync("max((sglang:kv_used_tokens / sglang:kv_available_tokens)) * 100", ct);
+
+        await Task.WhenAll(upT, totalT, alertsT, ledgerT, queueT, capT, failT, genT, ttftT, kvT);
+
+        static string N(double? v, string fmt = "N0") =>
+            v is null ? "\u2014" : ((double)v).ToString(fmt, CultureInfo.InvariantCulture);
+
+        var up = upT.Result; var total = totalT.Result;
+        var alerts = alertsT.Result; var ledger = ledgerT.Result;
+        var queue = queueT.Result; var cap = capT.Result;
+
+        string[] rows =
+        [
+            $"{"targets",-12}{N(up)}/{N(total)} up",
+            $"{"alerts",-12}{N(alerts)} firing",
+            $"{"ledger",-12}{(ledger is null ? "\u2014" : ledger > 0 ? "UP" : "DOWN")}",
+            $"{"spans",-12}queue {N(queue)}/{N(cap)}, {N(failT.Result, "N2")} failed/s",
+            $"{"throughput",-12}{N(genT.Result)} tok/s",
+            $"{"TTFT p95",-12}{N(ttftT.Result, "N2")} s",
+            $"{"KV pool",-12}{N(kvT.Result, "N1")} %"
+        ];
+
+        var body = Table("<b>Stack health</b>", rows);
+
+        // Lead with the things that are silently wrong. Each of these has been
+        // true on this node while every other signal looked fine.
+        var warn = new List<string>();
+        if (up is not null && total is not null && up < total)
+            warn.Add($"{N(total - up)} scrape target(s) down — that plane is blind, not quiet.");
+        if (ledger is not null && ledger == 0)
+            warn.Add("Ledger unreachable — ai-quota fails closed, so billable routes are 403ing now.");
+        if (queue is not null && cap is > 0 && queue >= cap)
+            warn.Add("Trace export queue is FULL — spans are being dropped.");
+        if (failT.Result is > 0)
+            warn.Add("Spans are failing to export — Langfuse is not receiving traces.");
+        if (alerts is > 0)
+            warn.Add($"{N(alerts)} alert(s) firing — see /alerts.");
+
+        if (warn.Count > 0)
+            body += "\n" + string.Join("\n", warn.Select(w => "\u26a0\ufe0f " + w));
+        else
+            body += "\n\u2705 <i>Nothing firing, every target reporting.</i>";
+
+        return body;
+    }
+
     private async Task<string> KeysAsync(CancellationToken ct)
     {
         var balances = await ledger.ListAsync(ct);
@@ -675,16 +745,54 @@ sealed class Worker(
             var q = await QuotaGetAsync(name, ct);
             // Three different causes, one 403 from ai-quota. Say so rather than
             // asserting one of them.
-            return q is null
-                ? $"<b>{Esc(name)}</b> has no balance recorded.\n\nEither it was never seeded, or the ledger is unreachable. "
-                  + $"Seed it with <code>/topup {Esc(name)} 1000000</code>."
-                : $"<b>{Esc(name)}</b>\n<code>{q.Value:N0}</code> tokens remaining";
+            if (q is null)
+                return $"<b>{Esc(name)}</b> has no balance recorded.\n\nEither it was never seeded, or the ledger is unreachable. "
+                     + $"Seed it with <code>/topup {Esc(name)} 1000000</code>.";
+
+            // Burn and runway come from the recording rules, so the arithmetic
+            // is identical to the dashboard and the ConsumerQuotaLow alert
+            // rather than a third implementation that can disagree with them.
+            var sel = $"{{ai_consumer=\"{name}\"}}";
+            var burnT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:tokens24h{sel})", ct);
+            var daysT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_days_left{sel})", ct);
+            await Task.WhenAll(burnT, daysT);
+
+            var body = $"<b>{Esc(name)}</b>\n<code>{q.Value:N0}</code> tokens remaining";
+
+            if (burnT.Result is > 0 && daysT.Result is { } days)
+            {
+                string[] rows =
+                [
+                    $"{"burn 24h",-12}{burnT.Result:N0} tok/day",
+                    $"{"days left",-12}{days:N1}"
+                ];
+                body += "\n" + Table("", rows);
+                if (days < 1)
+                    body += "\n\u26a0\ufe0f <b>Under a day left</b> at this rate. <code>/topup " + Esc(name) + " ...</code>";
+            }
+            else
+            {
+                // Distinguish "idle" from "no data": a consumer who sent
+                // nothing in 24h has no runway problem, and saying "0 days" or
+                // showing nothing would both be misread.
+                body += "\n<i>No usage in the last 24h, so there is no burn rate to project.</i>";
+            }
+            return body;
         }
         var all = await ledger.ListAsync(ct);
         if (all.Count == 0) return "No balances recorded yet.";
-        var rows = all.OrderBy(x => x.Key, StringComparer.Ordinal)
-                      .Select(x => $"{x.Key,-16}{x.Value,14:N0}");
-        return Table("<b>Balances</b>", rows);
+
+        // Balances come from Redis directly — the billing record — and the
+        // runway column from Prometheus. If Prometheus is unreachable the
+        // balances still render, because they are the half that matters.
+        var runway = await PromAsync("sum by (ai_consumer) (consumer:quota_days_left)", ct);
+
+        var balanceRows = all.OrderBy(x => x.Key, StringComparer.Ordinal)
+                             .Select(x => $"{x.Key,-16}{x.Value,14:N0}"
+                                        + (runway.TryGetValue(x.Key, out var d) && d < 3650
+                                            ? $"{d,10:N1} d" : "         \u2014"));
+        return Table("<b>Balances</b>", balanceRows)
+             + "\n<i>Runway at the last 24h burn rate. \u2014 means idle.</i>";
     }
 
     private async Task<string> UsageAsync(string window, CancellationToken ct)
@@ -696,8 +804,14 @@ sealed class Worker(
         var reqs   = await PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[{window}]))", ct);
         if (tokens.Count == 0) return $"No usage in the last {window}.";
 
+        // A bar alongside the numbers. Four consumers in a column of digits all
+        // look alike on a phone; the point of this command is usually "who is
+        // the outlier", and that is a shape question, not a reading question.
+        var max = tokens.Values.DefaultIfEmpty(0).Max();
         var rows = tokens.OrderByDescending(x => x.Value).Select(x =>
-            $"{x.Key,-16}{x.Value,12:N0} tok{(reqs.TryGetValue(x.Key, out var r) ? r : 0),8:N0} req");
+            $"{x.Key,-16}{x.Value,12:N0} tok{(reqs.TryGetValue(x.Key, out var r) ? r : 0),7:N0} req  "
+            + Fmt.Bar((int)x.Value, (int)Math.Max(max, 1), 10));
+
         return Table($"<b>Usage</b> \u2014 last {window}", rows)
              + "\n<i>Counters reset when the gateway restarts. Balances are the billing record.</i>";
     }
@@ -966,6 +1080,34 @@ sealed class Worker(
         }
     }
 
+    // PromAsync above returns a map keyed by ai_consumer, which is the right
+    // shape for per-consumer tables and the wrong one for "how many targets are
+    // up". This returns the first sample's value, or null when the query
+    // returned nothing, failed, or produced NaN — histogram_quantile over an
+    // idle window does exactly that, and rendering "NaN" to an operator is
+    // worse than rendering a dash.
+    private async Task<double?> PromScalarAsync(string query, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"api/v1/query?query={Uri.EscapeDataString(query)}";
+            using var r = await http.CreateClient("prometheus").GetAsync(url, ct);
+            if (!r.IsSuccessStatusCode) return null;
+
+            var node = JsonNode.Parse(await r.Content.ReadAsStringAsync(ct));
+            if (node?["data"]?["result"] is not JsonArray arr || arr.Count == 0) return null;
+
+            var raw = arr[0]?["value"] is JsonArray v && v.Count > 1 ? v[1]?.GetValue<string>() : null;
+            return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
+                   && !double.IsNaN(d) && !double.IsInfinity(d)
+                ? d : null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return null;
+        }
+    }
+
     private async Task<Dictionary<string, double>> PromAsync(string query, CancellationToken ct)
     {
         var url = $"api/v1/query?query={Uri.EscapeDataString(query)}";
@@ -1057,6 +1199,7 @@ sealed class Worker(
             new("balance",    "Balance for one consumer or all"),
             new("usage",      "Tokens and requests over a window"),
             new("alerts",     "What is firing right now"),
+            new("health",     "Stack and telemetry health"),
             new("topup",      "Add tokens to a consumer"),
             new("newkey",     "Create a key and return its OpenCode config"),
             new("opencode",   "Re-send a consumer's OpenCode config"),

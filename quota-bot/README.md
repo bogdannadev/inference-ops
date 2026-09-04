@@ -24,7 +24,7 @@ Alertmanager --POST--> | (edge network, not public)
      +--> higress:80             quota get / delta / refresh
      +--> apiserver.svc:8443     key-auth object read + write
      +--> higress-redis:6379     enumerate + delete ledger keys
-     +--> prometheus:9090        usage windows
+     +--> prometheus:9090        usage windows, ledger runway, stack health
      +--> alertmanager:9093      what is firing now (/alerts)
      +--> api.telegram.org       sendMessage
 ```
@@ -46,6 +46,7 @@ same reason.
 /balance [name]
 /usage [1h|24h|7d|30d]
 /alerts                  what is firing right now, with a severity histogram
+/health                  stack and telemetry health on one screen
 
 /newkey <name> [quota]   create, install, seed, return OpenCode config
 /opencode <name>         re-emit the OpenCode config for a consumer
@@ -61,6 +62,21 @@ returns the same 403 *No quota left* for "never seeded", "exhausted" and "Redis
 is down", so an unseeded key looks broken in a way that wastes an afternoon.
 
 Credentials are printed once, by `/newkey`. `/keys` lists names only.
+
+## /status and /health are not the same question
+
+`/status` probes the four things this bot talks to and answers *can I still
+operate the gateway*. `/health` reads Prometheus and answers *is the stack
+healthy, and can I believe what it is telling me* — scrape coverage, firing
+alerts, trace-export backlog, ledger reachability, throughput, TTFT, KV pool.
+
+Both matter. For roughly fourteen hours in September 2026 the second was false
+while the first was true: Langfuse ingest was dead, the correct alert was
+firing, and nothing said so.
+
+`/balance <name>` and `/usage` read the `consumer:quota_*` recording rules
+rather than recomputing runway locally, so the bot, the Usage & Quota dashboard
+and the ConsumerQuotaLow alert cannot disagree about what "days left" means.
 
 ## Alert delivery
 

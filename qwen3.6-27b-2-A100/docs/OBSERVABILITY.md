@@ -30,6 +30,7 @@ ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <host>
 | `caddy` | `caddy:2020` | 15s | edge RED metrics — see below |
 | `otel-collector` | `otel-collector:8888` | 15s | trace-pipeline self-telemetry |
 | `alertmanager` | `qwen36-27b-alertmanager:9093` | 30s | alert **delivery** health — see below |
+| `redis-ledger` | `qwen36-27b-redis-exporter:9121` | 30s | the ai-quota **billing ledger** — see below |
 | `clickhouse` | `qwen36-27b-langfuse-clickhouse:9363` | 30s | trace-store disk, parts, queries — see below |
 | ~~`higress-apiserver`~~ | — | — | **removed 2026-09-04** — see below |
 | `prometheus` | `localhost:9090` | 15s | self-scrape (`up{job="prometheus"}` exempted from the down alert) |
@@ -256,6 +257,67 @@ system* from every other angle — alerts fire, Alertmanager accepts them, and
 nothing arrives. That is the same shape of silent failure one layer up that this
 whole path was built to remove.
 
+## The quota ledger — `redis_exporter` and `prometheus/rules.yml`
+
+Added 2026-09-04. The ledger is the one source on this node that is both exact
+and durable: `ai-quota` DECRBYs `chat_quota:<consumer>` after each completion,
+and the volume is appendonly. Everything else per-consumer is an Envoy counter,
+which is process-lifetime and resets on a gateway restart — which is why
+`stats.sh` prints both and labels which is which, and why **an invoice must
+never be built from Prometheus counters**.
+
+`redis_exporter` runs with `--check-keys 'chat_quota:*'`, exporting
+`redis_key_value{key="chat_quota:<name>"}` plus `redis_up`.
+
+**The join that makes it useful.** The exporter puts the consumer name *inside*
+the `key` label; every gateway metric carries it as `ai_consumer`. No `on(...)`
+clause can match a label against a substring of another, so the first recording
+rule rewrites it:
+
+```promql
+label_replace(redis_key_value{key=~"chat_quota:.+"},
+              "ai_consumer", "$1", "key", "chat_quota:(.+)")
+```
+
+After that the durable balance and the resettable counters share a label and
+can be divided by one another. From it: `consumer:quota_spend:tokens24h`,
+`consumer:quota_days_left`, `consumer:token_share:ratio1h`, and three alerts.
+
+Two things worth knowing about the rules:
+
+- `consumer:quota_days_left` carries an `or … * 0` term. Division is a 1:1 label
+  match, so a consumer with a balance and **no spend series at all** — anyone
+  idle for 24h — has nothing to match and drops out of the result entirely.
+  Measured before the fix: `acme` and `legacy-shared`, both funded, were simply
+  absent, which on a dashboard is indistinguishable from having no quota record.
+- `ConsumerQuotaExhausted` is gated on 7-day activity. A seeded-but-parked
+  consumer sitting at zero is not an incident, and would otherwise fire forever
+  — the precise failure that made `GpuMemoryPressure` and the apiserver job
+  worthless.
+
+### These rules have unit tests
+
+`promtool test rules prometheus/rules_test.yml` — run it after editing either
+rule file.
+
+The alternative was draining a live consumer's balance and waiting fifteen
+minutes, which breaks a paying customer to test a warning and cannot exercise
+`QuotaLedgerUnreachable` at all without taking the ledger down. The tests drive
+the same rule file with synthetic series and cover funded-and-idle,
+burning-fast, exhausted, revoked-with-lingering-counters, and ledger-down.
+
+They caught two real bugs during the build: the 1:1-match dropout above, and
+`clamp_min` being handed a scalar where it requires an instant vector.
+
+Two quirks of the framework, both cost time:
+
+- **Assert on properties, not floats.** `increase()` extrapolates, so no choice
+  of inputs makes a quotient exact — 0.5 came back as `0.49999999999999994`.
+  Use `< bool 1`, which yields exactly 1 or 0.
+- **`__name__` is part of a recorded series' label set** and must appear in
+  `exp_samples`. It is absent only where `sum()` or a `bool` comparison dropped
+  it.
+
 ## Grafana dashboards — `grafana/provisioning/dashboards/`
 
 Seven dashboards, one per folder, auto-provisioned (read-only):
@@ -269,6 +331,7 @@ Seven dashboards, one per folder, auto-provisioned (read-only):
 | `host` | `qwen36-27b-host.json` | node-exporter: CPU, RAM, disk, network, load |
 | `edge` | `qwen36-27b-edge-caddy.json` | Caddy: traffic, 401/5xx, TTFB, body sizes, upstream health |
 | `pipeline` | `qwen36-27b-trace-pipeline.json` | collector span flow, backpressure, ClickHouse storage |
+| `usage` | `qwen36-27b-usage-quota.json` | balances, burn rate, days-left, share of node — the operator's board |
 
 **The checked-in JSON is the single source of truth** — edit it directly.
 `allowUiUpdates: false`, so browser edits are overwritten on the next 10s scan
