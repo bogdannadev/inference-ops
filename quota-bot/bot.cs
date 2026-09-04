@@ -576,6 +576,9 @@ sealed class Worker(
             "/usage"      => new Reply(await UsageAsync(a1 ?? "24h", ct)),
             "/alerts"     => new Reply(await AlertsAsync(ct)),
             "/health"     => new Reply(await HealthAsync(ct)),
+            "/top"        => new Reply(await TopAsync(a1 ?? "24h", ct)),
+            "/p95"        => new Reply(await LatencyAsync(a1, ct)),
+            "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
             "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
             "/newkey"     => new Reply(a1 is null ? Usage("/newkey &lt;name&gt; [quota]", "/newkey acme 1000000") : await NewKeyAsync(a1, a2, ct)),
             "/topup"      => new Reply((a1 is null || a2 is null) ? Usage("/topup &lt;name&gt; &lt;tokens&gt;", "/topup acme 500000") : await TopUpAsync(a1, a2, ct)),
@@ -597,6 +600,9 @@ sealed class Worker(
         /usage [1h|24h|7d|30d] — tokens and requests
         /alerts — what is firing right now
         /health — stack and telemetry health on one screen
+        /top [1h|24h|7d] — busiest consumers, with errors
+        /p95 [name] — latency percentiles, per consumer
+        /errors [1h|24h|7d] — status mix per consumer
 
         <b>Grant</b>
         /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
@@ -994,6 +1000,108 @@ sealed class Worker(
         r.EnsureSuccessStatusCode();
     }
 
+    // ---- Stage B reads: everything below is answered by the access log -------
+    //
+    // These three exist because ai-statistics cannot answer them. Its seven
+    // counters carry no status code and no latency histogram, so until the
+    // access log became a fact table there was no per-consumer error mix and no
+    // per-consumer percentile anywhere in the stack.
+    //
+    // They read the Vector-derived aggregates in Prometheus rather than
+    // ClickHouse directly: this bot is on `edge` and the trace store is
+    // backend-only, and putting an internet-reachable bot on the backend would
+    // give it a route to the worker ports. ClickHouse stays the durable record
+    // behind Grafana; these are the operator's glance.
+
+    private static bool ValidWindow(string w) => w is "1h" or "24h" or "7d" or "30d";
+
+    private static string BadWindow(string w) =>
+        $"Unknown window <code>{Esc(w)}</code>.\n\nUse one of <code>1h</code>, <code>24h</code>, <code>7d</code>, <code>30d</code>.";
+
+    private async Task<string> TopAsync(string window, CancellationToken ct)
+    {
+        if (!ValidWindow(window)) return BadWindow(window);
+
+        var tokensT = PromAsync($"sum by (consumer) (increase(gateway_tokens_total[{window}]))", ct, "consumer");
+        var reqsT   = PromAsync($"sum by (consumer) (increase(gateway_requests_total[{window}]))", ct, "consumer");
+        var errsT   = PromAsync(
+            $"sum by (consumer) (increase(gateway_requests_total{{status_class=~\"4xx|5xx\"}}[{window}]))", ct, "consumer");
+        await Task.WhenAll(tokensT, reqsT, errsT);
+
+        var tokens = tokensT.Result; var reqs = reqsT.Result; var errs = errsT.Result;
+        if (reqs.Count == 0) return $"No gateway traffic in the last {window}.";
+
+        var max = tokens.Values.DefaultIfEmpty(0).Max();
+        var rows = reqs.OrderByDescending(x => tokens.GetValueOrDefault(x.Key)).Select(x =>
+        {
+            var tok = tokens.GetValueOrDefault(x.Key);
+            var err = errs.GetValueOrDefault(x.Key);
+            return $"{x.Key,-16}{tok,11:N0} tok{x.Value,7:N0} req{(err > 0 ? $"{err,6:N0} err" : "           ")}  "
+                 + Fmt.Bar((int)tok, (int)Math.Max(max, 1), 8);
+        });
+
+        return Table($"<b>Top consumers</b> \u2014 last {window}", rows)
+             + "\n<i>From the access log. Counters reset if Vector restarts; balances are the billing record.</i>";
+    }
+
+    private async Task<string> LatencyAsync(string? name, CancellationToken ct)
+    {
+        // No rate() window here, deliberately. rate() over an idle window is
+        // zero, and histogram_quantile of an all-zero histogram is NaN — which
+        // Prometheus omits, so the command would answer "no data" for a
+        // consumer who simply has not sent anything in the last few minutes.
+        // The cumulative buckets always have an answer, and "p95 since Vector
+        // started" is the question an operator actually means here.
+        var sel = name is null ? "" : $"{{consumer=\"{name}\"}}";
+        var q = (double p) =>
+            $"histogram_quantile({p.ToString(CultureInfo.InvariantCulture)}, " +
+            $"sum by (consumer,le) (gateway_request_duration_seconds_bucket{sel}))";
+
+        var p50T = PromAsync(q(0.50), ct, "consumer");
+        var p95T = PromAsync(q(0.95), ct, "consumer");
+        var p99T = PromAsync(q(0.99), ct, "consumer");
+        await Task.WhenAll(p50T, p95T, p99T);
+
+        var p95 = p95T.Result;
+        if (p95.Count == 0)
+            return name is null
+                ? "No latency data yet. The access-log pipeline records it from the first request after Vector starts."
+                : $"No latency data for <b>{Esc(name)}</b>.";
+
+        var rows = p95.OrderByDescending(x => x.Value).Select(x =>
+            $"{x.Key,-16}{p50T.Result.GetValueOrDefault(x.Key),8:N3}{x.Value,9:N3}{p99T.Result.GetValueOrDefault(x.Key),9:N3}");
+
+        var header = $"{"consumer",-16}{"p50",8}{"p95",9}{"p99",9}";
+        return Table("<b>Latency</b>", new[] { header }.Concat(rows))
+             + "\n<i>Seconds, whole request as Envoy saw it. Cumulative since Vector started.</i>";
+    }
+
+    private async Task<string> ErrorsAsync(string window, CancellationToken ct)
+    {
+        if (!ValidWindow(window)) return BadWindow(window);
+
+        var series = await PromSeriesAsync(
+            $"sum by (consumer,status_class) (increase(gateway_requests_total[{window}]))", ct);
+        if (series.Count == 0) return $"No gateway traffic in the last {window}.";
+
+        var by = new Dictionary<string, Dictionary<string, double>>(StringComparer.Ordinal);
+        foreach (var (labels, value) in series)
+        {
+            if (!labels.TryGetValue("consumer", out var c)) continue;
+            var cls = labels.GetValueOrDefault("status_class", "other");
+            if (!by.TryGetValue(c, out var m)) by[c] = m = new(StringComparer.Ordinal);
+            m[cls] = m.GetValueOrDefault(cls) + value;
+        }
+
+        var rows = by.OrderByDescending(x => x.Value.GetValueOrDefault("4xx") + x.Value.GetValueOrDefault("5xx"))
+                     .Select(x =>
+                        $"{x.Key,-16}{x.Value.GetValueOrDefault("2xx"),7:N0}{x.Value.GetValueOrDefault("4xx"),7:N0}{x.Value.GetValueOrDefault("5xx"),7:N0}");
+
+        var header = $"{"consumer",-16}{"2xx",7}{"4xx",7}{"5xx",7}";
+        return Table($"<b>Status mix</b> \u2014 last {window}", new[] { header }.Concat(rows))
+             + "\n<i>`unauthenticated` is the 401 path: a wrong or missing key, which has no consumer to name.</i>";
+    }
+
     // Reads Alertmanager, not Prometheus, and the difference matters: Prometheus
     // knows what is FIRING, Alertmanager knows what was actually DELIVERED and
     // holds the silences and inhibitions. "Firing but suppressed" is the state
@@ -1108,21 +1216,53 @@ sealed class Worker(
         }
     }
 
-    private async Task<Dictionary<string, double>> PromAsync(string query, CancellationToken ct)
+    // `label` defaults to ai_consumer, which is what the Higress ai-statistics
+    // counters carry. The Vector-derived aggregates use plain `consumer`, so
+    // anything reading those has to say so — the two metric families name the
+    // same thing differently and silently returning an empty map would look
+    // like "no usage" rather than "wrong label".
+    private async Task<Dictionary<string, double>> PromAsync(
+        string query, CancellationToken ct, string label = "ai_consumer")
     {
-        var url = $"api/v1/query?query={Uri.EscapeDataString(query)}";
-        using var r = await http.CreateClient("prometheus").GetAsync(url, ct);
         var result = new Dictionary<string, double>(StringComparer.Ordinal);
-        if (!r.IsSuccessStatusCode) return result;
+        foreach (var (labels, value) in await PromSeriesAsync(query, ct))
+            if (labels.TryGetValue(label, out var key))
+                result[key] = value;
+        return result;
+    }
 
-        var node = JsonNode.Parse(await r.Content.ReadAsStringAsync(ct));
-        if (node?["data"]?["result"] is not JsonArray arr) return result;
-        foreach (var item in arr)
+    // The general form: every label of every sample. Needed wherever a result
+    // is keyed by more than one dimension, such as consumer x status_class.
+    private async Task<List<(Dictionary<string, string> Labels, double Value)>> PromSeriesAsync(
+        string query, CancellationToken ct)
+    {
+        var result = new List<(Dictionary<string, string>, double)>();
+        try
         {
-            var consumer = item?["metric"]?["ai_consumer"]?.GetValue<string>();
-            var raw = item?["value"] is JsonArray v && v.Count > 1 ? v[1]?.GetValue<string>() : null;
-            if (consumer is not null && double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
-                result[consumer] = d;
+            var url = $"api/v1/query?query={Uri.EscapeDataString(query)}";
+            using var r = await http.CreateClient("prometheus").GetAsync(url, ct);
+            if (!r.IsSuccessStatusCode) return result;
+
+            var node = JsonNode.Parse(await r.Content.ReadAsStringAsync(ct));
+            if (node?["data"]?["result"] is not JsonArray arr) return result;
+
+            foreach (var item in arr)
+            {
+                var raw = item?["value"] is JsonArray v && v.Count > 1 ? v[1]?.GetValue<string>() : null;
+                if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
+                    || double.IsNaN(d)) continue;
+
+                var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+                if (item?["metric"] is JsonObject mo)
+                    foreach (var kv in mo)
+                        if (kv.Value is not null) labels[kv.Key] = kv.Value.GetValue<string>();
+                result.Add((labels, d));
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // Caller renders an empty result as "no data", which is the honest
+            // answer when Prometheus is unreachable.
         }
         return result;
     }
@@ -1200,6 +1340,9 @@ sealed class Worker(
             new("usage",      "Tokens and requests over a window"),
             new("alerts",     "What is firing right now"),
             new("health",     "Stack and telemetry health"),
+            new("top",        "Busiest consumers over a window"),
+            new("p95",        "Latency percentiles per consumer"),
+            new("errors",     "Status mix per consumer"),
             new("topup",      "Add tokens to a consumer"),
             new("newkey",     "Create a key and return its OpenCode config"),
             new("opencode",   "Re-send a consumer's OpenCode config"),

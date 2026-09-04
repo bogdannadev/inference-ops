@@ -414,6 +414,13 @@ services:
     command:
       - --config=/etc/vector/vector.yaml
 
+    # Documentation, not a requirement — Prometheus reaches this over the
+    # backend network. 9598 is the per-consumer aggregate exporter; 8686 is
+    # Vector's own GraphQL API, used by the healthcheck.
+    expose:
+      - "9598"
+      - "8686"
+
     healthcheck:
       test: ["CMD", "vector", "top", "--url", "http://127.0.0.1:8686/graphql", "--interval", "1000"]
       interval: 30s
