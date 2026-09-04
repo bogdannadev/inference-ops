@@ -198,18 +198,29 @@ and the fact table is dominated by requests with no consumer.
   aggregates that cannot resolve a single request, it hands over the Langfuse
   URL and the exact ClickHouse query, and explains the split-trace behaviour.
 
-## Stage R — resilience, then a manual reboot test
+## Stage R — resilience ✅ AUDIT DONE 2026-09-04, reboot test outstanding
 
 No systemd units. The work is removing reasons order matters.
 
-**Audit and fix**
-- Correct the false SGLang claim in `docs/LANGFUSE.md` and the compose comment.
-- Vector: disk buffer + checkpoint, so ClickHouse-down is a delay, not a loss.
-- `redis_exporter`, Alertmanager: confirm they retry rather than exit.
-- `langfuse-web`: converges on retry once deps are healthy — confirm no
-  permanent-exit path.
-- Confirm `edge` and `higressint` survive reboot (they are unowned externals).
-- Confirm the GPU stack is ready before the replicas need it.
+**Audit — done. Full checklist in `docs/REBOOT-CHECKLIST.md`.**
+
+Every dependency was tested rather than reasoned about:
+- SGLang → collector: lazy, measured (0.01s against a dead endpoint).
+- Vector → ClickHouse: fault-injected, 123s outage, no gap and no duplicates.
+- redis-exporter → redis: fault-injected, stays up reporting `redis_up 0`.
+- ai-quota fail-closed: fault-injected — paid path 403s, direct router still
+  200s, balances and tiers intact after recovery. The escape hatch is real.
+- `prepare` 403 landmine: fixed earlier in the session, exits 0.
+- GPU: `nvidia-persistenced` enabled, persistence mode on both.
+
+**Config drift found and converged.** Four containers (`caddy`,
+`node-exporter`, `dcgm-exporter`, `langfuse-worker`) were still running the
+pre-pinning image reference — same digests, but the next `up -d` would have
+recreated them unexpectedly, Caddy included. Now 0 drift.
+
+**A coupling worth knowing:** the langfuse overlay now declares `higressint`
+external, because the collector joined it so the gateway could push spans. If
+that network disappears, the metrics/langfuse stack stops starting too.
 
 **Manual reboot test** — run by Danila. Full host restart, then verify every
 service is up, every scrape target green, no data gap in the fact table, and no
