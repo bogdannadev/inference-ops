@@ -1,0 +1,177 @@
+# =============================================================================
+# Recording rules — per-consumer usage
+# Location in repo: ./prometheus/rules.yml
+#
+# Separate from alerts.yml on purpose: that file is alerting rules and is read
+# as the operational contract. These are derived series that dashboards, the
+# quota-bot and the alerts below all share, so that "days left" means the same
+# arithmetic everywhere instead of being re-derived in three places that drift.
+#
+# The `level:metric:operation` naming is the Prometheus convention for recorded
+# series and marks them as derived rather than scraped.
+# =============================================================================
+
+groups:
+  - name: usage
+    # 30s, not the 15s default. Every input here moves on the scale of minutes
+    # (the ledger is scraped at 30s, and a 24h increase does not change quickly),
+    # so a faster evaluation would only cost CPU.
+    interval: 30s
+    rules:
+      # -----------------------------------------------------------------------
+      # The ledger, made joinable.
+      #
+      # redis_exporter emits the consumer name INSIDE the key label
+      # (`chat_quota:danila`), while every gateway metric carries it as
+      # `ai_consumer`. Without this rewrite the two cannot be combined at all —
+      # no `on(...)` clause can match a label against a substring of another.
+      #
+      # This is the reason the whole per-user story hangs together: after this
+      # rule, the durable balance and the (resettable) gateway counters share a
+      # label and can be divided by one another.
+      # -----------------------------------------------------------------------
+      - record: consumer:quota_balance:tokens
+        expr: |
+          label_replace(
+            redis_key_value{key=~"chat_quota:.+"},
+            "ai_consumer", "$1", "key", "chat_quota:(.+)"
+          )
+
+      # -----------------------------------------------------------------------
+      # Spend over the last day.
+      #
+      # CAVEAT, and it is the reason Stage B exists: these are Envoy counters,
+      # which are process-lifetime. A gateway restart inside the 24h window
+      # resets them to zero and `increase()` under-reports the spend — silently,
+      # and always in the optimistic direction.
+      #
+      # That makes this good enough for "roughly how fast is this consumer
+      # burning" and unfit for an invoice. Billing reads the balance above.
+      # -----------------------------------------------------------------------
+      - record: consumer:quota_spend:tokens24h
+        expr: |
+          sum by (ai_consumer) (
+            increase(route_upstream_model_consumer_metric_total_token[24h])
+          )
+
+      # -----------------------------------------------------------------------
+      # Days of headroom at the current burn rate.
+      #
+      # Both sides are aggregated to `ai_consumer` alone so the division has a
+      # clean 1:1 match — the raw balance still carries db/key/instance/job from
+      # the exporter, which would otherwise make this a many-to-one join.
+      #
+      # clamp_min on the denominator keeps an idle consumer from producing
+      # +Inf, which renders as "No data" on a panel and reads as breakage.
+      # An idle consumer instead gets a very large finite number, which is true.
+      #
+      # The `or ... * 0` is not decoration. Division is a 1:1 label match, so a
+      # consumer with a balance but NO spend series at all — anyone who sent
+      # nothing in 24h — has nothing to match against and drops out of the
+      # result entirely. Measured before this was added: acme and legacy-shared,
+      # both funded and idle, were simply absent from the series, which on a
+      # dashboard is indistinguishable from having no quota record at all.
+      #
+      # The `or` supplies an explicit zero-spend row for exactly those
+      # consumers, taken from the balance series so the label set matches.
+      # -----------------------------------------------------------------------
+      - record: consumer:quota_days_left
+        expr: |
+          sum by (ai_consumer) (consumer:quota_balance:tokens)
+            / clamp_min(
+                sum by (ai_consumer) (consumer:quota_spend:tokens24h)
+                  or (sum by (ai_consumer) (consumer:quota_balance:tokens) * 0),
+                1
+              )
+
+      # -----------------------------------------------------------------------
+      # Share of the node's tokens, per consumer.
+      #
+      # The fair answer to "who is using the box". Token counts alone flatter
+      # whoever sends many small requests; this is the fraction of everything
+      # the engine actually produced and consumed.
+      #
+      # Denominator is the ENGINE's own totals, not the sum of gateway counters,
+      # so traffic on the direct (unmetered) hostname is included in the whole.
+      # A consumer's share therefore says "of everything this node did", and the
+      # shares deliberately do not sum to 1 — the gap is the unattributed 87%.
+      # -----------------------------------------------------------------------
+      - record: consumer:token_share:ratio1h
+        expr: |
+          sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_total_token[1h]))
+            / scalar(
+                clamp_min(
+                  sum(rate(sglang:generation_tokens_total[1h]))
+                  + sum(rate(sglang:prompt_tokens_total[1h])),
+                  1
+                )
+              )
+
+  - name: quota
+    rules:
+      # -----------------------------------------------------------------------
+      # The ledger being unreachable is a HARD outage of every billable route.
+      #
+      # ai-quota has no fail-open: if it cannot read Redis, it denies. So this
+      # is not a monitoring gap, it is the paid hostname being down, and it is
+      # indistinguishable to a customer from "you have run out".
+      # -----------------------------------------------------------------------
+      - alert: QuotaLedgerUnreachable
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "ai-quota ledger unreachable"
+          description: >-
+            redis_exporter cannot reach higress-redis. ai-quota fails CLOSED, so
+            every billable route is returning 403 "No quota left" regardless of
+            actual balances. The team's direct router hostname is the escape
+            hatch.
+
+      # -----------------------------------------------------------------------
+      # Exhausted, and gated on the consumer being real.
+      #
+      # The activity guard matters: a seeded-but-parked consumer sitting at 0 is
+      # not an incident, and would otherwise fire forever — the exact failure
+      # that made GpuMemoryPressure and the apiserver job worthless.
+      #
+      # Overdraft is included by using <= 0 rather than == 0: ai-quota gates on
+      # > 0 and decrements AFTER the response, so a consumer with one token left
+      # can spend a whole request and go negative.
+      # -----------------------------------------------------------------------
+      - alert: ConsumerQuotaExhausted
+        expr: |
+          sum by (ai_consumer) (consumer:quota_balance:tokens) <= 0
+          and on(ai_consumer)
+          sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[7d])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.ai_consumer }} is out of quota ({{ $value | humanize }} tokens)"
+          description: >-
+            Balance is at or below zero for an active consumer. Every request
+            from them now returns 403. Top up with /topup in the bot.
+
+      # -----------------------------------------------------------------------
+      # Less than a day of headroom at the current rate — the point of having a
+      # burn rate at all is to arrive before the wall, not at it.
+      # -----------------------------------------------------------------------
+      - alert: ConsumerQuotaLow
+        expr: |
+          consumer:quota_days_left < 1
+          and on(ai_consumer) consumer:quota_spend:tokens24h > 0
+          and on(ai_consumer) sum by (ai_consumer) (consumer:quota_balance:tokens) > 0
+        for: 15m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.ai_consumer }} has under a day of quota left"
+          description: >-
+            At the last 24h burn rate this consumer runs out within a day.
+            Note the burn rate is derived from Envoy counters, which reset on a
+            gateway restart, so it under-reports rather than over-reports.

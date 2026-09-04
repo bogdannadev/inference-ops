@@ -127,10 +127,21 @@ services:
       # stale or missing routes while every gateway metric still looks fine.
       #
       # Prometheus joins them rather than exposing them on `edge`, because
-      # `edge` carries Caddy — an internet-facing process — and the apiserver
-      # accepts unauthenticated requests. Widening the apiserver's reach to the
-      # network with the public front door would be the wrong direction.
+      # `edge` carries Caddy, an internet-facing process. Widening the control
+      # plane's reach to the network with the public front door would be the
+      # wrong direction.
+      #
+      # (An earlier version of this comment said the apiserver accepts
+      # unauthenticated requests. That stopped being true on 2026-09-03 when
+      # --auth-enabled landed, and the apiserver job was removed on 2026-09-04
+      # because it can only be scraped with a cluster-admin certificate. pilot
+      # is still scraped from here and is the job that matters.)
       - higress-net
+
+      # higressint: higress-redis and the redis-exporter that reads the quota
+      # ledger. Same direction again — the exporter stays single-homed and
+      # Prometheus reaches in.
+      - higressint
 
   # ---------------------------------------------------------------------------
   # Node Exporter — host-level hardware telemetry on :9100
@@ -361,6 +372,68 @@ services:
       - edge
 
   # ---------------------------------------------------------------------------
+  # redis_exporter — puts the ai-quota LEDGER on a dashboard.
+  #
+  # The ledger is the billing record: ai-quota DECRBYs `chat_quota:<consumer>`
+  # after each completion, and it is durable (appendonly) across restarts. The
+  # Envoy ai-statistics counters are not — they are process-lifetime and reset
+  # whenever the gateway restarts, which is why ./stats.sh prints both side by
+  # side and labels which is which.
+  #
+  # Until now the ledger was reachable only through stats.sh and the bot, so
+  # nothing could alert on it. ai-quota returns an identical 403 "No quota left"
+  # for three different states — never seeded, exhausted, and Redis down — and a
+  # balance gauge is what separates them at a glance.
+  #
+  # NETWORK: `higressint` only, where higress-redis lives. Prometheus joins that
+  # network to scrape rather than this exporter joining Prometheus's — the same
+  # direction used for the Caddy and Higress jobs, and for the same reason: the
+  # component with the route to Redis stays put, and the scraper reaches in.
+  #
+  # --check-keys, not --check-single-keys: consumers are created and revoked
+  # through the bot, so the key set changes and a glob is required. It costs a
+  # SCAN per scrape, which upstream warns about for very large keyspaces; there
+  # are four keys here.
+  # ---------------------------------------------------------------------------
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.90.0@sha256:a129504e65b87c54f79bc92f1afc403475e8ff646a3d7512de469904ceddf986
+    container_name: qwen36-27b-redis-exporter
+
+    cpuset: "48-55"
+
+    command:
+      - --redis.addr=redis://higress-redis:6379
+      - --check-keys=chat_quota:*
+
+    # No password: higress-redis runs without requirepass and is reachable only
+    # on `higressint`. If that changes, use --redis.password-file rather than
+    # putting a credential in this file.
+
+    # No healthcheck, deliberately — the same reason as otel-collector below.
+    # The image is built FROM scratch: no shell, no wget, so CMD-SHELL cannot
+    # run and CMD has nothing to exec. (Tried it: the container ran fine while
+    # reporting `unhealthy`, with "exec: wget: executable file not found".)
+    #
+    # `up{job="redis-ledger"}` is the equivalent signal and is already covered
+    # by PrometheusTargetDown. It is also the better one here: the exporter
+    # being alive while Redis is unreachable is the interesting case, and that
+    # shows up as redis_up 0, which has its own alert.
+
+    # Resilience, not ordering: if Redis is down this exporter stays up and
+    # reports redis_up 0, which is the signal we want. It must never exit
+    # because its target is unavailable.
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - higressint
+
+  # ---------------------------------------------------------------------------
   # Alertmanager — the delivery path that did not exist until 2026-09-04.
   #
   # Before this, Prometheus evaluated 17 rules and Grafana 7 more, and NOTHING
@@ -445,6 +518,14 @@ networks:
   # Owned by the higress compose project; Prometheus is only ever a guest here.
   higress-net:
     name: higress_higress-net
+    external: true
+
+  # Carries higress-redis — the ai-quota ledger — and nothing else of ours.
+  # Unowned external: the compose project that created it no longer exists, so
+  # it is declared, never created, here. If it is ever removed, this stack and
+  # the gateway both fail to start.
+  higressint:
+    name: higressint
     external: true
 
 volumes:

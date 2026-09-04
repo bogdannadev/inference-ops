@@ -29,6 +29,9 @@ global:
 # Grafana owns the app-level SLO alerts (latency, KV pool, radix hit rate).
 rule_files:
   - /etc/prometheus/alerts.yml
+  # Recording rules for per-consumer usage, plus the quota alerts that depend on
+  # them. Split out so alerts.yml stays readable as the operational contract.
+  - /etc/prometheus/rules.yml
 
 # -----------------------------------------------------------------------------
 # Alert DELIVERY. Added 2026-09-04, and its absence was the most consequential
@@ -286,6 +289,35 @@ scrape_configs:
     static_configs:
       - targets:
           - qwen36-27b-langfuse-clickhouse:9363
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # redis_exporter — the ai-quota LEDGER, i.e. the billing record.
+  #
+  # This is the one source on the node that is durable and exact. Everything
+  # else here is a rate: the Envoy ai-statistics counters reset when the gateway
+  # restarts, so `increase()` over a window that spans a restart undercounts,
+  # and an invoice must never be built from them.
+  #
+  # The series that matter:
+  #   redis_key_value{key="chat_quota:<consumer>"}  remaining tokens
+  #   redis_up                                      is the ledger reachable
+  #
+  # redis_key_value is emitted only for keys whose value parses as a number,
+  # which is exactly what ai-quota stores. The consumer name is inside the key,
+  # so the recording rules in alerts.yml lift it into an `ai_consumer` label to
+  # make it joinable with the gateway counters.
+  #
+  # Note the failure mode this closes: ai-quota answers 403 "No quota left"
+  # identically for never-seeded, exhausted, and Redis-down. redis_up plus a
+  # balance gauge tells those three apart without shelling into the box.
+  # ---------------------------------------------------------------------------
+  - job_name: redis-ledger
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - qwen36-27b-redis-exporter:9121
         labels:
           node: a100
 
