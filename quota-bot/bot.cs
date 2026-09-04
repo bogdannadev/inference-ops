@@ -579,6 +579,7 @@ sealed class Worker(
             "/top"        => new Reply(await TopAsync(a1 ?? "24h", ct)),
             "/p95"        => new Reply(await LatencyAsync(a1, ct)),
             "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
+            "/tiers"      => new Reply(TiersHelp()),
             "/tier"       => new Reply((a1 is null || a2 is null)
                                  ? Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service")
                                  : await TierAsync(a1, a2, ct)),
@@ -596,17 +597,22 @@ sealed class Worker(
         """
         <b>Gateway access management</b>
 
-        <b>Look</b>
-        /status — infrastructure health
-        /keys — consumers and balances
-        /balance [name] — one or all
-        /usage [1h|24h|7d|30d] — tokens and requests
-        /alerts — what is firing right now
-        /health — stack and telemetry health on one screen
+        <b>Who and how much</b>
+        /keys — consumers, balances and tiers
+        /balance [name] — balance, burn rate and runway
+        /tiers — what each policy tier means
+        /tier &lt;name&gt; &lt;tier&gt; — record a consumer's tier
+
+        <b>What they used</b>
+        /usage [1h|24h|7d|30d] — tokens in/out per consumer
         /top [1h|24h|7d] — busiest consumers, with errors
         /p95 [name] — latency percentiles, per consumer
         /errors [1h|24h|7d] — status mix per consumer
-        /tier &lt;name&gt; &lt;tier&gt; — record a consumer's intended policy tier
+
+        <b>Is it healthy</b>
+        /status — can I still operate the gateway
+        /health — is the stack healthy, and can I believe it
+        /alerts — what is firing right now
 
         <b>Grant</b>
         /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
@@ -619,6 +625,8 @@ sealed class Worker(
         /revoke &lt;name&gt; — deletes a key and its balance
 
         Credentials are shown once, by /newkey. /keys lists names only.
+        Quota is a single TOTAL-token balance — input and output are charged
+        the same. See /tiers.
         """;
 
     // ---- reads ------------------------------------------------------------
@@ -1069,6 +1077,31 @@ sealed class Worker(
             ["admin"]   = (         0,       0,      0, "management only, never inference"),
         };
 
+    // Rendered from the same Tiers table the /tier command validates against,
+    // so the description and the thing being applied cannot drift apart.
+    private static string TiersHelp()
+    {
+        var header = $"{"tier",-9}{"quota",12}{"tok/min",9}{"max_tok",9}";
+        var rows = Tiers.Where(t => t.Key != "admin").Select(t =>
+            $"{t.Key,-9}{t.Value.Quota,12:N0}{t.Value.Tpm,9:N0}{t.Value.MaxTokens,9:N0}");
+
+        var body = Table("<b>Policy tiers</b>", new[] { header }.Concat(rows));
+        foreach (var t in Tiers)
+            body += $"\n<b>{t.Key}</b> \u2014 {Esc(t.Value.For)}";
+
+        return body
+          + "\n\n<b>Recorded, not enforced.</b> Nothing reads a tier at request time yet: "
+          + "ai-quota charges a flat input+output total and cannot vary by consumer tier, and "
+          + "rate limiting needs ai-token-ratelimit, which ships in the gateway image but is "
+          + "not installed. /tier writes the intent down so it is reviewable."
+          + "\n\n<b>Quota is one number.</b> Input and output are deducted at the same rate, "
+          + "though on this node an output token costs roughly 68\u00d7 an uncached input token "
+          + "and ~4800\u00d7 a cached one. A consumer re-sending long context can therefore burn "
+          + "quota far faster than the work it asks for \u2014 /usage and /top show the i:o ratio."
+          + "\n\n<i>Setting a tier does not change a balance. /tier says what to run if you "
+          + "want them aligned.</i>";
+    }
+
     private async Task<string> TierAsync(string name, string tier, CancellationToken ct)
     {
         tier = tier.ToLowerInvariant();
@@ -1451,6 +1484,7 @@ sealed class Worker(
             new("top",        "Busiest consumers over a window"),
             new("p95",        "Latency percentiles per consumer"),
             new("errors",     "Status mix per consumer"),
+            new("tiers",      "What each policy tier means"),
             new("tier",       "Record a consumer's policy tier"),
             new("topup",      "Add tokens to a consumer"),
             new("newkey",     "Create a key and return its OpenCode config"),
