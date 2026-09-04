@@ -34,15 +34,28 @@ groups:
           summary: "GPU {{ $labels.gpu }} temperature {{ $value }}C"
           description: "GPU {{ $labels.gpu }} has been above 85C for 5 minutes. Check airflow/fan curve."
 
-      - alert: GpuMemoryPressure
-        expr: DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) > 0.95
-        for: 5m
-        labels:
-          severity: warning
-          node: a100
-        annotations:
-          summary: "GPU {{ $labels.gpu }} framebuffer at {{ $value | humanizePercentage }}"
-          description: "GPU {{ $labels.gpu }} framebuffer usage above 95%. OOM risk on next request burst."
+      # NO GpuMemoryPressure rule — REMOVED 2026-09-04. It fired continuously on
+      # both GPUs and always would have.
+      #
+      # It alerted on framebuffer > 95%, which on this node is the healthy
+      # steady state rather than a fault: the replicas run
+      # --mem-fraction-static 0.92, so SGLang preallocates its weights and KV
+      # pool at startup and holds them for the process lifetime. Measured while
+      # removing it: GPU 0 at 98.5%, GPU 1 at 97.6%, both idle-to-normal.
+      #
+      # Its description ("OOM risk on next request burst") had the causality
+      # backwards for a preallocating server. Because the pool is reserved up
+      # front, a full framebuffer says nothing about headroom for the next
+      # request; running OUT of room shows up as KV pool exhaustion inside that
+      # reservation, which Grafana already alerts on ("KV pool utilization
+      # > 95%" and "Full token usage > 95%") against sglang:* series that
+      # actually move.
+      #
+      # The GPU-side faults worth paging on are still covered here: XID errors,
+      # temperature, and the throttle/remap counters on the DCGM dashboard.
+      #
+      # It survived unnoticed because nothing delivered alerts. It became
+      # visible the moment Alertmanager did, which is the point.
 
       - alert: GpuXidError
         expr: increase(DCGM_FI_DEV_XID_ERRORS[5m]) > 0
