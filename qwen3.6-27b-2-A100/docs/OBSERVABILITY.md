@@ -340,6 +340,50 @@ The aggregates come to where the bot already looks.
 consumer to attribute to, and naming it keeps that traffic in the breakdown
 instead of vanishing.
 
+### Quota is a single total-token balance
+
+Worth stating plainly, because every surface now shows the split and it would be
+easy to assume the budget does too. It does not.
+
+`chat_quota:<consumer>` is one number. ai-quota deducts input+output from it at
+the same rate, and that is not configurable — at v2.2.4 the plugin is literally:
+
+```go
+totalToken := int(inputToken + outputToken)
+config.redisClient.DecrBy(config.RedisKeyPrefix+consumer, totalToken, nil)
+```
+
+`QuotaConfig` exposes no weighting or selection field. `/newkey`, `/topup` and
+`/setquota` all set or move that one total, via `POST /v1/chat/completions/quota`
+`{,/refresh,/delta}`. **There is no separate input or output budget and no way
+to express one without forking the plugin.**
+
+That matters because the two directions cost nothing alike here. An output token
+is a forward pass, and decode on this node is bandwidth-bound at ~50ms. An input
+token is prefilled in one pass and, for a multi-turn agent re-sending its
+context, usually a radix-cache hit — node-wide, 84.8% of prompt tokens have
+been cache hits (190.6M of 224.7M).
+
+Measured on real traffic, input tokens charged per output token produced:
+
+| consumer | i:o |
+|---|---|
+| testafter (agent) | 47.8 |
+| testone | 17.0 |
+| quota-admin (synthetic probes) | 1.3 |
+
+So an agent consumer pays roughly forty times over for context replay that the
+cache largely serves for free, at the same rate as a consumer doing genuinely
+generative work. The recording rules
+`consumer:quota_spend:{input,output}24h` and
+`consumer:token_ratio:in_per_out24h` exist so the bot, the dashboard and any
+pricing conversation read one set of numbers. Nothing here changes what is
+charged; it makes the basis visible.
+
+Per-request cached-token counts are NOT obtainable: SGLang returns
+`prompt_tokens_details: null`, so ai-statistics' `input_token_details` is always
+`{}`. The 84.8% is node-wide only.
+
 ### The histogram is an approximation; the fact table is exact
 
 Two things to know before trusting a p95 from Prometheus here.

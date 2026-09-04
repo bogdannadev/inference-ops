@@ -44,7 +44,7 @@ same reason.
 /status                  gateway, ledger, Prometheus, key-auth health
 /keys                    consumers and balances (never credentials)
 /balance [name]
-/usage [1h|24h|7d|30d]
+/usage [1h|24h|7d|30d]   input/output split and the i:o ratio
 /alerts                  what is firing right now, with a severity histogram
 /health                  stack and telemetry health on one screen
 
@@ -62,6 +62,17 @@ returns the same 403 *No quota left* for "never seeded", "exhausted" and "Redis
 is down", so an unseeded key looks broken in a way that wastes an afternoon.
 
 Credentials are printed once, by `/newkey`. `/keys` lists names only.
+
+## Quota is one total-token number
+
+`/newkey`, `/topup` and `/setquota` all set or move a single balance in
+`chat_quota:<consumer>`, and ai-quota deducts input+output from it at the same
+rate. That is hardcoded upstream — there is no separate input or output budget.
+
+`/usage` and `/top` therefore show the split even though the budget does not:
+an agent consumer re-sending its context can sit near 50:1 input to output,
+paying mostly for prefill that the radix cache serves nearly free, while a
+consumer doing generative work sits near 1:1 and pays the same rate.
 
 ## /status and /health are not the same question
 
