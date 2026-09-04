@@ -322,6 +322,33 @@ scrape_configs:
           node: a100
 
   # ---------------------------------------------------------------------------
+  # Vector — per-consumer aggregates derived from the access log.
+  #
+  # These exist because ai-statistics cannot produce them: its seven counters
+  # carry no status code and no latency histogram, so "which consumer is getting
+  # 422s" and "what is p95 for this consumer" were unanswerable from Prometheus.
+  # The per-request rows in ClickHouse can answer both, but quota-bot cannot
+  # reach ClickHouse — it lives on `edge`, the trace store is backend-only, and
+  # putting an internet-reachable bot on the backend would hand it a route to
+  # the worker ports. So the aggregates come to where the bot already looks.
+  #
+  #   gateway_requests_total{consumer,route,status_class}
+  #   gateway_tokens_total{consumer,model}
+  #   gateway_request_duration_ms{consumer,route,quantile}
+  #
+  # Same contract as every other counter here: process-lifetime, resets when
+  # Vector restarts. Rates and distributions only. The ClickHouse table is the
+  # durable per-request record and the Redis ledger is still what bills.
+  # ---------------------------------------------------------------------------
+  - job_name: vector
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - qwen36-27b-vector:9598
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
   # Alertmanager — the delivery path itself.
   #
   # Worth scraping for exactly one reason: alertmanager_notifications_failed_total.

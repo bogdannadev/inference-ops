@@ -144,6 +144,81 @@ transforms:
         "user_agent":     string(raw.user_agent) ?? ""
       }
 
+  # ---------------------------------------------------------------------------
+  # Metric branch. Same events, second consumer.
+  #
+  # This exists to close a real gap rather than to duplicate the table:
+  # ai-statistics emits seven counters and NONE of them carries a status code or
+  # a latency histogram, so "which consumer is getting 422s" and "what is p95 for
+  # this consumer" were unanswerable from Prometheus. They are answerable from
+  # ClickHouse, but quota-bot cannot reach ClickHouse — it lives on edge and the
+  # trace store is backend-only, and putting an internet-reachable bot on the
+  # backend would hand it a route to the worker ports.
+  #
+  # So the aggregates go where the bot already looks. ClickHouse stays the
+  # durable per-request record; these are rates and distributions, and like every
+  # other counter here they reset when their process does. Billing still reads
+  # the ledger.
+  # ---------------------------------------------------------------------------
+  gateway_metric_fields:
+    type: remap
+    inputs: [gateway_rows]
+    source: |
+      # Bucketed, not raw. A per-status label would put every distinct code in
+      # the label set; the operator question is "2xx or not", and the exact code
+      # is one ClickHouse query away.
+      code = int!(.status)
+      .status_class = if code >= 500 { "5xx" }
+        else if code >= 400 { "4xx" }
+        else if code >= 300 { "3xx" }
+        else if code >= 200 { "2xx" }
+        else { "other" }
+      # Empty consumer means the request never authenticated. Naming it makes
+      # the 401 path visible in the same breakdown instead of vanishing.
+      if .consumer == "" { .consumer = "unauthenticated" }
+
+      # SECONDS, not milliseconds, and this is not cosmetic. The exporter's
+      # default histogram buckets run 0.005 -> 10, which are calibrated for a
+      # latency in seconds. Fed milliseconds, every real request (~200) lands in
+      # +Inf and histogram_quantile returns nonsense — observed exactly that:
+      # 4 observations, all of them above the top finite bucket.
+      #
+      # Base units are also the Prometheus convention, so the metric is named
+      # _seconds and reads correctly in Grafana without a unit override.
+      .duration_s = to_float!(.duration_ms) / 1000.0
+
+  gateway_metrics:
+    type: log_to_metric
+    inputs: [gateway_metric_fields]
+    metrics:
+      - type: counter
+        field: status
+        name: requests_total
+        namespace: gateway
+        tags:
+          consumer: "{{consumer}}"
+          route: "{{route}}"
+          status_class: "{{status_class}}"
+
+      - type: counter
+        field: total_tokens
+        name: tokens_total
+        namespace: gateway
+        increment_by_value: true
+        tags:
+          consumer: "{{consumer}}"
+          model: "{{model}}"
+
+      # The distribution ai-statistics cannot give us. Percentiles are computed
+      # by the exporter below, so p95 per consumer becomes a real query.
+      - type: histogram
+        field: duration_s
+        name: request_duration_seconds
+        namespace: gateway
+        tags:
+          consumer: "{{consumer}}"
+          route: "{{route}}"
+
 sinks:
   clickhouse:
     type: clickhouse
@@ -192,6 +267,18 @@ sinks:
 # The parse failures rerouted above. Written to the container log rather than
 # dropped, so a format change shows up as visible noise instead of a table that
 # quietly stops growing.
+  # Scraped by Prometheus (job: vector) on the backend network.
+  metrics:
+    type: prometheus_exporter
+    inputs: [gateway_metrics]
+    address: 0.0.0.0:9598
+    # Without this, a consumer who stops sending traffic keeps reporting its last
+    # value forever and the board shows phantom activity. 10 minutes is longer
+    # than any plausible scrape gap and short enough that a revoked consumer
+    # disappears the same day.
+    flush_period_secs: 600
+    quantiles: [0.5, 0.95, 0.99]
+
   dead_letter:
     type: console
     inputs: [gateway_rows.dropped]

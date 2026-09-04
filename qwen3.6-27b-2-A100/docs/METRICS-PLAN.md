@@ -122,7 +122,7 @@ flowchart LR
 the permanently-firing `GpuMemoryPressure` rule removed, F7 (gateway status panel
 repointed from the retired `:8080` listener to `:80`).
 
-## Stage B — the fact table
+## Stage B — the fact table ✅ setup + test + bot DONE 2026-09-04 (per-person keys outstanding)
 
 **Setup**
 1. Add `"consumer":"%REQ(X-MSE-CONSUMER)%"` to `accessLogFormat` in the
@@ -135,16 +135,36 @@ repointed from the retired `:8080` listener to `:80`).
 5. Per-person keys: issue one consumer per teammate, migrate OpenCode configs
    onto the gateway hostname.
 
-**Test**
-- Row count matches gateway request count for a window.
-- Token sums reconcile against the Redis ledger.
-- Kill ClickHouse for two minutes; confirm Vector buffers and replays with no
-  gap and no duplicates.
+**Test — all passed**
+- Ledger delta 370 tokens == table sum 370 over 5 requests. Exact.
+- ClickHouse killed for 123s with 6 requests sent through it: gateway
+  unaffected, Vector buffered to disk, and after restore the table held
+  15 rows / 15 unique request_ids — no gap, no duplicates — with `ingest_lag`
+  showing the ~150s delay on exactly those rows.
 
-**Bot integration**
-- `/top [range]` — top consumers by tokens, requests, errors.
-- `/p95 [consumer]` — real percentiles, now that per-request rows exist.
-- `/errors` — error mix per consumer.
+**Two silent defects caught here**
+- Vector 0.57 disabled `${ENV}` interpolation by default. A config using it does
+  not fail; it ships the literal string. Proved by capturing the wire traffic:
+  the Authorization header decoded to `clickhouse:${CLICKHOUSE_PASSWORD}`. Now
+  on Vector's file secrets backend.
+- Without `acknowledgements.enabled`, the file source advances its checkpoint
+  when an event enters the topology, not when the sink confirms. Observed the
+  checkpoint at the end of the file with zero rows in the table — the line had
+  been read, exhausted its retries against a broken sink, and been dropped
+  forever. That is a hole in a billing-grade table, and it is now a replay.
+
+**Bot integration — done**
+- `/top [1h|24h|7d]`, `/p95 [consumer]`, `/errors [window]`.
+- These read Vector-derived aggregates in Prometheus, NOT ClickHouse directly:
+  the bot is on `edge`, the trace store is backend-only, and putting an
+  internet-reachable bot on the backend would give it a route to the worker
+  ports. So the aggregates come to where the bot already looks. That also
+  closes F8 for Grafana — per-consumer p95 is a real panel now, and the Usage
+  board's "cannot tell you yet" text panel has been replaced with actual data.
+
+**Still outstanding: per-person keys.** Needs the roster. Until the team moves
+off the shared key on the direct hostname, ~87% of traffic stays unattributed
+and the fact table is dominated by requests with no consumer.
 
 ## Stage C — identity in traces
 
