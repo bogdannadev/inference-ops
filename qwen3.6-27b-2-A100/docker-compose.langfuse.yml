@@ -231,6 +231,25 @@ services:
         condition: service_healthy
 
     environment:
+      # Bind address. NOT cosmetic, and not the same thing as NEXTAUTH_URL.
+      #
+      # The Next.js standalone server reads `process.env.HOSTNAME || '0.0.0.0'`
+      # (/app/web/server.js:9) and binds that ONE address. Docker sets HOSTNAME
+      # to the container id, which its embedded DNS resolves to a single
+      # interface — so on a multi-homed container the server listens on one
+      # network and refuses connections on the other.
+      #
+      # That is exactly what happened when this service joined `edge` to be
+      # published: it bound the edge address, Caddy kept working, and the
+      # otel-collector — backend-only — got ECONNREFUSED on every span export
+      # for 13 hours while the queue filled and dropped. Verified in the
+      # container: one LISTEN socket, on the edge address only.
+      #
+      # 0.0.0.0 binds every interface, which is what a container on two
+      # networks needs. The healthcheck below still works: $$HOSTNAME then
+      # expands to 0.0.0.0, which is a valid connect target on Linux.
+      HOSTNAME: "0.0.0.0"
+
       # Auth
       #
       # NEXTAUTH_URL must be the address users actually reach, because NextAuth
@@ -322,12 +341,14 @@ services:
     # wget, not curl: the image has wget only (verified in the image, not
     # assumed). start_period covers Prisma migrations on first boot.
     #
-    # $$HOSTNAME, not localhost — and this is not interchangeable. Docker sets
-    # HOSTNAME to the container ID, and the Next.js standalone server binds to
-    # exactly that interface, so nothing is listening on 127.0.0.1 or ::1
-    # inside the container. A localhost probe fails with "Connection refused"
-    # against a service that is serving perfectly well to every real client.
-    # The doubled $$ escapes compose interpolation so the shell expands it.
+    # $$HOSTNAME, not localhost. Historically this mattered because Docker set
+    # HOSTNAME to the container id and the server bound only that interface, so
+    # a 127.0.0.1 probe was refused against a perfectly healthy service. We now
+    # set HOSTNAME=0.0.0.0 explicitly (see the environment block above), so the
+    # probe resolves to 0.0.0.0:3000 and localhost would also work — but the
+    # form is kept because it stays correct either way, including if the
+    # explicit bind is ever removed. The doubled $$ escapes compose
+    # interpolation so the shell expands it.
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://$$HOSTNAME:3000/api/public/ready || exit 1"]
       interval: 15s
@@ -457,10 +478,22 @@ services:
   # Langfuse is perfectly useful without it. Overlays split on lifecycle.
   #
   # Consequence to know: the workers and router in docker-compose.yml point
-  # their --otlp-traces-endpoint at this service. SGLang raises on exporter
-  # INITIALISATION failure, so bringing the inference tier up without this
-  # overlay is not a supported combination while tracing is enabled — see
-  # docs/LANGFUSE.md for the SGLANG_TRACE_LEVEL=0 escape hatch.
+  # their --otlp-traces-endpoint at this service.
+  #
+  # An earlier note here claimed SGLang raises on exporter INITIALISATION
+  # failure, making it unsupported to bring the inference tier up without this
+  # overlay. That is WRONG, and it was wrong in a way that discouraged testing
+  # boot order. Measured against the pinned engine image 2026-09-04:
+  #
+  #   process_tracing_init('http://this-host-does-not-exist:4317', ...)
+  #     -> returns successfully in 0.01s
+  #
+  # get_otlp_span_exporter builds a GRPCSpanExporter whose channel is lazy; no
+  # connection is attempted until the first export. process_tracing_init raises
+  # only on a malformed endpoint, an unsupported protocol, or a missing
+  # opentelemetry package — never on an unreachable one. Replica startup does
+  # not depend on this container, which is why boot ordering is handled by
+  # making services resilient rather than by sequencing them.
   # ---------------------------------------------------------------------------
   otel-collector:
     image: otel/opentelemetry-collector:0.158.0@sha256:5b97e6e3550ec6e48a71dba6f6304d349a293af8df4ee1f51da67be94fce2ecd

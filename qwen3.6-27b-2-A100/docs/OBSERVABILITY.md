@@ -29,6 +29,7 @@ ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <host>
 | `node` | `qwen36-27b-node-exporter:9100` | 15s | host CPU/RAM/disk/network |
 | `caddy` | `caddy:2020` | 15s | edge RED metrics — see below |
 | `otel-collector` | `otel-collector:8888` | 15s | trace-pipeline self-telemetry |
+| `alertmanager` | `qwen36-27b-alertmanager:9093` | 30s | alert **delivery** health — see below |
 | `clickhouse` | `qwen36-27b-langfuse-clickhouse:9363` | 30s | trace-store disk, parts, queries — see below |
 | `prometheus` | `localhost:9090` | 15s | self-scrape (`up{job="prometheus"}` exempted from the down alert) |
 
@@ -126,7 +127,8 @@ Sampling is 1000 ms (`--collect-interval 1000`). The container needs
 ## Prometheus-native alerts — `prometheus/alerts.yml`
 
 Infra/GPU health rules. These are the **operational signal** (page-worthy
-events). 17 rules in six groups:
+events). 16 rules in six groups (17 until the `413` rule went with the request-body
+cap on 2026-08-15):
 
 **`endpoints` / `gpu` / `host`**
 
@@ -162,6 +164,64 @@ why it fails silently:
 Error-rate expressions use `... or vector(0)` and `clamp_min(...)` on
 denominators, so a healthy system renders `0` rather than "No data" and a
 traffic lull cannot produce a fake ratio spike.
+
+## Alert delivery — `alertmanager/alertmanager.yml`
+
+Added 2026-09-04. Until then **this tier evaluated 24 rules and delivered none
+of them.** There was no `alerting:` block in `prometheus.yml`, no Alertmanager,
+and the Grafana rules were evaluation-only with no contact point. A Langfuse
+ingest outage ran for roughly fourteen hours with `TraceExportFailing` firing
+correctly the entire time and nobody told. Evaluation is not monitoring.
+
+```text
+Prometheus (17 rules) ─┐
+                       ├─► Alertmanager ──webhook──► quota-bot /alert ──► Telegram
+Grafana (7 SLO rules) ─┘        :9093                    (bearer auth)
+```
+
+**Network placement is the non-obvious part.** Alertmanager runs on `edge` and
+*not* on `qwen36-27b-backend` with the rest of the metrics tier. It has exactly
+two conversations — Prometheus sends to it, it sends to quota-bot — and the bot
+lives on `edge`/`higress-net`/`higressint`. Moving the bot to the backend
+instead would give an internet-reachable service a route to the worker ports and
+ZMQ sockets, which is the lateral-movement path the network split exists to
+close. So Alertmanager comes to the bot, and ends up with strictly less reach
+than Prometheus, which spans both networks.
+
+Routing choices worth knowing:
+
+- `group_by: [alertname, severity]`, deliberately **not** including `instance`.
+  On a two-GPU node, per-instance grouping sends the same condition twice —
+  exactly the noise that trains people to mute a channel.
+- `repeat_interval: 4h`, and 24h for `severity="info"`. The audience is a
+  handful of operators reading a Telegram group, not a rota.
+- Two inhibit rules: a down scrape target suppresses the derived warnings from
+  its own now-stale series, and a critical suppresses the matching warning.
+- `send_resolved: true` — half the value of the channel is learning that
+  something recovered without going to look.
+
+**The credential is not in git.** `alertmanager.yml` is committed and points at
+`credentials_file: /etc/alertmanager/webhook_secret`, which is gitignored and
+derived from `.env`:
+
+```bash
+grep '^ALERT_WEBHOOK_SECRET=' .env | cut -d= -f2- > alertmanager/webhook_secret
+chmod 644 alertmanager/webhook_secret   # the image runs as `nobody`
+```
+
+Two traps, both hit during the build:
+
+- **`--web.enable-lifecycle` is a Prometheus flag.** Alertmanager rejects it and
+  crash-loops with `unknown long flag`. It needs no flag: `POST /-/reload` and
+  `SIGHUP` both work by default.
+- **`webhook_secret` at mode 600 is unreadable.** The image runs as `nobody`, so
+  a file owned by the operator fails at config load.
+
+Watch `alertmanager_notifications_failed_total{integration="webhook"}`. A bot
+that is down, renamed, or rejecting the bearer looks *identical to a quiet
+system* from every other angle — alerts fire, Alertmanager accepts them, and
+nothing arrives. That is the same shape of silent failure one layer up that this
+whole path was built to remove.
 
 ## Grafana dashboards — `grafana/provisioning/dashboards/`
 

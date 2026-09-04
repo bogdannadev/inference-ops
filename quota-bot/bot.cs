@@ -94,14 +94,24 @@ static string Req(string k) =>
 static string Opt(string k, string fallback) =>
     Environment.GetEnvironmentVariable(k) is { Length: > 0 } v ? v : fallback;
 
+static HashSet<long> Ids(string raw) =>
+    raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+       .Select(s => long.Parse(s, CultureInfo.InvariantCulture))
+       .ToHashSet();
+
+var allowedIds = Ids(Req("TELEGRAM_ALLOWED_IDS"));
+
+// Where alerts land. Defaults to everyone who may operate the bot, which is
+// the right default for a handful of operators: an alert nobody is guaranteed
+// to see is the failure mode this whole path exists to remove. Set
+// ALERT_CHAT_IDS to a group chat id to send one copy there instead.
+var alertChatIds = Ids(Opt("ALERT_CHAT_IDS", "")) is { Count: > 0 } ids ? ids : allowedIds;
+
 var cfg = new BotConfig(
     BotToken:        Req("TELEGRAM_BOT_TOKEN"),
     WebhookSecret:   Req("TELEGRAM_WEBHOOK_SECRET"),
     WebhookPath:     new Uri(Req("TELEGRAM_WEBHOOK_URL")).AbsolutePath,
-    AllowedIds:      Req("TELEGRAM_ALLOWED_IDS")
-                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Select(s => long.Parse(s, CultureInfo.InvariantCulture))
-                        .ToHashSet(),
+    AllowedIds:      allowedIds,
     AdminCredential: Req("QUOTA_ADMIN_CREDENTIAL"),
     GatewayUrl:      Opt("GATEWAY_URL", "http://higress:80").TrimEnd('/'),
     ApiServerUrl:    Opt("APISERVER_URL", "https://apiserver.svc:8443").TrimEnd('/'),
@@ -114,7 +124,10 @@ var cfg = new BotConfig(
     AuditPath:       Opt("AUDIT_PATH", "/data/audit.log"),
     ModelId:         Opt("MODEL_ID", "qwen3.8-27b"),
     ContextLimit:    int.Parse(Opt("MODEL_CONTEXT", "169000"), CultureInfo.InvariantCulture),
-    OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture));
+    OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture),
+    AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
+    AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
+    AlertChatIds:    alertChatIds);
 
 // Encoded once, not on every delivery — and validated here because the
 // comparison's fast path assumes one byte per character. That holds for the
@@ -126,6 +139,12 @@ if (cfg.WebhookSecret.Length is < 1 or > 256 ||
     throw new InvalidOperationException(
         "TELEGRAM_WEBHOOK_SECRET must be 1-256 characters of [A-Za-z0-9_-] — Telegram's own constraint");
 var secretBytes = Encoding.UTF8.GetBytes(cfg.WebhookSecret);
+
+// Same one-byte-per-character assumption as the Telegram secret above, for the
+// same reason: SecretMatches compares bytes against chars.
+if (!cfg.AlertSecret.All(char.IsAscii))
+    throw new InvalidOperationException("ALERT_WEBHOOK_SECRET must be ASCII");
+var alertSecretBytes = Encoding.UTF8.GetBytes(cfg.AlertSecret);
 
 var builder = WebApplication.CreateSlimBuilder(args);
 builder.Logging.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "yyyy-MM-ddTHH:mm:ssZ "; o.UseUtcTimestamp = true; });
@@ -153,8 +172,22 @@ var queue = Channel.CreateBounded<Update>(new BoundedChannelOptions(256)
     SingleReader = true
 });
 
+// Alert groups awaiting delivery. Bounded and DropWrite like the update queue:
+// if Telegram is unreachable long enough to fill this, the newest alerts are
+// the ones worth keeping, and an unbounded queue would just turn a delivery
+// outage into a memory leak.
+var alertQueue = Channel.CreateBounded<AmWebhook>(new BoundedChannelOptions(64)
+{
+    SingleReader = true,
+    SingleWriter = false,
+    FullMode = BoundedChannelFullMode.DropWrite
+});
+
 builder.Services.AddSingleton(cfg);
 builder.Services.AddSingleton(queue);
+builder.Services.AddSingleton(alertQueue);
+builder.Services.AddSingleton<Telegram>();
+builder.Services.AddHostedService<AlertWorker>();
 builder.Services.AddSingleton<Ledger>();
 builder.Services.AddSingleton<KeyStore>();
 builder.Services.AddHostedService<Worker>();
@@ -200,6 +233,12 @@ builder.Services.AddHttpClient("gateway", c =>
     c.Timeout = TimeSpan.FromSeconds(15);
     c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", cfg.AdminCredential);
 });
+builder.Services.AddHttpClient("alertmanager", c =>
+{
+    c.BaseAddress = new Uri(cfg.AlertmanagerUrl + "/");
+    c.Timeout = TimeSpan.FromSeconds(5);
+});
+
 builder.Services.AddHttpClient("prometheus", c =>
 {
     c.BaseAddress = new Uri(cfg.PrometheusUrl + "/");
@@ -281,6 +320,50 @@ app.MapPost(cfg.WebhookPath, async (HttpRequest req) =>
     return Results.Ok();
 });
 
+// ---------------------------------------------------------------------------
+// Alertmanager's webhook. Same discipline as the Telegram handler above:
+// verify, enqueue, 200, and nothing slow in the request path.
+//
+// Reachable only from the `edge` docker network — Caddy proxies /tg/<random>
+// to this process and nothing else, so this path is not on the public
+// internet. It is authenticated anyway: the bearer is the only thing standing
+// between "anything on edge" and the operators' alert channel.
+//
+// A parse failure answers 200 on purpose. Alertmanager retries non-2xx, and a
+// payload that cannot be deserialised will not deserialise on the third
+// attempt either — it would just pin one alert group in a retry loop forever.
+// Delivery failures that ARE worth retrying (the bot being down) never reach
+// this line.
+// ---------------------------------------------------------------------------
+app.MapPost("/alert", async (HttpRequest req) =>
+{
+    var auth = req.Headers.Authorization.ToString();
+    var presented = auth.StartsWith("Bearer ", StringComparison.Ordinal) ? auth[7..] : "";
+    if (!SecretMatches(presented, alertSecretBytes))
+    {
+        log.LogWarning("rejected /alert with bad or missing bearer from {Ip}",
+            req.HttpContext.Connection.RemoteIpAddress);
+        return Results.Unauthorized();
+    }
+
+    AmWebhook? hook;
+    try
+    {
+        hook = await JsonSerializer.DeserializeAsync(req.Body, BotJson.Default.AmWebhook);
+    }
+    catch (JsonException ex)
+    {
+        log.LogWarning("dropped unparseable alert payload: {Reason}", ex.Message);
+        return Results.Ok();
+    }
+
+    if (hook?.Alerts is { Count: > 0 } && !alertQueue.Writer.TryWrite(hook))
+        log.LogError("alert queue full, dropped group {Group}",
+            hook.GroupLabels?.GetValueOrDefault("alertname") ?? "?");
+
+    return Results.Ok();
+});
+
 app.MapGet("/healthz", () => Results.Text("ok"));
 
 app.Run();
@@ -319,6 +402,7 @@ sealed class Worker(
     Ledger ledger,
     KeyStore keys,
     IHttpClientFactory http,
+    Telegram tg,
     ILogger<Worker> log) : BackgroundService
 {
     // Telegram redelivers on failure, and it can redeliver an update we already
@@ -490,6 +574,7 @@ sealed class Worker(
             "/keys"       => new Reply(await KeysAsync(ct)),
             "/balance"    => new Reply(await BalanceAsync(a1, ct)),
             "/usage"      => new Reply(await UsageAsync(a1 ?? "24h", ct)),
+            "/alerts"     => new Reply(await AlertsAsync(ct)),
             "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
             "/newkey"     => new Reply(a1 is null ? Usage("/newkey &lt;name&gt; [quota]", "/newkey acme 1000000") : await NewKeyAsync(a1, a2, ct)),
             "/topup"      => new Reply((a1 is null || a2 is null) ? Usage("/topup &lt;name&gt; &lt;tokens&gt;", "/topup acme 500000") : await TopUpAsync(a1, a2, ct)),
@@ -509,6 +594,7 @@ sealed class Worker(
         /keys — consumers and balances
         /balance [name] — one or all
         /usage [1h|24h|7d|30d] — tokens and requests
+        /alerts — what is firing right now
 
         <b>Grant</b>
         /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
@@ -794,6 +880,92 @@ sealed class Worker(
         r.EnsureSuccessStatusCode();
     }
 
+    // Reads Alertmanager, not Prometheus, and the difference matters: Prometheus
+    // knows what is FIRING, Alertmanager knows what was actually DELIVERED and
+    // holds the silences and inhibitions. "Firing but suppressed" is the state
+    // most worth being able to see, and only one of the two can show it.
+    private async Task<string> AlertsAsync(CancellationToken ct)
+    {
+        HttpResponseMessage r;
+        try
+        {
+            r = await http.CreateClient("alertmanager")
+                .GetAsync("api/v2/alerts?active=true&silenced=true&inhibited=true", ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // Worth saying plainly: if this is unreachable, alerts are firing
+            // into nothing again, which is the exact condition this path exists
+            // to prevent.
+            return "\u26a0\ufe0f <b>Alertmanager unreachable</b>\n\n"
+                 + "Alerts are evaluating but nothing is being delivered.\n"
+                 + $"<code>{Esc(ex.Message)}</code>";
+        }
+
+        using (r)
+        {
+            if (!r.IsSuccessStatusCode)
+                return $"Alertmanager returned HTTP {(int)r.StatusCode}.";
+
+            var node = JsonNode.Parse(await r.Content.ReadAsStringAsync(ct));
+            if (node is not JsonArray arr || arr.Count == 0)
+                return "<b>Alerts</b>\n\nNothing firing. \u2705";
+
+            var items = new List<(string Sev, string Name, string Who, string Age, bool Suppressed)>();
+            foreach (var a in arr)
+            {
+                var labels = a?["labels"];
+                var sev = labels?["severity"]?.GetValue<string>() ?? "unknown";
+                var name = labels?["alertname"]?.GetValue<string>() ?? "-";
+                var who = labels?["instance"]?.GetValue<string>()
+                          ?? labels?["job"]?.GetValue<string>() ?? "-";
+                var age = DateTimeOffset.TryParse(
+                              a?["startsAt"]?.GetValue<string>(), CultureInfo.InvariantCulture,
+                              DateTimeStyles.AdjustToUniversal, out var st)
+                          ? Fmt.Age(DateTimeOffset.UtcNow - st) : "-";
+                var state = a?["status"]?["state"]?.GetValue<string>();
+                items.Add((sev, name, who, age,
+                    !string.Equals(state, "active", StringComparison.Ordinal)));
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("<b>Alerts</b> \u00b7 ").Append(items.Count)
+              .Append(items.Count == 1 ? " firing\n" : " firing\n");
+
+            // Severity histogram. A count alone does not show shape; five
+            // warnings and one critical is a different morning to the reverse.
+            var order = new[] { "critical", "warning", "info" };
+            var counts = order
+                .Select(sv => (Sev: sv, N: items.Count(i => i.Sev == sv)))
+                .Where(x => x.N > 0).ToList();
+            var other = items.Count(i => !order.Contains(i.Sev));
+            if (other > 0) counts.Add(("other", other));
+
+            if (counts.Count > 0)
+            {
+                var max = counts.Max(c => c.N);
+                sb.Append("\n<pre>");
+                foreach (var c in counts)
+                    sb.Append(Fmt.Glyph(c.Sev)).Append(' ')
+                      .Append(c.Sev.PadRight(8)).Append(c.N.ToString(CultureInfo.InvariantCulture).PadLeft(3))
+                      .Append("  ").Append(Fmt.Bar(c.N, max, 12)).Append('\n');
+                sb.Append("</pre>");
+            }
+
+            foreach (var g in items.GroupBy(i => i.Name)
+                                   .OrderBy(g => Array.IndexOf(order, g.First().Sev)))
+            {
+                sb.Append('\n').Append(Fmt.Glyph(g.First().Sev)).Append(" <b>")
+                  .Append(Esc(g.Key)).Append("</b>\n");
+                foreach (var i in g)
+                    sb.Append("   <code>").Append(Esc(i.Who)).Append("</code> \u00b7 ")
+                      .Append(Esc(i.Age))
+                      .Append(i.Suppressed ? " \u00b7 <i>suppressed</i>" : "").Append('\n');
+            }
+            return sb.ToString();
+        }
+    }
+
     private async Task<Dictionary<string, double>> PromAsync(string query, CancellationToken ct)
     {
         var url = $"api/v1/query?query={Uri.EscapeDataString(query)}";
@@ -813,25 +985,11 @@ sealed class Worker(
         return result;
     }
 
-    private async Task SendAsync(long chatId, Reply reply, CancellationToken ct)
-    {
-        // Telegram caps a message at 4096 characters. Chunk on line boundaries so
-        // a long /keys listing does not lose its last consumer to a hard cut.
-        // The keyboard rides on the final chunk, where the question is.
-        var chunks = Chunk(reply.Text, 3500).ToList();
-        for (var i = 0; i < chunks.Count; i++)
-        {
-            var last = i == chunks.Count - 1;
-            var payload = new SendMessage(chatId, chunks[i], "HTML", last ? reply.Keyboard : null);
-            using var content = new StringContent(
-                JsonSerializer.Serialize(payload, BotJson.Default.SendMessage), Encoding.UTF8);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-            using var r = await http.CreateClient("telegram").PostAsync("sendMessage", content, ct);
-            if (!r.IsSuccessStatusCode)
-                log.LogError("sendMessage failed: HTTP {Code} {Body}",
-                    (int)r.StatusCode, await r.Content.ReadAsStringAsync(ct));
-        }
-    }
+    // Moved to the Telegram singleton when alert delivery arrived: two
+    // independent producers now send messages, and the 4096-character chunking
+    // rule must not exist in two places that can drift apart.
+    private Task SendAsync(long chatId, Reply reply, CancellationToken ct) =>
+        tg.SendAsync(chatId, reply, ct);
 
     // Show "typing…" only if the answer is actually going to be late.
     //
@@ -898,6 +1056,7 @@ sealed class Worker(
             new("keys",       "Consumers and their balances"),
             new("balance",    "Balance for one consumer or all"),
             new("usage",      "Tokens and requests over a window"),
+            new("alerts",     "What is firing right now"),
             new("topup",      "Add tokens to a consumer"),
             new("newkey",     "Create a key and return its OpenCode config"),
             new("opencode",   "Re-send a consumer's OpenCode config"),
@@ -941,18 +1100,6 @@ sealed class Worker(
         try { return await f(); } catch (Exception ex) { return $"FAILED ({ex.GetType().Name})"; }
     }
 
-    private static IEnumerable<string> Chunk(string s, int max)
-    {
-        if (s.Length <= max) { yield return s; yield break; }
-        var sb = new StringBuilder();
-        foreach (var line in s.Split('\n'))
-        {
-            if (sb.Length + line.Length + 1 > max) { yield return sb.ToString(); sb.Clear(); }
-            sb.Append(line).Append('\n');
-        }
-        if (sb.Length > 0) yield return sb.ToString();
-    }
-
     private static bool IsValidName(string s) =>
         s.Length is > 0 and <= 32 && s.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '_');
 
@@ -961,11 +1108,9 @@ sealed class Worker(
 
     private static string Head(string s) => s.Length <= 40 ? s : s[..40] + "\u2026";
 
-    // HTML parse_mode needs exactly three characters escaped. Consumer names
-    // and upstream error strings both reach the wire, and one stray '<' makes
-    // Telegram reject the entire message with a 400.
-    private static string Esc(string s) =>
-        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+    // Delegates to Fmt so alert rendering and command rendering escape
+    // identically. Kept as a local name because it is used at ~40 call sites.
+    private static string Esc(string s) => Fmt.Esc(s);
 
     // One shape for every usage error: what it takes, then a real example.
     // "Usage: /topup <name> <tokens>" alone still leaves people guessing
@@ -1465,12 +1610,197 @@ sealed class RespConnection(TcpClient client) : IDisposable
 // Types and JSON. Every type crossing the wire needs a [JsonSerializable]
 // entry, or serialisation throws once trimmed.
 // ===========================================================================
+// ---------------------------------------------------------------------------
+// Outbound Telegram, shared by the command worker and the alert worker.
+// ---------------------------------------------------------------------------
+sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
+{
+    public async Task SendAsync(long chatId, Reply reply, CancellationToken ct)
+    {
+        // Telegram caps a message at 4096 characters. Chunk on line boundaries so
+        // a long /keys listing does not lose its last consumer to a hard cut.
+        // The keyboard rides on the final chunk, where the question is.
+        var chunks = Chunk(reply.Text, 3500).ToList();
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var last = i == chunks.Count - 1;
+            var payload = new SendMessage(chatId, chunks[i], "HTML", last ? reply.Keyboard : null);
+            using var content = new StringContent(
+                JsonSerializer.Serialize(payload, BotJson.Default.SendMessage), Encoding.UTF8);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var r = await http.CreateClient("telegram").PostAsync("sendMessage", content, ct);
+            if (!r.IsSuccessStatusCode)
+                log.LogError("sendMessage failed: HTTP {Code} {Body}",
+                    (int)r.StatusCode, await r.Content.ReadAsStringAsync(ct));
+        }
+    }
+
+    private static IEnumerable<string> Chunk(string s, int max)
+    {
+        if (s.Length <= max) { yield return s; yield break; }
+        var sb = new StringBuilder();
+        foreach (var line in s.Split('\n'))
+        {
+            if (sb.Length + line.Length + 1 > max) { yield return sb.ToString(); sb.Clear(); }
+            sb.Append(line).Append('\n');
+        }
+        if (sb.Length > 0) yield return sb.ToString();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting shared between command replies and alert notifications.
+// ---------------------------------------------------------------------------
+static class Fmt
+{
+    // HTML parse_mode needs exactly three characters escaped. Consumer names,
+    // upstream error strings and alert annotations all reach the wire, and one
+    // stray '<' makes Telegram reject the entire message with a 400.
+    public static string Esc(string s) =>
+        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+    // Coarse on purpose. "2h14m" answers "is this new or has it been broken all
+    // morning", which is the only question an age answers on a phone screen.
+    public static string Age(TimeSpan t) =>
+        t.TotalDays  >= 1 ? $"{(int)t.TotalDays}d{t.Hours:00}h"
+      : t.TotalHours >= 1 ? $"{(int)t.TotalHours}h{t.Minutes:00}m"
+      : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes}m"
+      : $"{Math.Max(0, (int)t.TotalSeconds)}s";
+
+    // Severity as shape as well as colour: these survive a monochrome screen
+    // and a colourblind reader, which a red dot alone does not.
+    public static string Glyph(string severity) => severity switch
+    {
+        "critical" => "\U0001f534",
+        "warning"  => "\U0001f7e0",
+        "info"     => "\U0001f535",
+        _          => "\u26aa"
+    };
+
+    // Block bar for a monospace histogram. Telegram renders <pre> in a fixed
+    // font, so column alignment holds on every client.
+    public static string Bar(int value, int max, int width)
+    {
+        if (max <= 0 || value <= 0) return "";
+        var n = (int)Math.Round((double)value / max * width);
+        return new string('\u2588', Math.Clamp(n, 1, width));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alert delivery. Reads groups off the queue the webhook fills and renders one
+// Telegram message per group.
+//
+// Deliberately NOT the same worker as commands: an operator waiting on /keys
+// should not queue behind an alert storm, and an alert must not be dropped
+// because a command is mid-flight.
+// ---------------------------------------------------------------------------
+sealed class AlertWorker(
+    BotConfig cfg,
+    Channel<AmWebhook> alerts,
+    Telegram tg,
+    ILogger<AlertWorker> log) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        await foreach (var hook in alerts.Reader.ReadAllAsync(ct))
+        {
+            try
+            {
+                var text = Render(hook);
+                foreach (var chatId in cfg.AlertChatIds)
+                    await tg.SendAsync(chatId, new Reply(text), ct);
+
+                log.LogInformation("delivered {Status} group {Alert} ({Count} alerts) to {Chats} chat(s)",
+                    hook.Status, hook.GroupLabels?.GetValueOrDefault("alertname") ?? "?",
+                    hook.Alerts?.Count ?? 0, cfg.AlertChatIds.Count);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Swallow and continue. One malformed group must not take the
+                // delivery path down for every subsequent alert.
+                log.LogError(ex, "failed to deliver alert group");
+            }
+        }
+    }
+
+    // One message per Alertmanager group. The group is already the unit of
+    // meaning here — group_by is [alertname, severity] — so the header names
+    // the rule and the body lists the instances it fired for.
+    internal static string Render(AmWebhook hook)
+    {
+        var firing = string.Equals(hook.Status, "firing", StringComparison.OrdinalIgnoreCase);
+        var list = hook.Alerts ?? [];
+        var name = Get(hook.GroupLabels, "alertname") ?? Get(hook.CommonLabels, "alertname") ?? "alert";
+        var sev  = Get(hook.GroupLabels, "severity")  ?? Get(hook.CommonLabels, "severity")  ?? "unknown";
+
+        var sb = new StringBuilder();
+        sb.Append(firing ? Fmt.Glyph(sev) : "\u2705")
+          .Append(firing ? " <b>FIRING</b> \u00b7 " : " <b>RESOLVED</b> \u00b7 ")
+          .Append("<b>").Append(Fmt.Esc(name)).Append("</b>\n")
+          .Append("<i>").Append(Fmt.Esc(sev)).Append(" \u00b7 ").Append(list.Count)
+          .Append(list.Count == 1 ? " alert" : " alerts").Append("</i>\n");
+
+        // Per-instance detail in a monospace block, so the columns line up when
+        // one rule fires for several targets at once.
+        var rows = list.Select(a => (
+            Who: Get(a.Labels, "instance") ?? Get(a.Labels, "job") ?? "-",
+            Age: a.StartsAt is { } st
+                 ? Fmt.Age((firing ? DateTimeOffset.UtcNow : a.EndsAt ?? DateTimeOffset.UtcNow) - st)
+                 : "-")).ToList();
+
+        if (rows.Count > 0)
+        {
+            var w = rows.Max(r => r.Who.Length);
+            sb.Append("\n<pre>");
+            foreach (var r in rows)
+                sb.Append(Fmt.Esc(r.Who.PadRight(w))).Append("  ").Append(Fmt.Esc(r.Age)).Append('\n');
+            sb.Append("</pre>");
+        }
+
+        // The rule's own words, deduplicated. A per-GPU rule otherwise repeats
+        // one identical sentence once per device.
+        foreach (var line in list
+                     .Select(a => Get(a.Annotations, "summary") ?? Get(a.Annotations, "description"))
+                     .Where(x => x is { Length: > 0 })
+                     .Distinct(StringComparer.Ordinal))
+            sb.Append('\n').Append(Fmt.Esc(line!));
+
+        return sb.ToString();
+    }
+
+    private static string? Get(Dictionary<string, string>? d, string k) =>
+        d is not null && d.TryGetValue(k, out var v) && v.Length > 0 ? v : null;
+}
+
+// Alertmanager webhook payload, schema version 4. Only the fields rendered here
+// are declared; the deserialiser ignores the rest.
+sealed class AmWebhook
+{
+    [JsonPropertyName("status")]       public string? Status { get; set; }
+    [JsonPropertyName("receiver")]     public string? Receiver { get; set; }
+    [JsonPropertyName("groupLabels")]  public Dictionary<string, string>? GroupLabels { get; set; }
+    [JsonPropertyName("commonLabels")] public Dictionary<string, string>? CommonLabels { get; set; }
+    [JsonPropertyName("alerts")]       public List<AmAlert>? Alerts { get; set; }
+}
+
+sealed class AmAlert
+{
+    [JsonPropertyName("status")]      public string? Status { get; set; }
+    [JsonPropertyName("labels")]      public Dictionary<string, string>? Labels { get; set; }
+    [JsonPropertyName("annotations")] public Dictionary<string, string>? Annotations { get; set; }
+    [JsonPropertyName("startsAt")]    public DateTimeOffset? StartsAt { get; set; }
+    [JsonPropertyName("endsAt")]      public DateTimeOffset? EndsAt { get; set; }
+    [JsonPropertyName("fingerprint")] public string? Fingerprint { get; set; }
+}
+
 sealed record BotConfig(
     string BotToken, string WebhookSecret, string WebhookPath, HashSet<long> AllowedIds,
     string AdminCredential, string GatewayUrl, string ApiServerUrl, string KubeConfigPath,
     string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
-    string ModelId, int ContextLimit, int OutputLimit);
+    string ModelId, int ContextLimit, int OutputLimit,
+    string AlertSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<string>> Run);
@@ -1571,4 +1901,6 @@ sealed class QuotaResponse
 [JsonSerializable(typeof(SetMyCommands))]
 [JsonSerializable(typeof(AnswerCallbackQuery))]
 [JsonSerializable(typeof(QuotaResponse))]
+[JsonSerializable(typeof(AmWebhook))]
+[JsonSerializable(typeof(AmAlert))]
 internal partial class BotJson : JsonSerializerContext;

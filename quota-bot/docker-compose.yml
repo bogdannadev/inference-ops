@@ -67,6 +67,13 @@ services:
       - APISERVER_URL=https://apiserver.svc:8443
       - REDIS_HOST=higress-redis
       - PROMETHEUS_URL=http://qwen36-27b-prometheus:9090
+      # Alertmanager lives on `edge`, same as this bot and Prometheus. It is on
+      # `edge` rather than the metrics backend precisely so that it can reach
+      # this container without this container having to join the backend — a
+      # bot reachable from the internet must never gain a route to the worker
+      # ports. ALERT_WEBHOOK_SECRET comes from .env and must match the
+      # credentials_file Alertmanager presents.
+      - ALERTMANAGER_URL=http://qwen36-27b-alertmanager:9093
       - KUBECONFIG_PATH=/etc/kube/config
       - CONSUMERS_PATH=/data/consumers.conf
       - AUDIT_PATH=/var/lib/quota-bot/audit.log
