@@ -92,7 +92,7 @@ flowchart LR
 - Alert formatting with severity glyphs, grouped by alertname.
 - `/alerts` — list what is currently firing.
 
-## Stage A — aggregates
+## Stage A — aggregates ✅ DONE 2026-09-04
 
 **Setup**
 1. `redis_exporter` on `higressint`, `--check-keys 'chat_quota:*'`.
@@ -101,14 +101,26 @@ flowchart LR
    share of node, top-N.
 4. Alert: balance below one day of burn.
 
-**Test**
-- `chat_quota_*` series present and matching `./stats.sh` output exactly.
-- Low-balance alert fires on a deliberately drained test consumer.
+**Test — all passed**
+- `redis_key_value` matches `./stats.sh` balances exactly, all four consumers.
+- Alerts covered by `promtool test rules prometheus/rules_test.yml` instead of
+  draining a live consumer — that would have broken a paying customer to test a
+  warning, and could not exercise `QuotaLedgerUnreachable` at all. The tests
+  caught two real bugs: funded-but-idle consumers silently dropping out of
+  days-left, and `clamp_min` being passed a scalar.
+- `/health`, `/usage`, `/balance` and `/balance <name>` all delivered through
+  the real webhook; 13/13 targets, 0 alerts firing.
 
-**Bot integration**
-- `/usage` gains a per-consumer bar visualisation (Markdown code block).
-- `/balance` gains burn rate and days-to-empty.
-- `/health` — one-screen stack status: targets up, queue depth, ledger reachable.
+**Bot integration — done**
+- `/usage` renders a bar per consumer beside the numbers.
+- `/balance <name>` shows burn rate and runway; `/balance` gains a days column.
+  Both read the recording rules, so bot, dashboard and alert cannot disagree.
+- `/health` — targets, alerts, ledger, span backlog, throughput, TTFT, KV pool,
+  and a warning line per condition that is silently wrong.
+
+**Also folded in:** F6 (apiserver job removed — no scoped credential is possible),
+the permanently-firing `GpuMemoryPressure` rule removed, F7 (gateway status panel
+repointed from the retired `:8080` listener to `:80`).
 
 ## Stage B — the fact table
 
