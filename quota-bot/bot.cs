@@ -761,15 +761,21 @@ sealed class Worker(
             var sel = $"{{ai_consumer=\"{name}\"}}";
             var burnT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:tokens24h{sel})", ct);
             var daysT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_days_left{sel})", ct);
-            await Task.WhenAll(burnT, daysT);
+            var binT  = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:input24h{sel})", ct);
+            var boutT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:output24h{sel})", ct);
+            await Task.WhenAll(burnT, daysT, binT, boutT);
 
             var body = $"<b>{Esc(name)}</b>\n<code>{q.Value:N0}</code> tokens remaining";
 
             if (burnT.Result is > 0 && daysT.Result is { } days)
             {
+                var bi = binT.Result ?? 0; var bo = boutT.Result ?? 0;
                 string[] rows =
                 [
                     $"{"burn 24h",-12}{burnT.Result:N0} tok/day",
+                    $"{"  input",-12}{bi,12:N0}",
+                    $"{"  output",-12}{bo,12:N0}",
+                    $"{"  i:o",-12}{(bo > 0 ? bi / bo : 0),12:N1}",
                     $"{"days left",-12}{days:N1}"
                 ];
                 body += "\n" + Table("", rows);
@@ -806,19 +812,34 @@ sealed class Worker(
         if (window is not ("24h" or "7d" or "1h" or "30d"))
             return $"Unknown window <code>{Esc(window)}</code>.\n\nUse one of <code>1h</code>, <code>24h</code>, <code>7d</code>, <code>30d</code>.";
 
-        var tokens = await PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_total_token[{window}]))", ct);
-        var reqs   = await PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[{window}]))", ct);
-        if (tokens.Count == 0) return $"No usage in the last {window}.";
+        // Split by direction. The ledger charges input and output identically —
+        // ai-quota deducts input+output 1:1 and has no weighting option — but a
+        // single total hides that a consumer at 40:1 is paying almost entirely
+        // for context it re-sent, most of which the radix cache served free.
+        var inT   = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_input_token[{window}]))", ct);
+        var outT  = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_output_token[{window}]))", ct);
+        var reqsT = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[{window}]))", ct);
+        await Task.WhenAll(inT, outT, reqsT);
 
-        // A bar alongside the numbers. Four consumers in a column of digits all
-        // look alike on a phone; the point of this command is usually "who is
-        // the outlier", and that is a shape question, not a reading question.
-        var max = tokens.Values.DefaultIfEmpty(0).Max();
-        var rows = tokens.OrderByDescending(x => x.Value).Select(x =>
-            $"{x.Key,-16}{x.Value,12:N0} tok{(reqs.TryGetValue(x.Key, out var r) ? r : 0),7:N0} req  "
-            + Fmt.Bar((int)x.Value, (int)Math.Max(max, 1), 10));
+        var inp = inT.Result; var outp = outT.Result; var reqs = reqsT.Result;
+        if (inp.Count == 0 && outp.Count == 0) return $"No usage in the last {window}.";
 
-        return Table($"<b>Usage</b> \u2014 last {window}", rows)
+        var names = inp.Keys.Union(outp.Keys).Union(reqs.Keys).ToList();
+        var header = $"{"consumer",-14}{"in",9}{"out",8}{"i:o",6}{"req",6}";
+        var rows = names
+            .OrderByDescending(n => inp.GetValueOrDefault(n) + outp.GetValueOrDefault(n))
+            .Select(n =>
+            {
+                var i = inp.GetValueOrDefault(n);
+                var o = outp.GetValueOrDefault(n);
+                return $"{n,-14}{i,9:N0}{o,8:N0}{(o > 0 ? i / o : 0),6:N1}{reqs.GetValueOrDefault(n),6:N0}";
+            });
+
+        var totalIn = inp.Values.Sum(); var totalOut = outp.Values.Sum();
+        return Table($"<b>Usage</b> \u2014 last {window}", new[] { header }.Concat(rows))
+             + $"\n<b>{totalIn + totalOut:N0}</b> tokens charged \u2014 {totalIn:N0} in, {totalOut:N0} out."
+             + "\n<i>Quota is a single TOTAL-token balance: input and output are deducted at the same "
+             + "rate. i:o shows how much of a bill is context re-sent rather than tokens generated.</i>"
              + "\n<i>Counters reset when the gateway restarts. Balances are the billing record.</i>";
     }
 

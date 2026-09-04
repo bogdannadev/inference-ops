@@ -55,6 +55,38 @@ groups:
           )
 
       # -----------------------------------------------------------------------
+      # The same spend, split by direction.
+      #
+      # The ledger cannot tell these apart — ai-quota deducts input+output 1:1
+      # and v2.2.4 has no weighting field — but they are not the same cost. An
+      # output token is a forward pass; an input token is prefilled once and, on
+      # a multi-turn agent re-sending its context, usually a radix-cache hit.
+      #
+      # Recorded so the bot, the dashboard and any future pricing conversation
+      # all read the same numbers rather than three re-derivations.
+      # -----------------------------------------------------------------------
+      - record: consumer:quota_spend:input24h
+        expr: |
+          sum by (ai_consumer) (
+            increase(route_upstream_model_consumer_metric_input_token[24h])
+          )
+
+      - record: consumer:quota_spend:output24h
+        expr: |
+          sum by (ai_consumer) (
+            increase(route_upstream_model_consumer_metric_output_token[24h])
+          )
+
+      # Input tokens charged per output token produced. A consumer near 1 is
+      # doing generative work; one in the tens is paying mostly to re-send
+      # context. clamp_min keeps a consumer who produced no output from
+      # rendering as +Inf, which reads as breakage rather than as "no output".
+      - record: consumer:token_ratio:in_per_out24h
+        expr: |
+          consumer:quota_spend:input24h
+            / clamp_min(consumer:quota_spend:output24h, 1)
+
+      # -----------------------------------------------------------------------
       # Days of headroom at the current burn rate.
       #
       # Both sides are aggregated to `ai_consumer` alone so the division has a

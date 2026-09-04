@@ -62,7 +62,7 @@
     {
       "type": "table",
       "title": "Consumer ledger",
-      "description": "Balance is the DURABLE record: ai-quota DECRBYs it after every completion and it survives restarts. Spend and share come from Envoy counters, which reset when the gateway restarts \u2014 so they under-report across a restart and must never be invoiced. Days left = balance / 24h spend, clamped so an idle consumer shows a large finite number rather than No data.",
+      "description": "Balance is the DURABLE record and is a single TOTAL-token number: ai-quota deducts input+output at the same rate and v2.2.4 has no weighting option. The in/out columns show what that total was actually made of \u2014 output tokens each cost a forward pass, while input is prefilled once and mostly radix-cache served. Spend and share come from Envoy counters, which reset on gateway restart and must never be invoiced.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -136,12 +136,62 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Spend 24h"
+              "options": "In 24h"
             },
             "properties": [
               {
                 "id": "unit",
                 "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Out 24h"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "i:o"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 10
+                    },
+                    {
+                      "color": "orange",
+                      "value": 30
+                    }
+                  ]
+                }
               }
             ]
           },
@@ -231,18 +281,22 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
               "Time 1": true,
               "Time 2": true,
               "Time 3": true,
-              "Time 4": true
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time": true
             },
             "renameByName": {
               "ai_consumer": "Consumer",
               "Value #A": "Balance",
-              "Value #B": "Spend 24h",
-              "Value #C": "Days left",
-              "Value #D": "Share of node"
+              "Value #B": "In 24h",
+              "Value #C": "Out 24h",
+              "Value #D": "i:o",
+              "Value #E": "Days left",
+              "Value #F": "Share of node"
             }
           }
         }
@@ -265,7 +319,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_spend:tokens24h)",
+          "expr": "sum by (ai_consumer) (consumer:quota_spend:input24h)",
           "legendFormat": "",
           "refId": "B",
           "instant": true,
@@ -277,7 +331,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_days_left)",
+          "expr": "sum by (ai_consumer) (consumer:quota_spend:output24h)",
           "legendFormat": "",
           "refId": "C",
           "instant": true,
@@ -289,9 +343,33 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:token_share:ratio1h)",
+          "expr": "sum by (ai_consumer) (consumer:token_ratio:in_per_out24h)",
           "legendFormat": "",
           "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (ai_consumer) (consumer:quota_days_left)",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (ai_consumer) (consumer:token_share:ratio1h)",
+          "legendFormat": "",
+          "refId": "F",
           "instant": true,
           "format": "table",
           "range": false
