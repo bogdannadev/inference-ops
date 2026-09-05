@@ -1,0 +1,110 @@
+# =============================================================================
+# admin-mcp — MCP server for operating this node from an admin's Claude client
+#
+#   docker compose up -d --build
+#
+# NETWORK PLACEMENT IS THE WHOLE SECURITY STORY HERE.
+#
+# This container is dual-homed on `edge` and `qwen36-27b-backend`, which is a
+# posture quota-bot deliberately does NOT have: the bot is edge-only precisely
+# so an internet-reachable process has no route to the worker ports. This one
+# needs backend to reach ClickHouse, which is the entire reason it exists.
+#
+# What makes that acceptable, and none of these is sufficient alone:
+#
+#   1. NO PUBLISHED PORT. Caddy is the only way in, and Caddy restricts the
+#      route to Anthropic's published egress range 160.79.104.0/21.
+#   2. A bearer token this process checks in constant time, and Origin
+#      validation per the MCP transport spec.
+#   3. Its ClickHouse credential is readonly=2 with capped settings
+#      (see qwen3.6-27b-2-A100/clickhouse/users.d/mcp-readonly.xml). It cannot
+#      write to the trace store even if everything above is bypassed.
+#   4. It cannot create or revoke keys at all — see the header of mcp.cs. The
+#      only writes are balance changes through the gateway's quota API.
+#
+# The same dual-homing already exists for langfuse-web, and it carries the same
+# trap: a container on two networks must bind 0.0.0.0 or it listens on one and
+# silently refuses the other. ASPNETCORE_URLS below is that binding.
+# =============================================================================
+
+services:
+  admin-mcp:
+    build:
+      context: .
+    image: admin-mcp:local
+    container_name: admin-mcp
+
+    # Same core set as quota-bot. This is a request-driven process that is idle
+    # almost always; it has no business competing with the schedulers.
+    cpuset: "48-55"
+    mem_limit: 256m
+    memswap_limit: 256m
+
+    env_file:
+      - .env
+
+    environment:
+      - ASPNETCORE_URLS=http://0.0.0.0:8080
+      - DOTNET_gcServer=0
+      - DOTNET_GCConserveMemory=5
+      - DOTNET_gcConcurrent=0
+
+      # Service addresses, each on a network this container joins below.
+      - PROMETHEUS_URL=http://qwen36-27b-prometheus:9090
+      - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
+      - CLICKHOUSE_USER=mcp
+      - GATEWAY_URL=http://higress:80
+
+      # Browser origins allowed to drive this server. Non-browser clients send
+      # no Origin at all and are unaffected; this exists to refuse a malicious
+      # page attempting DNS rebinding, which the transport spec makes a MUST.
+      - MCP_ALLOWED_ORIGINS=https://claude.ai,https://claude.com
+
+      # Set to anything but "true" to serve reads only. Flipping this is the
+      # fastest way to narrow the surface without taking the server down.
+      - MCP_WRITES_ENABLED=true
+
+      - AUDIT_PATH=/data/audit.log
+
+    volumes:
+      # The SAME audit log quota-bot writes to. One file, both writers, so
+      # "who changed this balance" has a single answer regardless of which
+      # interface was used. Appends only.
+      - ../quota-bot/data:/data
+
+    healthcheck:
+      # The chiselled image has no curl, and unlike quota-bot this binary has no
+      # --healthcheck mode; the MCP endpoint needs auth, so the liveness probe
+      # is the unauthenticated /healthz the app maps ahead of the auth
+      # middleware. wget is absent too, so this uses the runtime's own client.
+      test: ["CMD", "/app/mcp", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+    networks:
+      # edge      -> Caddy reaches this container; Prometheus lives here too.
+      # backend   -> ClickHouse (the fact table and the span store).
+      # higress   -> the gateway's quota API, for balance writes.
+      edge:
+      backend:
+      higress-net:
+
+networks:
+  edge:
+    external: true
+  backend:
+    external: true
+    name: qwen36-27b-backend
+  higress-net:
+    external: true
+    name: higress_higress-net
