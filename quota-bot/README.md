@@ -40,22 +40,35 @@ same reason.
 
 ## Commands
 
+Generated from the `Commands` table in `bot.cs`, which is the single
+source of truth: `/help` and the Telegram command menu are both rendered
+from it. This block is a copy and can go stale — the bot cannot.
+`/start` is an alias of `/help`.
+
 ```
-/status                  gateway, ledger, Prometheus, key-auth health
-/keys                    consumers and balances (never credentials)
-/balance [name]
-/usage [1h|24h|7d|30d]   input/output split and the i:o ratio
-/alerts                  what is firing right now, with a severity histogram
-/health                  stack and telemetry health on one screen
-/tier <name> <tier>      record a consumer's policy tier (recorded, not enforced)
+/keys                       consumers, balances and tiers
+/balance [name]             balance, burn rate and runway
+/tiers                      what each policy tier means
+/tier <name> <tier>         record a consumer's tier
 
-/newkey <name> [quota]   create, install, seed, return OpenCode config
-/opencode <name>         re-emit the OpenCode config for a consumer
-/revoke <name>           delete the key and its ledger entry (CONFIRM)
+/usage [1h|24h|7d|30d]      tokens in/out per consumer
+/top [1h|24h|7d]            busiest consumers, with errors
+/p95 [name]                 latency percentiles, per consumer (gateway + engine)
+/errors [1h|24h|7d]         status mix per consumer
+/trace <request-id>         where to look one request up
+/langfuse                   what Langfuse can and cannot tell you
 
-/topup <name> <n>        add tokens
-/setquota <name> <n>     overwrite the balance (CONFIRM)
-/clearquota <name>       set the balance to zero (CONFIRM)
+/status                     can I still operate the gateway
+/health                     is the stack healthy, and can I believe it
+/alerts                     what is firing right now
+
+/newkey <name> [tokens]     create a key, seed it, return its OpenCode config
+/opencode <name>            re-send an existing consumer's config
+/topup <name> <tokens>      add to a balance
+
+/setquota <name> <tokens>   replaces a balance
+/clearquota <name>          sets a balance to zero
+/revoke <name>              deletes a key and its balance
 ```
 
 `/newkey` seeds the balance before reporting success, deliberately. ai-quota
