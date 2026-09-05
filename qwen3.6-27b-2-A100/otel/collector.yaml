@@ -64,6 +64,31 @@ processors:
         value: qwen36-27b
         action: upsert
 
+  # DROP decode_loop. Measured 2026-09-05: it is 76.9% of all spans
+  # (203,404 of 264k in 24h, ~33 per request -- one span per decode iteration)
+  # and it actively CORRUPTS the only aggregate Langfuse offers.
+  #
+  # Langfuse reads `attributes.decode_ct` off these spans as token usage. Over
+  # 24h that summed to 98,198,709 against a billing-grade fact-table total of
+  # 345,195 -- the Metrics API reported 101,091,611 tokens, ~293x reality, and
+  # a `totalCost` derived from it. Anyone reading Langfuse for usage was
+  # reading a number three orders of magnitude wrong.
+  #
+  # Dropping it here rather than lowering SGLANG_TRACE_LEVEL keeps every
+  # request-level span we actually use for latency forensics -- request_process,
+  # prefill_waiting, prefill_forward, decode_forward, tokenize -- and loses only
+  # the per-decode-iteration slice, which no dashboard or runbook reads.
+  #
+  # KILL SWITCH: delete this processor and its entry in the pipeline below, then
+  # restart the collector. The engine keeps emitting them; nothing upstream
+  # changes. `curl "http://qwen36-27b-r0:8001/set_trace_level?level=N"` is the
+  # other end of the same dial and needs no restart at all.
+  filter/drop_decode_loop:
+    error_mode: ignore
+    traces:
+      span:
+        - 'name == "decode_loop"'
+
   # Langfuse ingestion is one REST call per batch; batching is what stops that
   # becoming one HTTP round-trip per span. 5s matches the tolerance here —
   # these spans are for post-hoc latency forensics, not live alerting.
@@ -115,5 +140,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource/identity, batch]
+      processors: [memory_limiter, resource/identity, filter/drop_decode_loop, batch]
       exporters: [otlp_http/langfuse]
