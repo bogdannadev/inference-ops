@@ -398,14 +398,26 @@ if (cfg.AdminApiSecret.Length >= 32)
     {
         if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
         var arr = new JsonArray();
+        // Enforcement is STRUCTURAL here, not a note in prose. Of the three
+        // numbers a tier carries, only `quota` is applied: ai-quota seeds and
+        // deducts against it. tokens_per_minute needs ai-token-ratelimit, which
+        // is bundled and not installed; max_tokens is capped globally at 70000
+        // by request-validation and does not vary per tier. A field that is
+        // read as a promise and enforced by nothing ends up quoted to a
+        // customer, so each row says which of its own numbers are real.
         foreach (var (name, t) in Worker.Tiers)
             arr.Add((JsonNode)new JsonObject
             {
                 ["tier"] = name,
                 ["quota"] = t.Quota,
-                ["tokens_per_minute"] = t.Tpm,
-                ["max_tokens"] = t.MaxTokens,
+                ["tokens_per_minute_NOT_ENFORCED"] = t.Tpm,
+                ["max_tokens_NOT_ENFORCED"] = t.MaxTokens,
                 ["for"] = t.For,
+                ["enforced"] = new JsonArray { (JsonNode)"quota" },
+                ["note"] = "Only `quota` is applied. tokens_per_minute needs the "
+                         + "ai-token-ratelimit plugin, which is bundled but not installed. "
+                         + "max_tokens is a single global 70000 ceiling, not per-tier. "
+                         + "Do not quote the unenforced numbers to a consumer as limits.",
             });
         return Results.Text(arr.ToJsonString(), "application/json");
     });
