@@ -126,6 +126,10 @@ var cfg = new BotConfig(
     ContextLimit:    int.Parse(Opt("MODEL_CONTEXT", "169000"), CultureInfo.InvariantCulture),
     OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture),
     AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
+    // Shared with admin-mcp, which is the only caller of /admin/*. Optional:
+    // unset means those endpoints are not mapped at all, which is the right
+    // default for an install that has no MCP server in front of it.
+    AdminApiSecret:  Opt("ADMIN_API_SECRET", ""),
     AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
     AlertChatIds:    alertChatIds,
     LangfuseUrl:     Opt("LANGFUSE_PUBLIC_URL", "https://langfuse.example.org").TrimEnd('/'),
@@ -351,6 +355,200 @@ app.MapPost(cfg.WebhookPath, async (HttpRequest req) =>
 // Delivery failures that ARE worth retrying (the bot being down) never reach
 // this line.
 // ---------------------------------------------------------------------------
+// =============================================================================
+// ADMIN API — the ONE writer for consumer identity
+//
+// admin-mcp deliberately does not create or revoke keys itself. Consumers live
+// in a single key-auth wasmplugin object, the Higress apiserver is file-backed
+// and returns no resourceVersion, so a PUT is last-write-wins over the whole
+// object. Two processes editing it with no shared lock silently drop one of two
+// concurrent creations, and the symptom is a key that looks created and does
+// not authenticate.
+//
+// KeyStore holds that lock, and it is a singleton in THIS process. Routing the
+// MCP server's create/revoke through here means both interfaces serialise
+// behind the same lock, write the same audit log, and generate credentials with
+// the same rejection-sampled generator.
+//
+// Not mapped at all unless ADMIN_API_SECRET is set. It is reachable only on
+// `edge`, from admin-mcp, and never published by Caddy.
+// =============================================================================
+if (cfg.AdminApiSecret.Length >= 32)
+{
+    var adminSecretBytes = Encoding.UTF8.GetBytes(cfg.AdminApiSecret);
+
+    // Results.Json/BadRequest/NotFound with an anonymous type is reflection-based
+    // serialisation and fails the AOT build (IL2026/IL3050) — the same family of
+    // error as JsonArray.Add<T> recorded in the README. Every admin response is
+    // therefore built as a JsonObject and written as text.
+    static IResult J(int status, JsonObject o) =>
+        Results.Text(o.ToJsonString(), "application/json", null, status);
+
+    static bool AdminOk(HttpRequest req, byte[] secret)
+    {
+        var auth = req.Headers.Authorization.ToString();
+        var presented = auth.StartsWith("Bearer ", StringComparison.Ordinal) ? auth[7..] : "";
+        return SecretMatches(presented, secret);
+    }
+
+    // The tier table, so a caller can choose a tier by name instead of guessing
+    // a token count. This is the same table /tiers renders and /tier validates
+    // against — one definition, so advice and enforcement cannot drift.
+    app.MapGet("/admin/tiers", (HttpRequest req) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+        var arr = new JsonArray();
+        foreach (var (name, t) in Worker.Tiers)
+            arr.Add((JsonNode)new JsonObject
+            {
+                ["tier"] = name,
+                ["quota"] = t.Quota,
+                ["tokens_per_minute"] = t.Tpm,
+                ["max_tokens"] = t.MaxTokens,
+                ["for"] = t.For,
+            });
+        return Results.Text(arr.ToJsonString(), "application/json");
+    });
+
+    app.MapPost("/admin/keys", async (HttpRequest req, KeyStore keys, Ledger ledger,
+                                      IHttpClientFactory http, CancellationToken ct) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+
+        JsonNode? body;
+        try { body = await JsonNode.ParseAsync(req.Body, cancellationToken: ct); }
+        catch (JsonException) { return J(400, new JsonObject { ["error"] = "malformed JSON body" }); }
+
+        var name = body?["name"]?.GetValue<string>() ?? "";
+        var tier = body?["tier"]?.GetValue<string>();
+        long? quota = body?["quota"] is { } q && long.TryParse(q.ToString(), out var qq) ? qq : null;
+
+        if (!Worker.IsValidName(name))
+            return J(400, new JsonObject { ["error"] = "name must be 1-32 chars of [a-z0-9_-]" });
+
+        // A tier picks the quota; an explicit quota overrides it. Neither is
+        // required, and the default matches what /newkey has always used.
+        if (tier is { Length: > 0 })
+        {
+            if (!Worker.Tiers.TryGetValue(tier, out var t))
+            {
+                    var known = new JsonArray();
+                    foreach (var k in Worker.Tiers.Keys) known.Add((JsonNode)k!);
+                    return J(400, new JsonObject
+                    {
+                        ["error"] = $"unknown tier '{tier}'",
+                        ["known"] = known,
+                    });
+            }
+            quota ??= t.Quota;
+        }
+        var seed = quota ?? 1_000_000L;
+        if (seed is < 0 or > 10_000_000_000)
+            return J(400, new JsonObject { ["error"] = "quota out of range" });
+
+        var existing = await keys.ReadConsumersAsync(ct);
+        if (existing.ContainsKey(name))
+            return J(409, new JsonObject { ["error"] = $"consumer '{name}' already exists" });
+
+        var credential = "Bearer sk-" + Worker.Base62(32);
+        await keys.AddAsync(name, credential, ct);
+
+        // Seed BEFORE reporting success: ai-quota answers the same 403 for
+        // "never seeded" as for "exhausted", so an unseeded key looks broken.
+        // FORM-ENCODED, not JSON. ai-quota's endpoints parse a form body and
+        // answer 403 to anything else, which reads exactly like an auth failure
+        // and is not one. The refresh endpoint's field is `quota`; the delta
+        // endpoint's is `value`. They do not match each other.
+        using (var content = new FormUrlEncodedContent([
+                   new KeyValuePair<string, string>("consumer", name),
+                   new KeyValuePair<string, string>("quota", seed.ToString(CultureInfo.InvariantCulture)),
+               ]))
+        {
+            using var r = await http.CreateClient("gateway")
+                .PostAsync("v1/chat/completions/quota/refresh", content, ct);
+            if (!r.IsSuccessStatusCode)
+            {
+                // Roll back the credential rather than leave a key that
+                // authenticates and then 403s on every request.
+                await keys.RemoveAsync(name, ct);
+                return J(502, new JsonObject { ["error"] = $"quota seeding failed (HTTP {(int)r.StatusCode}); key not created" });
+            }
+        }
+
+        if (tier is { Length: > 0 }) await ledger.SetTierAsync(name, tier, ct);
+
+        await File.AppendAllTextAsync(cfg.AuditPath,
+            $"{DateTimeOffset.UtcNow:O} admin-api newkey name={name} quota={seed} tier={tier ?? "-"}\n", ct);
+        log.LogInformation("admin-api created consumer {Name} quota={Quota} tier={Tier}",
+            name, seed, tier ?? "-");
+
+        // The credential is returned ONCE, exactly as /newkey shows it once.
+        return J(200, new JsonObject
+        {
+            ["name"] = name,
+            ["credential"] = credential,
+            ["quota"] = seed,
+            ["tier"] = tier ?? "unassigned",
+            ["note"] = "This credential is not stored anywhere in readable form and cannot be retrieved again.",
+        });
+    });
+
+    app.MapDelete("/admin/keys/{name}", async (string name, HttpRequest req,
+                                               KeyStore keys, Ledger ledger, CancellationToken ct) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+        if (!Worker.IsValidName(name)) return J(400, new JsonObject { ["error"] = "invalid name" });
+
+        if (!await keys.RemoveAsync(name, ct))
+            return J(404, new JsonObject { ["error"] = $"no consumer named '{name}'" });
+        await ledger.DeleteAsync(name, ct);
+
+        await File.AppendAllTextAsync(cfg.AuditPath,
+            $"{DateTimeOffset.UtcNow:O} admin-api revoke name={name}\n", ct);
+        log.LogWarning("admin-api revoked consumer {Name}", name);
+        return J(200, new JsonObject { ["name"] = name, ["revoked"] = true });
+    });
+
+    app.MapPost("/admin/tier", async (HttpRequest req, KeyStore keys, Ledger ledger,
+                                      CancellationToken ct) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+
+        JsonNode? body;
+        try { body = await JsonNode.ParseAsync(req.Body, cancellationToken: ct); }
+        catch (JsonException) { return J(400, new JsonObject { ["error"] = "malformed JSON body" }); }
+
+        var name = body?["name"]?.GetValue<string>() ?? "";
+        var tier = body?["tier"]?.GetValue<string>() ?? "";
+        if (!Worker.IsValidName(name)) return J(400, new JsonObject { ["error"] = "invalid name" });
+        if (!Worker.Tiers.ContainsKey(tier))
+        {
+            var known = new JsonArray();
+            foreach (var k in Worker.Tiers.Keys) known.Add((JsonNode)k!);
+            return J(400, new JsonObject { ["error"] = $"unknown tier '{tier}'", ["known"] = known });
+        }
+
+        var existing = await keys.ReadConsumersAsync(ct);
+        if (!existing.ContainsKey(name))
+            return J(404, new JsonObject { ["error"] = $"no consumer named '{name}'" });
+
+        await ledger.SetTierAsync(name, tier, ct);
+        await File.AppendAllTextAsync(cfg.AuditPath,
+            $"{DateTimeOffset.UtcNow:O} admin-api tier name={name} tier={tier}\n", ct);
+
+        // Recorded, not enforced — the same caveat /tier carries. ai-quota
+        // deducts a flat total and cannot vary by tier, and the rate-limit
+        // plugin is bundled but not installed.
+        return J(200, new JsonObject { ["name"] = name, ["tier"] = tier, ["enforced"] = false });
+    });
+
+    log.LogInformation("admin API mapped at /admin/* (create, revoke, tier)");
+}
+else if (cfg.AdminApiSecret.Length > 0)
+{
+    log.LogWarning("ADMIN_API_SECRET is set but shorter than 32 characters; /admin/* NOT mapped");
+}
+
 app.MapPost("/alert", async (HttpRequest req) =>
 {
     var auth = req.Headers.Authorization.ToString();
@@ -1187,7 +1385,7 @@ sealed class Worker(
     // input+output total and cannot vary by tier; ai-token-ratelimit is bundled
     // but not installed. Writing the intent down is what makes it reviewable
     // and is the prerequisite for enforcing it later — it is not the enforcement.
-    private static readonly Dictionary<string, (long Quota, int Tpm, int MaxTokens, string For)> Tiers =
+    internal static readonly Dictionary<string, (long Quota, int Tpm, int MaxTokens, string For)> Tiers =
         new(StringComparer.Ordinal)
         {
             ["trial"]   = (   100_000,   3_000,  2_048, "evaluation, unvetted third parties"),
@@ -2202,7 +2400,7 @@ sealed class Worker(
         try { return await f(); } catch (Exception ex) { return $"FAILED ({ex.GetType().Name})"; }
     }
 
-    private static bool IsValidName(string s) =>
+    internal static bool IsValidName(string s) =>
         s.Length is > 0 and <= 32 && s.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '_');
 
     private static bool TryParseTokens(string s, out long v) =>
@@ -2237,7 +2435,7 @@ sealed class Worker(
     // stackalloc is available here only because this method is synchronous; it
     // is not an option through most of this file, since a Span cannot live
     // across an await. The length bound is what makes it safe on the stack.
-    private static string Base62(int len)
+    internal static string Base62(int len)
     {
         const string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         const int unbiased = 256 - (256 % 62);              // 248
@@ -2950,7 +3148,7 @@ sealed record BotConfig(
     string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int OutputLimit,
-    string AlertSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds,
+    string AlertSecret, string AdminApiSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds,
     string LangfuseUrl, string LangfuseProjectId);
 
 enum PendingKind { SetQuota, Revoke }

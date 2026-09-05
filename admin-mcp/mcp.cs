@@ -104,6 +104,8 @@ var cfg = new McpConfig(
     AdminCredential: Req("QUOTA_ADMIN_CREDENTIAL"),
     LangfuseUrl:    Opt("LANGFUSE_PUBLIC_URL", "").TrimEnd('/'),
     AuditPath:      Opt("AUDIT_PATH", "/data/audit.log"),
+    BotUrl:         Opt("BOT_ADMIN_URL", "http://quota-bot:8080").TrimEnd('/'),
+    BotSecret:      Opt("ADMIN_API_SECRET", ""),
     WritesEnabled:  Opt("MCP_WRITES_ENABLED", "true") == "true");
 
 // The token is compared in constant time, so it is hashed once here rather than
@@ -130,6 +132,15 @@ builder.Services.AddHttpClient("clickhouse", c =>
         Encoding.UTF8.GetBytes($"{cfg.ClickHouseUser}:{cfg.ClickHousePass}"));
     c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", basic);
 });
+// quota-bot's admin API. Key lifecycle goes through here rather than being
+// reimplemented, because KeyStore's lock lives in that process — see the header.
+builder.Services.AddHttpClient("bot", c =>
+{
+    c.BaseAddress = new Uri(cfg.BotUrl + "/");
+    c.Timeout = TimeSpan.FromSeconds(30);
+    if (cfg.BotSecret.Length > 0)
+        c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer " + cfg.BotSecret);
+});
 builder.Services.AddHttpClient("gateway", c =>
 {
     c.BaseAddress = new Uri(cfg.GatewayUrl + "/");
@@ -144,7 +155,8 @@ builder.Services
     })
     .WithHttpTransport()
     .WithTools<ReadTools>()
-    .WithTools<WriteTools>();
+    .WithTools<WriteTools>()
+    .WithTools<KeyTools>();
 
 var app = builder.Build();
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("mcp");
@@ -202,7 +214,7 @@ sealed record McpConfig(
     string BearerToken, HashSet<string> AllowedOrigins,
     string PrometheusUrl, string ClickHouseUrl, string ClickHouseUser, string ClickHousePass,
     string GatewayUrl, string AdminCredential, string LangfuseUrl,
-    string AuditPath, bool WritesEnabled);
+    string AuditPath, string BotUrl, string BotSecret, bool WritesEnabled);
 
 // Query helpers shared by the tool classes. Everything a tool needs to reach
 // lives here so the tools themselves stay readable.
@@ -615,12 +627,14 @@ sealed class WriteTools
             return "Tokens must be between 0 and 10,000,000,000.";
         if (delta && tokens == 0) return "Refused: a top-up of zero does nothing.";
 
-        var payload = new JsonObject
-        {
-            ["consumer"] = consumer,
-            [delta ? "delta" : "quota"] = tokens,
-        };
-        using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        // FORM-ENCODED, not JSON — ai-quota answers 403 to a JSON body, which
+        // reads like an auth failure and is not one. Note the field names do
+        // NOT match each other: refresh takes `quota`, delta takes `value`.
+        using var content = new FormUrlEncodedContent([
+            new KeyValuePair<string, string>("consumer", consumer),
+            new KeyValuePair<string, string>(delta ? "value" : "quota",
+                tokens.ToString(CultureInfo.InvariantCulture)),
+        ]);
         var path = delta
             ? "v1/chat/completions/quota/delta"
             : "v1/chat/completions/quota/refresh";
@@ -644,5 +658,140 @@ sealed class WriteTools
 
         return $"{consumer}: {(delta ? "added" : "set to")} {tokens:N0} tokens. "
              + $"Balance now {now ?? "unknown"}.";
+    }
+}
+
+// ============================================================================
+// KEY LIFECYCLE
+//
+// These do not touch the key-auth object. They call quota-bot's /admin/* API,
+// which owns KeyStore and its lock, so a create from here and a /newkey from
+// Telegram serialise against each other instead of racing to overwrite one
+// wasmplugin object that carries no resourceVersion. Same lock, same audit log,
+// same credential generator.
+// ============================================================================
+
+[McpServerToolType]
+sealed class KeyTools
+{
+    [McpServerTool(Name = "list_tiers", ReadOnly = true)]
+    [Description("The policy tiers a new consumer can be given, with what each is "
+        + "for and the token quota it seeds. CALL THIS BEFORE create_key and "
+        + "recommend a tier that matches the stated use case rather than inventing "
+        + "a quota. Quota and tokens_per_minute are RECORDED, not enforced: ai-quota "
+        + "deducts a flat input+output total and cannot vary by tier, and the "
+        + "rate-limit plugin is bundled but not installed. So a tier sets the "
+        + "starting balance and documents intent; it does not throttle anyone.")]
+    public static async Task<string> ListTiers(
+        Backends b, IHttpClientFactory http, CancellationToken ct)
+    {
+        if (b.Cfg.BotSecret.Length == 0)
+            return "Key lifecycle is not configured on this server: ADMIN_API_SECRET is unset, "
+                 + "so it has no route to quota-bot's admin API.";
+        using var c = http.CreateClient("bot");
+        using var r = await c.GetAsync("admin/tiers", ct);
+        var body = await r.Content.ReadAsStringAsync(ct);
+        return r.IsSuccessStatusCode
+            ? body
+            : $"quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 300)}";
+    }
+
+    [McpServerTool(Name = "create_key", Destructive = false, Idempotent = false)]
+    [Description("Create a new API consumer and return its credential. THE CREDENTIAL IS "
+        + "RETURNED ONCE and is not stored anywhere it can be read back — relay it to "
+        + "the person who needs it and tell them it cannot be re-issued. "
+        + "Give either a tier (which sets the starting quota from the tier table — call "
+        + "list_tiers first) or an explicit quota in tokens, or both, in which case the "
+        + "explicit quota wins. Neither: 1,000,000 tokens and no tier. "
+        + "Requires confirm to equal the name exactly.")]
+    public static async Task<string> CreateKey(
+        Backends b, IHttpClientFactory http,
+        [Description("New consumer name: 1-32 characters of a-z, 0-9, - or _.")] string name,
+        [Description("Optional tier: trial, team, service, batch. Sets the starting quota.")] string tier,
+        [Description("Optional explicit starting balance in tokens. Overrides the tier's quota.")] long quota,
+        [Description("Must equal the name exactly, or the call is refused.")] string confirm,
+        CancellationToken ct)
+    {
+        if (!b.Cfg.WritesEnabled)
+            return "Writes are disabled on this server (MCP_WRITES_ENABLED is not true).";
+        if (b.Cfg.BotSecret.Length == 0)
+            return "Key lifecycle is not configured: ADMIN_API_SECRET is unset.";
+        if (!Backends.SafeName(name)) return $"Not a valid consumer name: {name}";
+        if (!string.Equals(confirm, name, StringComparison.Ordinal))
+            return $"Refused: confirm must be exactly \"{name}\".";
+
+        var payload = new JsonObject { ["name"] = name };
+        if (tier is { Length: > 0 }) payload["tier"] = tier;
+        if (quota > 0) payload["quota"] = quota;
+
+        using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        using var c = http.CreateClient("bot");
+        using var r = await c.PostAsync("admin/keys", content, ct);
+        var body = await r.Content.ReadAsStringAsync(ct);
+        if (!r.IsSuccessStatusCode)
+            return $"Not created. quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 400)}";
+
+        await b.AuditAsync($"create_key name={name} tier={(tier.Length > 0 ? tier : "-")}", ct);
+        return body;
+    }
+
+    [McpServerTool(Name = "revoke_key", Destructive = true, Idempotent = true)]
+    [Description("Delete a consumer: its key stops authenticating immediately and its "
+        + "balance is deleted. This cannot be undone — a replacement is a different "
+        + "credential, and anything using the old one breaks at once. Check "
+        + "consumer_stats first to see whether it is actively serving traffic. "
+        + "Requires confirm to equal the name exactly.")]
+    public static async Task<string> RevokeKey(
+        Backends b, IHttpClientFactory http,
+        [Description("Consumer to delete.")] string name,
+        [Description("Must equal the name exactly, or the call is refused.")] string confirm,
+        CancellationToken ct)
+    {
+        if (!b.Cfg.WritesEnabled)
+            return "Writes are disabled on this server (MCP_WRITES_ENABLED is not true).";
+        if (b.Cfg.BotSecret.Length == 0)
+            return "Key lifecycle is not configured: ADMIN_API_SECRET is unset.";
+        if (!Backends.SafeName(name)) return $"Not a valid consumer name: {name}";
+        if (!string.Equals(confirm, name, StringComparison.Ordinal))
+            return $"Refused: confirm must be exactly \"{name}\".";
+
+        using var c = http.CreateClient("bot");
+        using var r = await c.DeleteAsync($"admin/keys/{Uri.EscapeDataString(name)}", ct);
+        var body = await r.Content.ReadAsStringAsync(ct);
+        if (!r.IsSuccessStatusCode)
+            return $"Not revoked. quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 400)}";
+
+        await b.AuditAsync($"revoke_key name={name}", ct);
+        return $"{name} revoked. Its key no longer authenticates and its balance is gone.";
+    }
+
+    [McpServerTool(Name = "set_tier", Destructive = false, Idempotent = true)]
+    [Description("Record a consumer's policy tier. This is bookkeeping, not enforcement: "
+        + "it does not change their balance, their rate limit or their max_tokens. Use "
+        + "set_balance to change what they can actually spend. Requires confirm to equal "
+        + "the name exactly.")]
+    public static async Task<string> SetTier(
+        Backends b, IHttpClientFactory http,
+        [Description("Consumer name.")] string name,
+        [Description("Tier: trial, team, service, batch or admin.")] string tier,
+        [Description("Must equal the name exactly, or the call is refused.")] string confirm,
+        CancellationToken ct)
+    {
+        if (!b.Cfg.WritesEnabled)
+            return "Writes are disabled on this server (MCP_WRITES_ENABLED is not true).";
+        if (b.Cfg.BotSecret.Length == 0)
+            return "Key lifecycle is not configured: ADMIN_API_SECRET is unset.";
+        if (!Backends.SafeName(name)) return $"Not a valid consumer name: {name}";
+        if (!string.Equals(confirm, name, StringComparison.Ordinal))
+            return $"Refused: confirm must be exactly \"{name}\".";
+
+        var payload = new JsonObject { ["name"] = name, ["tier"] = tier };
+        using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        using var c = http.CreateClient("bot");
+        using var r = await c.PostAsync("admin/tier", content, ct);
+        var body = await r.Content.ReadAsStringAsync(ct);
+        return r.IsSuccessStatusCode
+            ? body
+            : $"Not set. quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 400)}";
     }
 }

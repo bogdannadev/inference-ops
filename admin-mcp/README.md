@@ -51,20 +51,28 @@ Beyond the front door:
   parameter binding — a name reaches it as a string literal.
 - `MCP_WRITES_ENABLED=false` serves reads only, without taking the server down.
 
-### Why there is no create_key / revoke_key / set_tier
+### Key lifecycle goes through quota-bot, not around it
 
-Those stay in quota-bot, and the omission is load-bearing rather than lazy.
+`create_key`, `revoke_key` and `set_tier` exist here, but this process does not
+touch the key-auth object. It calls quota-bot's `/admin/*` API.
 
-Consumers live in a single key-auth wasmplugin object. The Higress apiserver is
-file-backed and returns **no `resourceVersion`** — verified 2026-09-05, a PUT is
-last-write-wins over the whole object — and quota-bot serialises its edits
-behind an in-process lock. A second writer with no shared lock and no optimistic
-concurrency silently drops one of two concurrent key creations, and the symptom
-would be a key that appears to exist and does not authenticate.
+That indirection is the whole point. Consumers live in a single key-auth
+wasmplugin object; the Higress apiserver is file-backed and returns **no
+`resourceVersion`** — verified 2026-09-05, a PUT is last-write-wins over the
+whole object. `KeyStore` holds the lock that serialises edits, and it is a
+singleton in the bot's process. Routing through it means a create from Claude
+and a `/newkey` from Telegram queue behind the same lock, write the same audit
+log, and mint credentials with the same rejection-sampled generator. A second
+writer would silently drop one of two concurrent creations, and the symptom
+would be a key that looks created and does not authenticate.
 
-Balance operations have no such problem: they go through the gateway's quota
-API, which is a Redis `INCRBY`/`SET` — atomic by construction. So this server
-does balances, and the bot does identity.
+`/admin/*` is not mapped at all unless `ADMIN_API_SECRET` is set, is reachable
+only on `edge`, and is never published by Caddy.
+
+**ai-quota takes form-encoded bodies, not JSON**, and answers `403` to anything
+else — which reads exactly like an auth failure and is not one. The field names
+also differ between endpoints: `/quota/refresh` takes `quota`, `/quota/delta`
+takes `value`. Both cost a debugging round here.
 
 ## Tools
 
@@ -78,20 +86,36 @@ request_detail <request_id>        one request end to end, the two-hop join
 top_consumers <window>             ranking by tokens
 node_health                        targets, alerts, throughput, KV pressure
 prometheus_query <promql>          arbitrary instant query, read-only by nature
+list_tiers                         the tier table, for choosing one
 ```
 
 Write, each requiring `confirm` to equal the consumer name exactly:
 
 ```
-topup_balance <name> <tokens>      ADD to a balance
-set_balance   <name> <tokens>      REPLACE a balance
+topup_balance <name> <tokens>            ADD to a balance
+set_balance   <name> <tokens>            REPLACE a balance
+create_key    <name> [tier] [quota]      new consumer; credential returned ONCE
+revoke_key    <name>                     delete consumer and balance
+set_tier      <name> <tier>              record a tier (bookkeeping, not enforcement)
 ```
+
+`create_key` takes either a **tier** — which seeds the quota from the shared
+tier table — or an explicit **quota**, or both, in which case the explicit
+number wins. `list_tiers` is described so the model reads it first and
+recommends a tier that fits the stated use case rather than inventing a number.
+The tier table is the same one `/tiers` renders and `/tier` validates against,
+served from the bot, so advice here and enforcement there cannot drift.
+
+Tiers are **recorded, not enforced**: ai-quota deducts a flat input+output total
+and cannot vary by tier, and the rate-limit plugin is bundled but not installed.
+A tier sets the starting balance and documents intent. The tool descriptions say
+so, because a model that believes `tokens_per_minute` is enforced will give bad
+advice about it.
 
 The `confirm` echo is not ceremony. It makes a mis-parsed or hallucinated call
 fail closed, because the model has to name the target twice and the two have to
-agree. Both writes append to the **same audit log quota-bot writes to**, so
-"who changed this balance" has one answer regardless of which interface was
-used.
+agree. Every write appends to the **same audit log quota-bot writes to**, so
+"who changed this" has one answer regardless of which interface was used.
 
 Tool descriptions are written for a model rather than a person: they say what a
 number means and where it comes from. Two latencies exist on this node and they
