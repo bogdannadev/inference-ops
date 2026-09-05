@@ -128,7 +128,11 @@ var cfg = new BotConfig(
     AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
     AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
     AlertChatIds:    alertChatIds,
-    LangfuseUrl:     Opt("LANGFUSE_PUBLIC_URL", "https://langfuse.example.org").TrimEnd('/'));
+    LangfuseUrl:     Opt("LANGFUSE_PUBLIC_URL", "https://langfuse.example.org").TrimEnd('/'),
+    // Only used to build a deep link to a consumer's traces. Empty is a
+    // supported state: /key then prints the path to click through by hand
+    // instead of offering a button that would 404.
+    LangfuseProjectId: Opt("LANGFUSE_PROJECT_ID", ""));
 
 // Encoded once, not on every delivery — and validated here because the
 // comparison's fast path assumes one byte per character. That holds for the
@@ -232,6 +236,17 @@ builder.Services.AddHttpClient("gateway", c =>
 {
     c.BaseAddress = new Uri(cfg.GatewayUrl + "/");
     c.Timeout = TimeSpan.FromSeconds(15);
+    c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", cfg.AdminCredential);
+});
+// The gateway client above is for management calls and stays at 15s so a
+// wedged gateway cannot hold a command open. Generating a report is a
+// different shape of request entirely — a few thousand tokens at ~100 tok/s —
+// so it gets its own client rather than loosening the timeout for everything.
+// Same base address, same admin credential.
+builder.Services.AddHttpClient("inference", c =>
+{
+    c.BaseAddress = new Uri(cfg.GatewayUrl + "/");
+    c.Timeout = TimeSpan.FromMinutes(5);
     c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", cfg.AdminCredential);
 });
 builder.Services.AddHttpClient("alertmanager", c =>
@@ -545,6 +560,23 @@ sealed class Worker(
         }
 
         var data = cb.Data ?? "";
+
+        // The /key browser. These are READ-ONLY, so unlike the confirmations
+        // below they carry no token, do not expire, and are not bound to the
+        // operator who opened them: re-tapping a stale card just re-reads
+        // Prometheus. Handled before the confirmation path because that path
+        // treats every callback as `<3-char prefix><token>`.
+        if (data.StartsWith("kc:", StringComparison.Ordinal)
+            || data.StartsWith("kt:", StringComparison.Ordinal)
+            || data.StartsWith("kr:", StringComparison.Ordinal)
+            || data == "kl:")
+        {
+            var reply = await KeyCallbackAsync(data, chatId.Value, ct);
+            await AnswerCallbackAsync(cb.Id, ct);
+            await SendAsync(chatId.Value, reply, ct);
+            return;
+        }
+
         var token = data.Length > 3 ? data[3..] : "";
         _pending.TryRemove(token, out var p);
 
@@ -574,6 +606,7 @@ sealed class Worker(
             "/status"     => new Reply(await StatusAsync(ct)),
             "/keys"       => new Reply(await KeysAsync(ct)),
             "/balance"    => new Reply(await BalanceAsync(a1, ct)),
+            "/key"        => await KeyPickerAsync(ct),
             "/usage"      => new Reply(await UsageAsync(a1 ?? "24h", ct)),
             "/alerts"     => new Reply(await AlertsAsync(ct)),
             "/health"     => new Reply(await HealthAsync(ct)),
@@ -582,9 +615,10 @@ sealed class Worker(
             "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
             "/tiers"      => new Reply(TiersHelp()),
             "/langfuse"   => new Reply(LangfuseHelp()),
-            "/trace"      => new Reply(a1 is null
-                                 ? Usage("/trace &lt;request-id&gt;", "/trace efd62f54-d5e3-9fe3-be99-b3945d617414")
-                                 : TraceHelp(a1)),
+            // No argument is the common case — an operator wants "show me
+            // this consumer", not a request id they would have to go and find
+            // first. Falling back to the picker beats a usage hint.
+            "/trace"      => a1 is null ? await KeyPickerAsync(ct) : new Reply(TraceHelp(a1)),
             "/tier"       => new Reply((a1 is null || a2 is null)
                                  ? Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service")
                                  : await TierAsync(a1, a2, ct)),
@@ -636,6 +670,9 @@ sealed class Worker(
             "Consumers and their balances"),
         new("balance", "Who and how much", "[name]",
             "balance, burn rate and runway", "Balance for one consumer or all"),
+        new("key", "Who and how much", "",
+            "pick a consumer from a list — its numbers, and where its traces are",
+            "Per-key stats and traces"),
         new("usage", "What they used", "[1h|24h|7d|30d]",
             "tokens in/out per consumer", "Tokens and requests over a window"),
         new("health", "Is it healthy", "",
@@ -1200,6 +1237,437 @@ sealed class Worker(
              + "engine spans share the router's trace — so id gets you to the router, and the "
              + "router's trace gets you to the engine. Searching Langfuse for this id directly "
              + "finds only the gateway span.</i>";
+    }
+
+
+    // ---- /key: pick a consumer, then read it --------------------------------
+    //
+    // The point of this command is that it takes NO arguments. Every other
+    // per-consumer command needs a name typed correctly, and /trace needed a
+    // request id the operator had to go and find first. Here the list is the
+    // interface: tap a name, get its numbers, tap again for where its traces
+    // live or for a written report.
+    //
+    // Everything below reads Prometheus. That is a deliberate limit, not an
+    // oversight: this bot runs on `edge`, and the per-request fact table and
+    // the span store are backend-only, because an internet-reachable bot with a
+    // route to the worker ports is a worse trade than an operator pasting one
+    // SQL query. So "statistics" is answered here in full, and "the trace of
+    // one request" is answered with a link and a query.
+
+    // Names reach PromQL as string literals and reach callback_data as a
+    // suffix, so they are constrained at the door rather than escaped later.
+    // The set here is what /newkey can produce.
+    private static bool SafeName(string n) =>
+        n.Length is > 0 and <= 40
+        && n.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+
+    private async Task<Reply> KeyPickerAsync(CancellationToken ct)
+    {
+        var consumers = await keys.ReadConsumersAsync(ct);
+        var names = consumers.Keys.Where(SafeName)
+                             .OrderBy(k => k, StringComparer.Ordinal).ToArray();
+        if (names.Length == 0)
+            return new Reply("No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.");
+
+        var rows = new List<InlineKeyboardButton[]>();
+        for (var i = 0; i < names.Length; i += 2)
+        {
+            rows.Add(i + 1 < names.Length
+                ? [Pick(names[i]), Pick(names[i + 1])]
+                : [Pick(names[i])]);
+        }
+        return new Reply(
+            $"<b>Which consumer?</b>  ({names.Length})\n\n"
+          + "<i>Numbers come from Prometheus. Balances are the ledger, which is "
+          + "what bills.</i>",
+            new InlineKeyboardMarkup(rows.ToArray()));
+
+        static InlineKeyboardButton Pick(string n) => new(n, "kc:24h:" + n);
+    }
+
+    private async Task<Reply> KeyCallbackAsync(string data, long chatId, CancellationToken ct)
+    {
+        if (data == "kl:") return await KeyPickerAsync(ct);
+
+        var kind = data[..3];
+        var rest = data[3..];
+        var window = "24h";
+
+        if (kind == "kc:")
+        {
+            var i = rest.IndexOf(':', StringComparison.Ordinal);
+            if (i < 0) return new Reply("Malformed selection. Run /key again.");
+            window = rest[..i];
+            rest = rest[(i + 1)..];
+            if (!ValidWindow(window)) return new Reply(BadWindow(window));
+        }
+
+        if (!SafeName(rest))
+            return new Reply("That is not a consumer name this bot recognises.\n\nRun /key again.");
+
+        return kind switch
+        {
+            "kc:" => await KeyCardAsync(rest, window, ct),
+            "kt:" => KeyTraceCard(rest),
+            "kr:" => KeyReportStart(rest, chatId, ct),
+            _     => new Reply("Unknown selection. Run /key again.")
+        };
+    }
+
+    // Everything one screen can honestly say about a consumer.
+    private readonly record struct KeyStats(
+        double? Balance, double? Runway, double? Requests, double? NotOk,
+        double? TokensIn, double? TokensOut, double? GatewayP95,
+        double? Ttft, double? Itl, double? E2e, double? CacheHit,
+        Dictionary<string, double> ByReplica);
+
+    private async Task<KeyStats> KeyStatsAsync(string name, string w, CancellationToken ct)
+    {
+        // SafeName has already guaranteed there is no quote in here.
+        var sel = $"{{consumer=\"{name}\"}}";
+        var led = $"{{ai_consumer=\"{name}\"}}";
+
+        var balT  = PromScalarAsync($"consumer:quota_balance:tokens{led}", ct);
+        var runT  = PromScalarAsync($"consumer:quota_days_left{led}", ct);
+        var reqT  = PromScalarAsync($"sum(increase(gateway_requests_total{sel}[{w}])) or vector(0)", ct);
+        var badT  = PromScalarAsync($"sum(increase(gateway_requests_total{{consumer=\"{name}\",status_class!=\"2xx\"}}[{w}])) or vector(0)", ct);
+        var inT   = PromScalarAsync($"sum(increase(gateway_tokens_total{{consumer=\"{name}\",direction=\"input\"}}[{w}])) or vector(0)", ct);
+        var outT  = PromScalarAsync($"sum(increase(gateway_tokens_total{{consumer=\"{name}\",direction=\"output\"}}[{w}])) or vector(0)", ct);
+        var gwT   = PromScalarAsync($"histogram_quantile(0.95, sum by (le) (rate(gateway_request_duration_seconds_bucket{sel}[{w}])))", ct);
+        // Engine-side. These exist only since the consumer label was put on the
+        // tokenizer metrics; before that the gateway's view was all there was.
+        var ttfT  = PromScalarAsync($"histogram_quantile(0.95, sum by (le) (rate(sglang:time_to_first_token_seconds_bucket{sel}[{w}])))", ct);
+        var itlT  = PromScalarAsync($"histogram_quantile(0.95, sum by (le) (rate(sglang:inter_token_latency_seconds_bucket{sel}[{w}])))", ct);
+        var e2eT  = PromScalarAsync($"histogram_quantile(0.95, sum by (le) (rate(sglang:e2e_request_latency_seconds_bucket{sel}[{w}])))", ct);
+        var cchT  = PromScalarAsync($"1 - sum(rate(sglang:uncached_prompt_tokens_histogram_sum{sel}[{w}])) / clamp_min(sum(rate(sglang:prompt_tokens_histogram_sum{sel}[{w}])), 1)", ct);
+        var repT  = PromAsync($"sum by (instance) (increase(sglang:generation_tokens_total{sel}[{w}]))", ct, "instance");
+
+        await Task.WhenAll(balT, runT, reqT, badT, inT, outT, gwT, ttfT, itlT, e2eT, cchT, repT);
+
+        return new KeyStats(balT.Result, runT.Result, reqT.Result, badT.Result,
+                            inT.Result, outT.Result, gwT.Result, ttfT.Result,
+                            itlT.Result, e2eT.Result, cchT.Result, repT.Result);
+    }
+
+    // An absent series and a zero are different facts and are printed
+    // differently: histogram_quantile over an idle window is NaN, which
+    // Prometheus omits entirely, and rendering that as 0.000s would read as
+    // "instant" rather than "no data".
+    private static string Num(double? v, int dp = 0, string unit = "") =>
+        v is null || double.IsNaN(v.Value) || double.IsInfinity(v.Value)
+            ? "—"
+            : v.Value.ToString("N" + dp.ToString(CultureInfo.InvariantCulture),
+                               CultureInfo.InvariantCulture) + unit;
+
+    private static string ShortInstance(string instance)
+    {
+        var host = instance.Split(':')[0];
+        var dash = host.LastIndexOf('-');
+        return dash >= 0 && dash + 1 < host.Length ? host[(dash + 1)..] : host;
+    }
+
+    private async Task<Reply> KeyCardAsync(string name, string window, CancellationToken ct)
+    {
+        var st = await KeyStatsAsync(name, window, ct);
+
+        var rows = new List<string>
+        {
+            $"{"balance",-14}{Num(st.Balance),14}",
+            $"{"runway",-14}{Num(st.Runway, 1),14} d",
+            "",
+            $"{"requests",-14}{Num(st.Requests),14}",
+            $"{"not 2xx",-14}{Num(st.NotOk),14}",
+            $"{"tokens in",-14}{Num(st.TokensIn),14}",
+            $"{"tokens out",-14}{Num(st.TokensOut),14}",
+            "",
+            $"{"p95 gateway",-14}{Num(st.GatewayP95, 2),14} s",
+            $"{"p95 e2e",-14}{Num(st.E2e, 2),14} s",
+            $"{"p95 ttft",-14}{Num(st.Ttft, 2),14} s",
+            $"{"p95 itl",-14}{Num(st.Itl, 3),14} s",
+            $"{"cache hit",-14}{Num(st.CacheHit is null ? null : st.CacheHit * 100, 1),14} %"
+        };
+
+        var total = st.ByReplica.Values.Sum();
+        if (total > 0)
+        {
+            rows.Add("");
+            foreach (var (inst, v) in st.ByReplica.OrderBy(x => x.Key, StringComparer.Ordinal))
+                rows.Add($"{ShortInstance(inst),-14}{v / total * 100,13:N0} %");
+        }
+
+        var body = Table($"<b>{Esc(name)}</b> — last {window}", rows);
+
+        // Say which half of the stack each block came from. The two latencies
+        // differ by the gateway filter chain, the router and two network hops,
+        // and an operator comparing them needs to know that is expected.
+        body += "\n<i>Balance and runway: the ledger. requests/tokens/p95 gateway: "
+              + "the access log. ttft, itl, e2e, cache and the replica split: the "
+              + "engine itself.</i>";
+
+        if (st.Ttft is null && st.Requests > 0)
+            body += "\n\n<i>No engine-side numbers in this window. That is normal "
+                  + "shortly after a replica roll — the labels start empty — and "
+                  + "expected for traffic that did not go through the gateway.</i>";
+
+        var keyboard = new InlineKeyboardMarkup([
+            [new InlineKeyboardButton(window == "1h"  ? "• 1h"  : "1h",  $"kc:1h:{name}"),
+             new InlineKeyboardButton(window == "24h" ? "• 24h" : "24h", $"kc:24h:{name}"),
+             new InlineKeyboardButton(window == "7d"  ? "• 7d"  : "7d",  $"kc:7d:{name}")],
+            [new InlineKeyboardButton("Traces", $"kt:{name}"),
+             new InlineKeyboardButton("Report ↓", $"kr:{name}")],
+            [new InlineKeyboardButton("← All keys", "kl:")]
+        ]);
+        return new Reply(body, keyboard);
+    }
+
+    // Tracing BY KEY rather than by request. Langfuse already groups by
+    // consumer — ai-statistics puts the authenticated name on every gateway
+    // span as langfuse.user.id — so a consumer's traces are one URL away, with
+    // no request id to find first.
+    private Reply KeyTraceCard(string name)
+    {
+        var text =
+            $"<b>{Esc(name)}</b> — where its requests are\n\n"
+          + "<b>Langfuse</b> groups them under this consumer already: every gateway "
+          + "span carries the authenticated name as the Langfuse user id. That view "
+          + "gives you each request with its tokens and latency.\n\n"
+          + "<b>To open one request end to end</b>, take a request id from there or "
+          + "from the fact table and run /trace on it — the engine's own spans "
+          + "sit in a different trace, and that command prints the two-hop join.\n\n"
+          + "<b>The billing-grade list</b>, ClickHouse on the host:\n"
+          + $"<pre>SELECT ts, request_id, status, total_tokens, duration_ms\nFROM gateway.requests FINAL\nWHERE consumer = '{Esc(name)}'\nORDER BY ts DESC LIMIT 20;</pre>\n"
+          + "<i>This bot cannot run that itself: it is on the edge network and both "
+          + "stores are backend-only, deliberately.</i>";
+
+        var buttons = new List<InlineKeyboardButton[]>();
+        if (cfg.LangfuseProjectId.Length > 0)
+            buttons.Add([new InlineKeyboardButton(
+                "Open in Langfuse",
+                null,
+                $"{cfg.LangfuseUrl}/project/{cfg.LangfuseProjectId}/users/{Uri.EscapeDataString(name)}")]);
+        else
+            text += $"\n\n<i>Set LANGFUSE_PROJECT_ID to get a button here. The path is "
+                  + $"{Esc(cfg.LangfuseUrl)}/project/&lt;project&gt;/users/{Esc(name)}</i>";
+
+        buttons.Add([new InlineKeyboardButton("← Back", $"kc:24h:{name}")]);
+        return new Reply(text, new InlineKeyboardMarkup(buttons.ToArray()));
+    }
+
+
+    // ---- the written report -------------------------------------------------
+    //
+    // The node writes its own report: the numbers go to qwen36-27b through the
+    // gateway, authenticated with the ADMIN key, and what comes back is an HTML
+    // file sent to the chat.
+    //
+    // Two things about that are worth stating plainly.
+    //
+    // 1. docs/KEY-TIERS.md describes the admin tier as "management only, never
+    //    inference". This is the exception, made deliberately: it is the only
+    //    credential the bot already holds, the request is the operator's own,
+    //    and it is metered like any other — roughly 4k tokens a report against
+    //    quota-admin's balance. The doc records the exception.
+    // 2. The model is told the numbers and told not to invent any. It can still
+    //    be wrong about what they MEAN. The report is a readable second opinion
+    //    on data the dashboards already show; it is not a source of truth, and
+    //    the file says so.
+    //
+    // Thinking is disabled via chat_template_kwargs. Measured on this node: with
+    // it on, a report spends its first several hundred tokens deliberating and
+    // the HTML arrives truncated; with it off, the first character is
+    // `<!doctype html>` and 1200 tokens take 12s.
+    private Reply KeyReportStart(string name, long chatId, CancellationToken ct)
+    {
+        // Detached on purpose. The worker gate bounds how many commands run at
+        // once, and a 40-second model call has no business holding one of those
+        // slots while every other command queues behind it.
+        _ = Task.Run(async () =>
+        {
+            try { await KeyReportAsync(name, chatId, CancellationToken.None); }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "report generation failed for {Name}", name);
+                await SendAsync(chatId, new Reply(
+                    $"Could not generate the report for <b>{Esc(name)}</b>. "
+                  + "The stats above are unaffected — /status will say if the gateway is the problem."),
+                    CancellationToken.None);
+            }
+        }, CancellationToken.None);
+
+        return new Reply($"Writing <b>{Esc(name)}</b>'s report on the node itself. "
+                       + "Takes under a minute; the file arrives here.");
+    }
+
+    private async Task KeyReportAsync(string name, long chatId, CancellationToken ct)
+    {
+        // 24h and 7d together, so the report can say whether today is typical.
+        var dayT = KeyStatsAsync(name, "24h", ct);
+        var weekT = KeyStatsAsync(name, "7d", ct);
+        var tiersT = ledger.TiersAsync(ct);
+        await Task.WhenAll(dayT, weekT, tiersT);
+        var day = dayT.Result; var week = weekT.Result;
+        var tier = tiersT.Result.GetValueOrDefault(name, "unassigned");
+
+        var facts = new StringBuilder();
+        facts.Append("consumer=").Append(name).Append("\ntier=").Append(tier).Append('\n');
+        Block(facts, "last_24h", day);
+        Block(facts, "last_7d", week);
+
+        var html = await GenerateReportAsync(name, facts.ToString(), ct);
+        var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmm", CultureInfo.InvariantCulture);
+        await SendDocumentAsync(chatId, $"{name}-{stamp}.html", Encoding.UTF8.GetBytes(html),
+            $"<b>{Esc(name)}</b> — written by the node, {stamp} UTC.\n"
+          + "<i>Numbers are measured; the reading of them is the model's.</i>", ct);
+
+        static void Block(StringBuilder b, string label, KeyStats st)
+        {
+            b.Append('[').Append(label).Append("]\n");
+            b.Append("balance_tokens=").Append(Num(st.Balance)).Append('\n');
+            b.Append("runway_days=").Append(Num(st.Runway, 1)).Append('\n');
+            b.Append("requests=").Append(Num(st.Requests)).Append('\n');
+            b.Append("not_2xx=").Append(Num(st.NotOk)).Append('\n');
+            b.Append("tokens_in=").Append(Num(st.TokensIn)).Append('\n');
+            b.Append("tokens_out=").Append(Num(st.TokensOut)).Append('\n');
+            b.Append("gateway_p95_s=").Append(Num(st.GatewayP95, 3)).Append('\n');
+            b.Append("engine_e2e_p95_s=").Append(Num(st.E2e, 3)).Append('\n');
+            b.Append("engine_ttft_p95_s=").Append(Num(st.Ttft, 3)).Append('\n');
+            b.Append("engine_itl_p95_s=").Append(Num(st.Itl, 4)).Append('\n');
+            b.Append("prefix_cache_hit=").Append(Num(st.CacheHit, 3)).Append('\n');
+            var total = st.ByReplica.Values.Sum();
+            foreach (var (inst, v) in st.ByReplica.OrderBy(x => x.Key, StringComparer.Ordinal))
+                b.Append("output_tokens_").Append(ShortInstance(inst)).Append('=')
+                 .Append(Num(v)).Append(total > 0 ? $" ({v / total * 100:N0}%)" : "").Append('\n');
+            b.Append('\n');
+        }
+    }
+
+    private const string ReportSystemPrompt =
+        "You are a site reliability engineer writing a short report about ONE API consumer "
+        + "of a self-hosted LLM inference node. Output ONE complete standalone HTML document "
+        + "and nothing else: no markdown, no code fences, no commentary before or after it. "
+        + "Start with <!doctype html>. Inline all CSS; the file is read offline. "
+        + "A dash means the metric had no data in that window — say so rather than reading it "
+        + "as zero. Never state a number that is not in the data you were given, and never "
+        + "guess at a cause you cannot support from it.";
+
+    // The node's own measured characteristics. Without these the model has no
+    // basis for calling a number good or bad, and would either hedge on
+    // everything or invent a baseline.
+    private const string ReportNodeFacts =
+        "Node: 2x A100 80GB PCIe, Qwen3.8-27B in BF16, tensor parallel 1 with two "
+        + "independent replicas behind a cache-aware router. EAGLE speculative decoding. "
+        + "Single-stream output ceiling ~55 tok/s; whole-node ceiling ~387 tok/s; engine "
+        + "concurrency 8 (2 replicas x 4). Decode is memory-bandwidth bound. Measured cost: "
+        + "an output token costs ~68x an uncached input token and ~4800x a cached one, so "
+        + "prefix cache hit rate and the input:output ratio drive cost more than volume does. "
+        + "Quota is a single total-token balance; input and output are charged the same.";
+
+    private async Task<string> GenerateReportAsync(string name, string facts, CancellationToken ct)
+    {
+        var body = new JsonObject
+        {
+            ["model"] = cfg.ModelId,
+            ["max_tokens"] = 4000,
+            ["temperature"] = 0.3,
+            ["stream"] = false,
+            // Qwen3 reasons by default. See the note on KeyReportStart.
+            ["chat_template_kwargs"] = new JsonObject { ["enable_thinking"] = false },
+            // Cast to JsonNode on purpose. The collection initialiser would bind
+            // JsonArray.Add<T>(T), which is RequiresDynamicCode/UnreferencedCode
+            // and fails the AOT build outright — see quota-bot/README.md, which
+            // records this exact pair of IL2026/IL3050 errors from the first
+            // build. The JsonNode overload is the trim-safe one.
+            ["messages"] = new JsonArray
+            {
+                (JsonNode)new JsonObject
+                {
+                    ["role"] = "system",
+                    ["content"] = ReportSystemPrompt
+                },
+                (JsonNode)new JsonObject
+                {
+                    ["role"] = "user",
+                    ["content"] = $"{ReportNodeFacts}\n\nMeasurements:\n\n{facts}\n"
+                        + "Write, in this order: a one-line verdict; a table of every metric "
+                        + "with a plain-language reading of each; how the last 24h compares "
+                        + "with the last 7 days; what looks healthy; what is worth attention; "
+                        + "and concrete next steps. Title it with the consumer name."
+                }
+            }
+        };
+
+        using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+        using var r = await http.CreateClient("inference").PostAsync("v1/chat/completions", content, ct);
+        var raw = await r.Content.ReadAsStringAsync(ct);
+        if (!r.IsSuccessStatusCode)
+            throw new InvalidOperationException($"gateway returned HTTP {(int)r.StatusCode}: {Head(raw)}");
+
+        var node = JsonNode.Parse(raw);
+        var choice = node?["choices"]?[0];
+        var text = choice?["message"]?["content"]?.GetValue<string>() ?? "";
+        var finish = choice?["finish_reason"]?.GetValue<string>() ?? "";
+        var used = node?["usage"]?["completion_tokens"]?.GetValue<int>() ?? 0;
+
+        text = StripFences(text).Trim();
+        if (text.Length == 0)
+            throw new InvalidOperationException("the model returned an empty report");
+
+        // A model that ran out of budget stops mid-tag. Rather than ship a file
+        // the browser silently half-renders, say so at the top and close it.
+        if (finish == "length")
+            text = InsertTruncationNotice(text, used);
+
+        if (!text.Contains("<html", StringComparison.OrdinalIgnoreCase))
+            text = "<!doctype html><html><head><meta charset=\"utf-8\"><title>"
+                 + Fmt.Esc(name) + "</title></head><body>" + text + "</body></html>";
+        return text;
+    }
+
+    // Belt and braces: the prompt forbids fences, and models emit them anyway.
+    private static string StripFences(string t)
+    {
+        t = t.Trim();
+        if (!t.StartsWith("```", StringComparison.Ordinal)) return t;
+        var nl = t.IndexOf('\n');
+        if (nl < 0) return t;
+        t = t[(nl + 1)..];
+        var close = t.LastIndexOf("```", StringComparison.Ordinal);
+        return close >= 0 ? t[..close] : t;
+    }
+
+    private static string InsertTruncationNotice(string html, int tokens)
+    {
+        const string notice =
+            "<p style=\"background:#fee;border:1px solid #c00;padding:.75em;margin:0 0 1em\">"
+            + "<b>This report is incomplete.</b> The model hit its output limit "
+            + "after {0} tokens and stopped mid-document. Everything above the cut is "
+            + "still based on the measured numbers.</p>";
+        var body = html.IndexOf("<body", StringComparison.OrdinalIgnoreCase);
+        var open = body >= 0 ? html.IndexOf('>', body) : -1;
+        var banner = string.Format(CultureInfo.InvariantCulture, notice, tokens);
+        var closed = html + "\n</body></html>";
+        return open >= 0 ? closed[..(open + 1)] + banner + closed[(open + 1)..] : banner + closed;
+    }
+
+    // sendDocument is multipart, unlike every other call this bot makes. Worth
+    // the exception: a report is a file an operator keeps, forwards and opens
+    // in a browser, and Telegram truncates a message at 4096 characters.
+    private async Task SendDocumentAsync(
+        long chatId, string filename, byte[] bytes, string caption, CancellationToken ct)
+    {
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(chatId.ToString(CultureInfo.InvariantCulture)), "chat_id");
+        form.Add(new StringContent(caption), "caption");
+        form.Add(new StringContent("HTML"), "parse_mode");
+        var file = new ByteArrayContent(bytes);
+        file.Headers.ContentType = new MediaTypeHeaderValue("text/html");
+        form.Add(file, "document", filename);
+
+        using var r = await http.CreateClient("telegram").PostAsync("sendDocument", form, ct);
+        if (!r.IsSuccessStatusCode)
+            log.LogError("sendDocument failed: HTTP {Code} {Body}",
+                (int)r.StatusCode, Head(await r.Content.ReadAsStringAsync(ct)));
     }
 
     // What Langfuse is for, and what it is NOT for. Written 2026-09-05 after
@@ -2483,7 +2951,7 @@ sealed record BotConfig(
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int OutputLimit,
     string AlertSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds,
-    string LangfuseUrl);
+    string LangfuseUrl, string LangfuseProjectId);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<string>> Run);
@@ -2532,9 +3000,14 @@ sealed record SendMessage(
 sealed record InlineKeyboardMarkup(
     [property: JsonPropertyName("inline_keyboard")] InlineKeyboardButton[][] Keyboard);
 
+// Telegram requires EXACTLY ONE of callback_data and url per button, which is
+// why both are nullable — the source-gen context drops nulls
+// (DefaultIgnoreCondition = WhenWritingNull), so an unset one is absent from
+// the wire rather than sent empty and rejected.
 sealed record InlineKeyboardButton(
     [property: JsonPropertyName("text")] string Text,
-    [property: JsonPropertyName("callback_data")] string CallbackData);
+    [property: JsonPropertyName("callback_data")] string? CallbackData = null,
+    [property: JsonPropertyName("url")] string? Url = null);
 
 sealed record ChatAction(
     [property: JsonPropertyName("chat_id")] long ChatId,
