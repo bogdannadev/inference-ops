@@ -370,7 +370,25 @@ qw38-27b-langfuse.duckdns.org {
 qw38-27b-mcp.duckdns.org {
 	tls contact@bogdanna.dev
 
-	@notanthropic not remote_ip 160.79.104.0/21
+	# Access log ON, for the same reason infra-bot keeps its own: this is the
+	# other site that can mint and revoke API keys, and without a log a request
+	# refused by the IP matcher looks identical to one that never arrived. That
+	# ambiguity cost a debugging round on 2026-09-05, when a client 404'd here
+	# and there was nothing on the server to confirm it had even connected.
+	log
+
+	# 160.79.104.0/21 is Anthropic's published egress, used by the hosted Claude
+	# surfaces when they connect to a custom connector server-side.
+	#
+	# 95.56.56.12/32 is the admin workstation, added 2026-09-05. It is needed
+	# ONLY for the mcp-remote bridge in claude_desktop_config.json, which runs
+	# locally and therefore arrives from the operator's own address rather than
+	# Anthropic's. Adding it widens the surface to one host, and it is a
+	# RESIDENTIAL address: when the lease changes this silently 404s again and
+	# looks exactly like the server being down. The Connectors UI path needs no
+	# entry here and does not rot — prefer it, and delete this line when the
+	# bridge is no longer used.
+	@notanthropic not remote_ip 160.79.104.0/21 95.56.56.12/32
 	respond @notanthropic "Not found" 404
 
 	reverse_proxy admin-mcp:8080 {
