@@ -65,7 +65,18 @@ REPLICA="$1"; shift
 RECREATE="--force-recreate"
 [ "${1:-}" = "--no-recreate" ] && RECREATE=""
 
-rcurl() { docker exec "$ROUTER" curl -s -m 8 "$@"; }
+# The router control plane has required a bearer token since 2026-09-04
+# (--control-plane-api-keys in docker-compose.yml). Without it every /workers
+# call returns 401, worker_field() below yields empty, and the preflight
+# refuses to roll with a misleading "peer is not healthy" error. Same pattern
+# as benchmarks/run_worker.sh.
+source .env
+: "${ROUTER_CONTROL_PLANE_KEY:?set ROUTER_CONTROL_PLANE_KEY in .env}"
+
+rcurl() {
+  docker exec "$ROUTER" curl -s -m 8 \
+    -H "Authorization: Bearer ${ROUTER_CONTROL_PLANE_KEY}" "$@"
+}
 
 workers_json() { rcurl http://localhost:8000/workers; }
 

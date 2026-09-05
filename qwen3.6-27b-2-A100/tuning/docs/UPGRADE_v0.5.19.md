@@ -726,3 +726,124 @@ Note also that HiCache is *not* free of the routing problem: under
 `round_robin` a returning session reaches the replica holding its host copy
 only half the time. **Routing affinity is a prerequisite for HiCache, not a
 companion to it.** See `tuning/docs/ROUTING.md`.
+
+## Phase 1 — r1 rolled to v0.5.19, 2026-09-05. ALL GATES PASS.
+
+### First: `roll-replica.sh` was broken and had to be fixed
+
+The script's `rcurl()` called the router control plane with no credential.
+Since the admission-control hardening on 2026-09-04 added
+`--control-plane-api-keys`, every `GET /workers` returns **401**:
+
+```
+$ docker exec qwen36-27b-router curl -s -m 8 http://localhost:8000/workers
+Missing or invalid Authorization header          # HTTP 401
+```
+
+`worker_field()` then yields empty and the preflight aborts with a misleading
+*"peer r0 is not healthy in the router (got 'absent')"*. It fails **safe** —
+it exits before touching anything — but the documented safe-roll path had been
+broken since 2026-09-04 and nobody had rolled since to notice.
+
+Fixed by sourcing `.env` and adding the bearer token, the same pattern
+`benchmarks/run_worker.sh` already uses. Verified: `GET /workers` -> 200.
+
+### Boot gates — 4/4
+
+| Check | Expected | Measured | |
+|---|---|---|---|
+| `max_total_num_tokens` | 169408 | **169408** | PASS — #36583 did not move it |
+| decode CUDA-graph `bs` | `[1,2,3,4]` | `[1,2,3,4]` | PASS |
+| `max_mamba_cache_size` | 43 | **43** (conv 0.12 / ssm 3.09 / inter 2.11 / win 0.04) | PASS |
+| boot to healthy | ~181 s | **181 s** | PASS |
+
+`available_gpu_mem` **8.35 -> 8.49 GB**, i.e. 0.14 GB *more* headroom. KV pool
+byte-identical (K 5.17 + V 5.17; draft 0.32 + 0.32). The 408-token margin over
+`--context-length 169000` is unchanged.
+
+The tree-cache line confirms the cache stack, and is the exact line the HiCache
+section says to check:
+
+```
+Tree cache initialized: source=default impl=UnifiedRadixCache
+  hybrid_swa=False hybrid_ssm=True hicache_attached=False streaming_wrapped=False
+```
+
+### `/get_server_info` diff — matched the pre-registered prediction exactly
+
+Excluding `internal_states` and the API key, **only four keys differ**:
+
+```
+port          8001 -> 8002        (the two replicas)
+random_seed   ...  -> ...         (per boot)
+startup_time  ...  -> ...         (per boot)
+version       0.5.18 -> 0.5.19
+```
+
+**16 new keys, 0 gone, and nothing resolved differently.** New keys:
+`deepep_v2_mode`, `dsv4_prefill_backend`, `enable_dense_mlp_attn_tp`,
+`enable_layernorm_sp`, `enable_lean_attention`, `enable_shared_experts_attn_tp`,
+`enable_w4a4_mxfp4_megamoe`, `gated_launch_port`, `grpc_worker_threads`,
+`hicache_host_memory_mode`, `hicache_storage_prefetch_retry_max_attempts`,
+`hicache_storage_prefetch_retry_poll_interval`,
+`http2_initial_connection_window_size`, `load_publish_endpoint`,
+`prefill_decode_interval`, `speculative_dsa_topk_backend`.
+
+Every load-bearing invariant held, `mm_feature_transport == 'cpu'` included —
+the flag that flipped underneath us in v0.5.17 has now been a non-event for
+three releases running because it is pinned explicitly. Also unchanged:
+`mamba_radix_cache_strategy=extra_buffer`, `uses_mamba_radix_cache=True`,
+`enable_session_radix_cache=True`, `mem_fraction_static=0.92`,
+`attention_backend=flashinfer`, `linear_attn_backend=triton`, `page_size=64`.
+
+### The change we rolled for is live
+
+Verified on the running replica, where `_is_cuda` is genuinely True:
+
+```
+$ docker exec qwen36-27b-r1 python3 -c "import sglang.srt.models.qwen3_5 as m; ..."
+_is_cuda       True
+_use_aiter     False
+GDN ratios     (1, 2, 3, 4)
+ratio 3 fused  True
+```
+
+Our head-group ratio 3 is on the fused QKVZBA path across 48 of 64 layers.
+On r0 (v0.5.18) it is still `(1, 2, 4)` and still taking the unfused fallback.
+**That asymmetry is the experiment.**
+
+### A prediction from the v0.5.18 doc, now measured
+
+`UPGRADE_v0.5.18.md` predicted, but could not confirm, that r1 is never
+NUMA-bound because its cpuset (28-47, node 1) has an empty intersection with
+node 0, which NVML reports for both GPUs. The v0.5.19 boot log states it
+outright:
+
+```
+Multiple NUMA nodes found for GPU 0: [0, 1]. Using the first one.
+NUMA node 0 has no CPU cores allowed by the current affinity
+  [28, ..., 47], skipping NUMA binding for GPU 0.
+```
+
+Prediction confirmed. r1 is not NUMA-bound, and never was.
+
+### Current state — the A/B window is open
+
+```
+qwen36-27b-r0       ...4823a7c29a1a1   v0.5.18   <- control
+qwen36-27b-r1       ...4c4385ab3eda9   v0.5.19   <- treatment
+qwen36-27b-router   ...4823a7c29a1a1   v0.5.18
+router              2/2 healthy, both load 0
+prometheus          14/14 targets up, 0 alerts
+```
+
+**Do not run a bare `docker compose up -d` while this window is open** — the
+anchor now points at v0.5.19, so it would recreate r0 and the router too and
+destroy the control.
+
+### Operational note, pre-existing but worth recording
+
+The engine logs its resolved `server_args` at startup **including `api_key` in
+plaintext**. Those logs go to the json-file driver (50 MB x 5) and are readable
+by anyone with docker access or the log mount. Not introduced by this upgrade,
+and not a reason to hold it, but it belongs in the security notes.
