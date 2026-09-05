@@ -125,6 +125,13 @@ transforms:
       ts = parse_timestamp!(string!(raw.start_time), "%Y-%m-%dT%H:%M:%S%.3fZ")
 
       . = {
+        # STAGE D — deployment identity, the same pair Prometheus stamps via
+        # global.external_labels and the otel-collector stamps as span resource
+        # attributes. The columns carry DEFAULTs so an older Vector that omits
+        # them still inserts correctly; writing them explicitly is what makes a
+        # SECOND node stamp its own identity instead of inheriting this one's.
+        "node":           "a100",
+        "stack":          "qwen36-27b",
         "ts":             format_timestamp!(ts, "%Y-%m-%d %H:%M:%S%.3f"),
         "request_id":     string(raw.request_id) ?? "",
         "consumer":       consumer,

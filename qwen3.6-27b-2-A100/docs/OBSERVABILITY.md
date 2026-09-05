@@ -573,3 +573,69 @@ curl -s http://localhost:9090/api/v1/targets \
 curl -s -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" \
   http://localhost:3000/api/prometheus/grafana/api/v1/rules
 ```
+
+## Correlation — resolving one request across all four stores
+
+Added Stage D, 2026-09-05. Verified end to end, not inferred.
+
+### One identity everywhere
+
+`node=a100` and `stack=qwen36-27b` are stamped on all three signals:
+Prometheus `global.external_labels`, the collector's `resource/identity`
+processor (so every span carries `resourceAttributes.node` / `.stack`
+regardless of which SDK emitted it), and `gateway.requests.node` / `.stack`.
+The same predicate now selects the same deployment in any of the three.
+
+### The join takes two hops, and that is correct
+
+The gateway's request id reaches the router, but the **router does not honour
+the inbound traceparent** — it starts a new trace and carries *that* to the
+workers. So there is no single key from edge to engine. There is a complete
+path, using the id for the first hop and the trace for the second:
+
+```
+gateway.requests.request_id                 (UUID, Envoy x-request-id)
+   = higress span  attributes.guid:x-request-id
+   = smg span      attributes.request_id
+                   -> smg span trace_id
+                      = sglang engine spans trace_id
+```
+
+Do not expect the engine to carry the gateway's request id. SGLang generates
+its own 32-hex rid and ignores caller-supplied ones —
+`entrypoints/openai/serving_base.py::_generate_request_id_base` returns `None`
+unconditionally, ahead of dead code that would have honoured it, and there is
+no `x-request-id` header handling in `srt/` at all.
+
+### The runbook query
+
+Given a `request_id` from the fact table, the bot, or an edge log:
+
+```sql
+WITH '<REQUEST_ID>' AS rid,
+     (SELECT trace_id FROM events_core
+       WHERE service_name = 'smg'
+         AND metadata_values[indexOf(metadata_names,'attributes.request_id')] = rid
+       LIMIT 1) AS tid
+SELECT
+  (SELECT count() FROM gateway.requests WHERE request_id = rid)            AS fact_rows,
+  (SELECT count() FROM events_core WHERE service_name='higress-gateway.higress-system'
+     AND metadata_values[indexOf(metadata_names,'attributes.guid:x-request-id')] = rid) AS gw_spans,
+  (SELECT count() FROM events_core WHERE service_name='smg'    AND trace_id = tid) AS router_spans,
+  (SELECT count() FROM events_core WHERE service_name='sglang' AND trace_id = tid) AS engine_spans;
+```
+
+Worked example, 2026-09-05, `388cc7a0-0cb5-9d28-a670-4bcd753385e2`:
+**1 fact row, 1 gateway span, 1 router span, 10 engine spans.**
+
+`tid` is the value to paste into Langfuse to see the engine trace.
+
+### What this does NOT give you
+
+**No metric-to-trace exemplars.** SGLang emits no exemplars on its histograms
+(`/metrics` contains zero exemplar-annotated samples) and this Prometheus runs
+without `--enable-feature=exemplar-storage`. Turning the flag on would store
+nothing. Jumping from a latency spike on a dashboard to the exact slow request
+therefore still means: find the window, query `gateway.requests` for the slow
+`request_id` in it, then run the query above. This needs upstream work in the
+engine's metrics layer, not configuration here.
