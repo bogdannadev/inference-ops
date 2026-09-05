@@ -426,6 +426,26 @@ sealed class ReadTools
         sb.Append("engine_ttft_p95_s=").Append(Backends.Num(ttft, 3)).Append("  # queue wait + prefill\n");
         sb.Append("engine_itl_p95_s=").Append(Backends.Num(itl, 4)).Append("   # gap between output tokens\n");
         sb.Append("prefix_cache_hit=").Append(Backends.Num(cache, 3)).Append('\n');
+
+        // THE LEDGER DOES NOT MEASURE COST. ai-quota deducts a flat
+        // input+output total and cannot be configured to weight them, but an
+        // output token costs ~68x an uncached input token and ~4800x a cached
+        // one on this node (docs/KEY-TIERS.md, measured). So two consumers can
+        // hold identical balances and consume wildly different GPU time.
+        //
+        // This is that missing number, reconstructed from the same measurements:
+        // output 18.14 ms/token, uncached input 0.266, cached input 0.0038.
+        // An estimate, not an accounting record — it uses the window's average
+        // cache hit rate rather than per-request hit data.
+        if (tin is not null && tout is not null)
+        {
+            var hit = cache is >= 0 and <= 1 ? cache.Value : 0;
+            var ms = tout.Value * 18.14
+                   + tin.Value * (1 - hit) * 0.266
+                   + tin.Value * hit * 0.0038;
+            sb.Append("gpu_seconds_est=").Append(Backends.Num(ms / 1000.0, 1))
+              .Append("  # the real resource; the ledger charges flat tokens instead\n");
+        }
         foreach (var r in perReplica?["data"]?["result"]?.AsArray() ?? [])
         {
             var inst = r?["metric"]?["instance"]?.GetValue<string>() ?? "?";
