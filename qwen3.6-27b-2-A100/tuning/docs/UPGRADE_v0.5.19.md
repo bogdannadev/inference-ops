@@ -847,3 +847,115 @@ The engine logs its resolved `server_args` at startup **including `api_key` in
 plaintext**. Those logs go to the json-file driver (50 MB x 5) and are readable
 by anyone with docker access or the log mount. Not introduced by this upgrade,
 and not a reason to hold it, but it belongs in the security notes.
+
+## Phase 2 — the A/B gate, 2026-09-05. Byte-identity FAILS, and the failure is real.
+
+Measured with **both replicas drained from the router and verified-flushed**,
+which Phase 0 established is the only way this rig produces comparable numbers.
+
+### Byte-identity: 5/8. Not a measurement artifact this time.
+
+| comparison | conditions | result |
+|---|---|---|
+| r0 v0.5.18 vs r1 v0.5.19 | contended, both flushed | **5/8** — prompts 1, 4, 7 diverge |
+| r0 v0.5.18 vs r0 v0.5.18 | contended, both flushed | 2/8 — *different* prompts diverge |
+| r0 v0.5.18 vs r1 v0.5.19 | **drained**, both flushed | **5/8 — prompts 1, 4, 7 again** |
+| **r1 v0.5.19 vs r1 v0.5.19** | **drained**, both verified-flushed | **8/8 PASS** |
+
+The last row is the control that makes the rest interpretable, and it is the
+one the v0.5.18 session insisted on: *the gate reads PASS when nothing
+differs*. With the replica drained and both legs verifiably flushed, the engine
+is perfectly reproducible.
+
+Against that control, **5/8 is a genuine build difference**: the same three
+prompts diverge across two independent runs under different load conditions,
+whereas the noisy contended self-control hit a different, random set.
+
+**Two conditions are both required, and flushing alone is not enough.**
+Phase 0 found the harness self-warms its cache. Phase 2 adds the second: with
+`--max-running-requests 4`, concurrent production traffic changes *batch
+composition*, and batched GEMM reductions are not batch-invariant, so greedy
+output flips on near-ties. `byte_identity.py` sends its 8 prompts sequentially
+at `temperature 0, seed 42`, so on a **drained** replica each request is alone
+in its batch and the run is deterministic. On a registered one it is not.
+`enable_deterministic_inference` is `False`; we have never needed it because
+draining achieves the same thing for measurement.
+
+### The flush-verification trap, which cost one void control
+
+A first attempt at the self-control scored 0/8. The cause was in the harness
+wrapper, not the engine: the flush helper tried 3 times over 12 s, `/flush_cache`
+refused every time because the replica was still draining in-flight work, the
+helper returned silently, and capture A ran against a **warm** cache while
+capture B ran against a flushed one. The `Cache flushed.` string must be
+checked and the script must refuse to proceed without it. Retrying for up to
+60 s succeeded on the first try afterwards.
+
+### Why it diverges — and why it is not #34859
+
+The likely cause is **FlashInfer 0.6.17 -> 0.6.18** under
+`--attention-backend flashinfer`. A kernel-library bump can change reduction
+order, which changes rounding, which flips greedy decoding on near-ties.
+
+#34859 is not a plausible cause: the fused QKVZBA path changes *data movement*
+(it removes two `.contiguous()` copies and a `torch.cat`), not arithmetic or
+layout. The plan's assertion that "#34859 changes data movement, not layout or
+arithmetic, so byte-identity is valid here" was correct **about #34859** and
+incomplete about the release. v0.5.18 carried FlashInfer 0.6.15 -> 0.6.17 and
+still scored 8/8, so such a bump does not *have* to change output — it just
+can, and this one did.
+
+**The divergences look benign, though that is a judgement, not a measurement:**
+
+- All three occur late (chars 242, 978, 1014), deep inside reasoning content.
+- The content is semantically equivalent, e.g. `O(n+m), O(n+m) output space`
+  vs `O(n+m) time, O(n+m) space`.
+- Prompt 4 diverges *past the model's natural stop* — `ignore_eos` forces 256
+  tokens, and both builds emit filler there (r0 hallucinates a new turn, r1
+  emits newlines). That row carries no information.
+- 5 of 8 remain bit-identical, so this is near-tie flipping, not a systematic
+  numerics shift.
+
+### Timing — the gate Phase 0 said to use
+
+Both legs drained and flushed, so these are comparable:
+
+| metric | r0 v0.5.18 | r1 v0.5.19 | delta |
+|---|---|---|---|
+| **long-prompt TTFT** | 12.554 s | **12.327 s** | **-1.81%** |
+| `decode_tok_s_mean` | 70.89 | 71.71 | +1.16% |
+| long-prompt decode | 19.07 tok/s | 19.07 tok/s | 0.00% |
+| `spec_accept_length` | 3.9 | 4.0 | +2.6% |
+
+**Read this conservatively.** The prediction registered before the roll was
+"<=1%, most likely inside the ~1.5% noise floor, visible on prefill/TTFT if
+anywhere". TTFT moved -1.81%, in the predicted direction and marginally outside
+the floor; decode moved +1.16%, inside it. That is consistent with #34859
+working as described, and it is **not proof**:
+
+- **n=1 per replica.** No repeats, no alternating order.
+- **Build is confounded with replica.** r0 and r1 are different GPUs. The only
+  same-build calibration we have is the v0.5.18 Phase 0 figure of 0.4% between
+  them, which makes -1.81% plausibly real but does not isolate it.
+- The honest claim is *"directionally consistent with the prediction, at the
+  edge of resolvability"*, not *"1.8% faster prefill"*.
+
+### Verdict
+
+- **Boot gates: PASS** (Phase 1, 4/4).
+- **Server-args resolution: PASS** — nothing changed behind our back.
+- **The intended change is live** — ratio 3 on the fused path, verified.
+- **Timing: neutral to marginally positive**, at the edge of the noise floor.
+- **Byte-identity: FAIL, 5/8, reproducibly.** Output is not bit-identical to
+  v0.5.18. The cause is almost certainly the FlashInfer bump; the differences
+  look benign; but the gate as written did not pass and should not be
+  reinterpreted into a pass.
+
+**Converging r0 is therefore a judgement call, not a formality.** Accepting it
+means accepting that greedy output changes slightly on some prompts —
+acceptable for chat and coding traffic, and the kind of change every engine
+upgrade with a kernel bump can carry. Anyone who needs reproducible greedy
+output across the upgrade boundary should know it moved.
+
+**Rollback remains one command** while r0 is still on v0.5.18: restore the
+anchor to `sha256:9e148f5a...` and `./deploy/roll-replica.sh r1`.
