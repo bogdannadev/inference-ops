@@ -284,20 +284,25 @@ sealed class Backends(McpConfig cfg)
         IHttpClientFactory http, string sql,
         IEnumerable<KeyValuePair<string, string>> parameters, CancellationToken ct)
     {
-        var q = new List<KeyValuePair<string, string>>
-        {
-            new("query", sql + " FORMAT JSONCompactEachRowWithNames"),
-            // Defence in depth. The mcp ClickHouse user is readonly=1 with its
-            // own caps; these bound the damage a badly-shaped tool can do even
-            // if that user is ever misconfigured.
-            new("max_execution_time", "25"),
-            new("max_result_rows", "2000"),
-            new("result_overflow_mode", "break"),
-        };
-        foreach (var p in parameters) q.Add(new("param_" + p.Key, p.Value));
+        // SQL goes in the BODY, settings and bound parameters go in the URL.
+        // Sending the query as a form field instead corrupts it: form encoding
+        // writes `>` as %3E and ClickHouse's body parser does not decode it, so
+        // `ts > now()` arrives as `ts 3E+now()` and fails with a syntax error
+        // pointing at a character the tool never wrote. Measured 2026-09-05.
+        var url = new StringBuilder("?default_format=JSONCompactEachRowWithNames");
+        // Defence in depth. The mcp ClickHouse user is readonly=2 with its own
+        // capped profile; these bound a badly-shaped tool even if that user is
+        // ever misconfigured, and its <constraints> stop them being raised.
+        url.Append("&max_execution_time=25")
+           .Append("&max_result_rows=2000")
+           .Append("&result_overflow_mode=break");
+        foreach (var p in parameters)
+            url.Append("&param_").Append(Uri.EscapeDataString(p.Key))
+               .Append('=').Append(Uri.EscapeDataString(p.Value));
 
         using var c = http.CreateClient("clickhouse");
-        using var r = await c.PostAsync("", new FormUrlEncodedContent(q), ct);
+        using var sqlBody = new StringContent(sql, Encoding.UTF8, "text/plain");
+        using var r = await c.PostAsync(url.ToString(), sqlBody, ct);
         var body = await r.Content.ReadAsStringAsync(ct);
         if (!r.IsSuccessStatusCode)
             throw new InvalidOperationException(
