@@ -14,12 +14,24 @@
 # Appends one line to `higress.io/request-header-control-update` on the two
 # generation routes:
 #
-#   x-custom-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
+#   x-request-id-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
 #
 # Higress renders that annotation into Envoy `request_headers_to_add` with
 # append_action OVERWRITE_IF_EXISTS_OR_ADD, next to the Authorization line that
 # is already there. SGLang's `extract_custom_labels` then parses the header as
 # JSON and keeps the keys named by --tokenizer-metrics-allowed-custom-labels.
+#
+# WHY THE ODD HEADER NAME
+#
+# SGLang's default is `x-custom-labels` and that header never reaches a worker.
+# sgl-model-gateway forwards a hardcoded ALLOW-LIST on the path
+# /v1/chat/completions takes: authorization, x-request-id, x-correlation-id,
+# traceparent, tracestate, x-smg-routing-key, and the prefix `x-request-id-`
+# (should_forward_request_header). Everything else is dropped without a log
+# line. Measured 2026-09-05: straight to a replica the label appeared, through
+# the router it did not. `x-request-id-labels` rides that prefix, and the
+# replicas are told to read it with --tokenizer-metrics-custom-labels-header.
+# Change one side and you must change the other.
 #
 # WHY THE OVERWRITE MATTERS
 #
@@ -32,19 +44,26 @@
 # WHY %REQ() IS SAFE HERE
 #
 # It is not a guess: the access log on this same gateway already uses
-# `"consumer":"%REQ(X-MSE-CONSUMER)%"` and that is where docs/gateway.requests
-# gets its consumer column from. The header exists at router-filter time and
-# Envoy expands the command operator. If a future Higress release stopped
-# expanding it, the failure is loud rather than silent: the metric label reads
-# the literal `%REQ(X-MSE-CONSUMER)%` instead of a name.
+# `"consumer":"%REQ(X-MSE-CONSUMER)%"` and that is where gateway.requests gets
+# its consumer column from. The header exists at router-filter time and Envoy
+# expands the command operator. If a future Higress release stopped expanding
+# it, the failure is loud rather than silent: the metric label reads the
+# literal `%REQ(X-MSE-CONSUMER)%` instead of a name.
 #
-# WHY IT NEEDS THE APISERVER
+# WHY PUT AND NOT PATCH
 #
-# The gateway is higress-standalone, a sibling deployment; its routes live in
-# Nacos and are edited through the apiserver, which authenticates with a client
-# certificate. The console container already holds one (its kubeconfig), so the
-# certificate never leaves that container. The same edit can be made by hand in
-# the Higress console UI: Routes -> ai-chat -> Request header update.
+# The gateway is higress-standalone; its routes live in Nacos behind an
+# api-server that is file-backed (`file_rest.go`), not etcd. It ADVERTISES
+# `patch` in its APIResourceList and then answers 500 to a
+# merge-patch+json — tried 2026-09-05. Read-modify-write with a full PUT is
+# what the console itself does, and it works.
+#
+# Note the store returns no resourceVersion, so there is NO optimistic
+# concurrency here: a PUT is last-write-wins over the whole object. Do not run
+# this while someone is editing the same route in the console.
+#
+# The certificate never leaves the console container. The same edit can be made
+# by hand: console -> Routes -> ai-chat -> Request header update.
 #
 # ROLLBACK: --revert, or delete the line in the console. No restart either way;
 # the controller pushes a new route config within a second or two.
@@ -55,7 +74,7 @@ CONSOLE=higress-console-1
 NS=higress-system
 ROUTES=(ai-chat ai-completions)
 KEY='higress.io/request-header-control-update'
-LINE='x-custom-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}'
+LINE='x-request-id-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}'
 API=https://apiserver:8443/apis/networking.k8s.io/v1
 
 MODE=apply
@@ -70,8 +89,6 @@ done
 docker inspect "$CONSOLE" >/dev/null 2>&1 || {
   echo "$CONSOLE is not running; start higress-standalone first" >&2; exit 1; }
 
-# Extract the client certificate INSIDE the console container. -q so the key
-# never reaches this shell's stdout.
 docker exec "$CONSOLE" sh -c '
   K=/home/higress/.kube/config
   grep client-certificate-data $K | awk "{print \$2}" | base64 -d > /tmp/hcl.crt
@@ -80,41 +97,60 @@ docker exec "$CONSOLE" sh -c '
 
 kc() { docker exec "$CONSOLE" curl -sk --cert /tmp/hcl.crt --key /tmp/hcl.key "$@"; }
 
-cleanup() { docker exec "$CONSOLE" rm -f /tmp/hcl.crt /tmp/hcl.key /tmp/hcl.patch >/dev/null 2>&1 || true; }
+cleanup() {
+  docker exec "$CONSOLE" rm -f /tmp/hcl.crt /tmp/hcl.key /tmp/hcl.body >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
-for r in "${ROUTES[@]}"; do
-  cur=$(kc "$API/namespaces/$NS/ingresses/$r" |
-        python3 -c "import json,sys; print(json.load(sys.stdin)['metadata']['annotations'].get('$KEY',''))")
-
-  # Build the new value. Done in python so the Authorization bearer token is
-  # copied through without ever being echoed.
-  new=$(printf '%s' "$cur" | python3 -c "
-import sys
-cur = sys.stdin.read()
+# Rewrites the annotation on a whole Ingress object read from stdin. Kept in
+# one place so --dry-run and the real run cannot diverge. The Authorization
+# bearer token is copied through inside python and never echoed.
+edit_py() {
+  cat <<PY
+import json, sys
+obj  = json.load(sys.stdin)
 line = '''$LINE'''
-keep = [l for l in cur.split('\n') if l.strip() and l.strip() != line]
+ann  = obj['metadata'].setdefault('annotations', {})
+cur  = ann.get('$KEY', '')
+# Drop any line that sets one of OUR header names, not just the exact string we
+# are about to write. The header name changed once already (x-custom-labels ->
+# x-request-id-labels) and a stale line would have survived a plain match,
+# leaving the route injecting a header nothing reads.
+ours = ('x-custom-labels', 'x-request-id-labels')
+keep = [l for l in cur.split('\n')
+        if l.strip() and not l.strip().lower().startswith(ours)]
 if '$MODE' != 'revert':
     keep.append(line)
-sys.stdout.write('\n'.join(keep) + '\n')
-")
+ann['$KEY'] = '\n'.join(keep) + '\n'
+json.dump(obj, sys.stdout)
+PY
+}
+
+for r in "${ROUTES[@]}"; do
+  body=$(kc "$API/namespaces/$NS/ingresses/$r" | python3 -c "$(edit_py)")
 
   if [ "$MODE" = dryrun ]; then
     echo "=== $r ==="
-    printf '%s\n' "$new" | sed -E 's/(Authorization Bearer ).*/\1<redacted>/'
+    printf '%s' "$body" |
+      python3 -c "import json,sys; print(json.load(sys.stdin)['metadata']['annotations']['$KEY'])" |
+      sed -E 's/(Authorization Bearer ).*/\1<redacted>/'
     continue
   fi
 
-  printf '%s' "$new" |
-    python3 -c "import json,sys; print(json.dumps({'metadata':{'annotations':{'$KEY': sys.stdin.read()}}}))" |
-    docker exec -i "$CONSOLE" sh -c 'cat > /tmp/hcl.patch'
+  printf '%s' "$body" | docker exec -i "$CONSOLE" sh -c 'cat > /tmp/hcl.body'
 
-  code=$(kc -o /dev/null -w '%{http_code}' -X PATCH \
-           -H 'Content-Type: application/merge-patch+json' \
-           --data-binary @/tmp/hcl.patch \
-           "$API/namespaces/$NS/ingresses/$r")
-  echo "$r: PATCH -> $code"
-  [ "$code" = 200 ] || { echo "unexpected status for $r" >&2; exit 1; }
+  out=$(kc -w '\n%{http_code}' -X PUT \
+          -H 'Content-Type: application/json' \
+          --data-binary @/tmp/hcl.body \
+          "$API/namespaces/$NS/ingresses/$r")
+  code=${out##*$'\n'}
+  echo "$r: PUT -> $code"
+  if [ "$code" != 200 ] && [ "$code" != 201 ]; then
+    # Print what the server actually said. Guessing at a 500 cost an hour once.
+    printf '%s\n' "${out%$'\n'*}" |
+      sed -E 's/(Authorization Bearer )[A-Za-z0-9-]*/\1<redacted>/g' | head -20 >&2
+    exit 1
+  fi
 done
 
 [ "$MODE" = dryrun ] && exit 0
@@ -123,16 +159,15 @@ echo
 echo "waiting for the gateway to pick up the new route config..."
 for _ in $(seq 1 20); do
   if docker exec higress-gateway-1 curl -s localhost:15000/config_dump?resource=dynamic_route_configs |
-       grep -q 'x-custom-labels'; then
-    echo "gateway route config carries x-custom-labels"
+       grep -q 'x-request-id-labels'; then
+    [ "$MODE" = revert ] || { echo "gateway route config carries x-request-id-labels"; exit 0; }
+  elif [ "$MODE" = revert ]; then
+    echo "x-request-id-labels is gone from the route config"
     exit 0
   fi
   sleep 1
 done
 
-if [ "$MODE" = revert ]; then
-  echo "x-custom-labels no longer in the route config (or never was)"
-  exit 0
-fi
+[ "$MODE" = revert ] && { echo "TIMEOUT: x-request-id-labels still in the route config" >&2; exit 1; }
 echo "TIMEOUT: the annotation was written but the gateway has not applied it" >&2
 exit 1
