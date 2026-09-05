@@ -611,7 +611,7 @@ sealed class Worker(
         <b>What they used</b>
         /usage [1h|24h|7d|30d] — tokens in/out per consumer
         /top [1h|24h|7d] — busiest consumers, with errors
-        /p95 [name] — latency percentiles, per consumer
+        /p95 [name] — latency percentiles, per consumer (gateway + engine)
         /errors [1h|24h|7d] — status mix per consumer
         /trace &lt;request-id&gt; — where to look one request up
         /langfuse — what Langfuse can and cannot tell you
@@ -1165,6 +1165,13 @@ sealed class Worker(
         <code>/api/public/v2/observations</code> and
         <code>/api/public/v2/metrics</code>.
 
+        <b>Why 4.5.0 and not the latest</b>
+        4.30.0 exists and the upgrade is cheap — two metadata-only ClickHouse
+        migrations and seven Prisma ones, none touching data we hold. We stay
+        because none of it addresses what was confusing: the 25 releases are
+        evaluator and experiment work, and <code>events_only</code> is v4's
+        intended end state, not a bug to upgrade out of. Reassessed 2026-09-05.
+
         <b>One number used to lie</b>
         Until 2026-09-05 its token aggregate read ~101M per day against a real
         345k, because it counted per-decode-iteration spans as usage. Those are
@@ -1308,10 +1315,46 @@ sealed class Worker(
             $"{x.Key,-16}{p50T.Result.GetValueOrDefault(x.Key),8:N3}{x.Value,9:N3}{p99T.Result.GetValueOrDefault(x.Key),9:N3}");
 
         var header = $"{"consumer",-16}{"p50",8}{"p95",9}{"p99",9}";
-        return Table("<b>Latency</b>", new[] { header }.Concat(rows))
+        var body = Table("<b>Latency</b>", new[] { header }.Concat(rows))
              + "\n<i>Seconds, whole request as Envoy saw it. Cumulative since Vector started.</i>"
              + "\n<i>Bucketed, so approximate at low request counts \u2014 the exact figure is in the "
              + "fact table.</i>";
+
+        return body + await EngineLatencyAsync(sel, ct);
+    }
+
+    // The engine's own view of the same consumers, which the gateway cannot
+    // produce. TTFT differs from the gateway figure by the gateway filter
+    // chain, the router and two network hops; inter-token latency has no
+    // gateway equivalent at all, because Envoy sees a stream open and a stream
+    // close and nothing in between.
+    //
+    // Empty until BOTH replicas run with --tokenizer-metrics-allowed-custom-labels
+    // and Higress injects x-custom-labels. Silent when empty rather than
+    // apologetic: /p95 is a gateway command first, and a missing engine block
+    // is the normal state during a rollout.
+    private async Task<string> EngineLatencyAsync(string sel, CancellationToken ct)
+    {
+        // consumer!="" drops the health probes and anything that reached a
+        // replica without passing the gateway.
+        var s = sel.Length == 0 ? "{consumer!=\"\"}" : sel;
+        var q = (string metric) =>
+            $"histogram_quantile(0.95, sum by (consumer,le) (sglang:{metric}_bucket{s}))";
+
+        var ttftT = PromAsync(q("time_to_first_token_seconds"), ct, "consumer");
+        var itlT = PromAsync(q("inter_token_latency_seconds"), ct, "consumer");
+        var e2eT = PromAsync(q("e2e_request_latency_seconds"), ct, "consumer");
+        await Task.WhenAll(ttftT, itlT, e2eT);
+
+        if (ttftT.Result.Count == 0) return "";
+
+        var rows = ttftT.Result.OrderByDescending(x => x.Value).Select(x =>
+            $"{x.Key,-16}{x.Value,8:N3}{itlT.Result.GetValueOrDefault(x.Key),9:N3}{e2eT.Result.GetValueOrDefault(x.Key),9:N2}");
+
+        var header = $"{"consumer",-16}{"ttft",8}{"itl",9}{"e2e",9}";
+        return "\n\n" + Table("<b>Engine-side p95</b>", new[] { header }.Concat(rows))
+             + "\n<i>Seconds, measured inside SGLang: queue wait plus prefill for ttft, "
+             + "gap between output tokens for itl. Excludes gateway, router and network.</i>";
     }
 
     private async Task<string> ErrorsAsync(string window, CancellationToken ct)

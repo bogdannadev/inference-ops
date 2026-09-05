@@ -56,16 +56,17 @@ the ledger via `redis_exporter`.
 Plus `gateway_*` metrics that Vector derives from the same access log it writes
 to ClickHouse — `gateway_requests_total`, `gateway_tokens_total`,
 `gateway_request_duration_seconds`, all labelled by `consumer`, `route`,
-`status_class`. **These are the only per-consumer metrics that exist today.**
+`status_class` — the gateway's view of each tenant.
 
 Since Stage D every series carries `node="a100"` and `stack="qwen36-27b"`.
 
-**Its blind spot — and this is the big one for "per-key metrics":** the 98
-engine metrics carry `engine_type`, `instance`, `is_streaming`, `model`,
-`model_name`, `node`. **None carries a consumer.** So you can ask "what is p95
-TTFT on this node" and you can ask "how many tokens did acme use at the
-gateway", but you *cannot* ask "what is acme's p95 TTFT inside the engine".
-Closing that is a config change, described at the bottom of this file.
+**Its blind spot, until 2026-09-05:** the 98 engine metrics carried
+`engine_type`, `instance`, `is_streaming`, `model`, `model_name`, `node` and
+nothing about who asked, so "what is acme's p95 TTFT *inside the engine*" had
+no answer. The tokenizer-side metrics now take a `consumer` label — see
+**Per-key engine metrics** at the bottom of this file for the mechanism and the
+rollout state. The scheduler-side metrics (KV pool, queue depth, cache hit rate,
+MFU) remain node-wide by nature: they describe a shared GPU, not a request.
 
 ### 4. Langfuse — the per-request waterfall, and nothing more
 
@@ -106,6 +107,44 @@ the only place the *inside* of a single request is visible. Nothing else has it.
   router's trace id; health-check probes hit workers directly and get their own
   64-bit (zero-prefixed) trace. That cohort is noise, not loss.
 
+### Should we move off Langfuse 4.5.0?
+
+Checked 2026-09-05. Latest stable is **4.30.0**, released the day before; we
+run 4.5.0, twenty-five minor versions back. The answer is **we can stay, and
+upgrading would not have fixed anything we were confused about.**
+
+*Why staying is safe.* Langfuse's own upgrade policy is that minor versions
+within a major are non-disruptive and migrate themselves on start. Reading the
+actual migrations rather than the policy: between the two tags there are
+**2 ClickHouse migrations**, both `ADD COLUMN ... DEFAULT` / `MODIFY SETTING`
+carrying the comment *"Metadata-only: existing parts are not rewritten"*, and
+**7 Prisma migrations**, all in evaluator / feature-flag / integration tables we
+do not populate. Our whole dataset is 540 MiB over 3.19M rows. The two breaking
+changes in the window (4.20.0 `LANGFUSE_AWS_BEDROCK_*` -> `LANGFUSE_AI_*`,
+4.24.0 requiring `LANGFUSE_AI_PROVIDER`) touch only the Langfuse-AI provider
+config, which we do not set; the others are a 14-day JWT cap and an entitlement
+on org API-key creation, neither of which we use.
+
+*Why upgrading would not have helped.* The 25 releases are overwhelmingly
+experiments, evaluators and dataset work. Our problem was never a missing
+feature — it was that (a) `decode_loop` spans were being read as token usage,
+which we fixed in the collector, and (b) engine spans carry no identity and the
+router breaks trace continuity, which is an SGLang property no Langfuse version
+changes. `events_only` is likewise not a bug to upgrade out of: it is v4's
+intended end state, and 4.30 is further into it, not less.
+
+*What we deliberately have not configured.* Model pricing. Setting a price for
+`qwen36-27b` would make Langfuse's cost columns render a number, and that number
+would immediately become a second, non-authoritative answer to "what does acme
+owe" sitting next to the ledger. The cost of inference on this node is recorded
+properly in `docs/KEY-TIERS.md` in ms and joules per token. Langfuse shows
+`totalCost` = 0 on purpose.
+
+*So the pin stays.* `docker-compose.langfuse.yml` holds 4.5.0 by digest. Revisit
+if we ever want evaluators or Monitors; the upgrade itself is a pull, a
+recreate and roughly a minute of migrations, with a Postgres dump as the
+rollback.
+
 ## Where to look, by question
 
 ```
@@ -118,33 +157,70 @@ the only place the *inside* of a single request is visible. Nothing else has it.
 "is the cache working"            -> sglang:cache_hit_rate, and the routing
                                      evidence in tuning/docs/ROUTING.md
 "who is hammering the node"       -> /top, gateway_tokens_total by consumer
-"what is p95 TTFT for acme"       -> NOT ANSWERABLE TODAY. See below.
+"what is p95 TTFT for acme"       -> Grafana Usage & Quota, Engine-side row
+                                     (needs the rollout below finished)
 ```
 
-## The one real gap: per-key engine metrics
+## Per-key engine metrics — wired 2026-09-05
 
-The engine can label its own metrics per consumer, and does not today.
+The engine can label its own metrics per consumer. As of 2026-09-05 it is
+configured to, and the chain is:
 
-`--tokenizer-metrics-custom-labels-header` (default `x-custom-labels`) plus
-`--tokenizer-metrics-allowed-custom-labels` make SGLang read a JSON object from
-a request header and attach whitelisted keys as **Prometheus labels** on its
-tokenizer metrics. Verified in the v0.5.19 source:
+```
+client --Authorization: Bearer sk-...--> Higress
+   key-auth resolves the consumer, sets X-Mse-Consumer
+   route annotation adds  x-custom-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
+       (OVERWRITE_IF_EXISTS_OR_ADD -- a client cannot forge it)
+--> sgl-model-gateway forwards every non-hop-by-hop header unchanged
+--> SGLang extract_custom_labels() parses the JSON, keeps allow-listed keys
+--> consumer="acme" on the tokenizer metrics
+```
+
+Verified in the v0.5.19 source rather than inferred:
 `entrypoints/openai/serving_base.py::extract_custom_labels` parses the header
-and filters to the allowlist; `managers/tokenizer_manager.py` seeds those label
-names into the metrics collector at startup.
+named by `--tokenizer-metrics-custom-labels-header` (default `x-custom-labels`)
+and filters to `--tokenizer-metrics-allowed-custom-labels`;
+`managers/tokenizer_manager.py::collect_metrics` merges those values into the
+label set for **TTFT, inter-token latency, and every metric behind
+`observe_one_finished_request`** (e2e latency, prompt/generation token
+histograms, cached and uncached prompt tokens). The router needs no
+configuration at all: `routers/header_utils.rs::apply_request_headers` forwards
+everything except hop-by-hop headers.
 
-So `x-custom-labels: {"consumer":"acme"}` on the upstream request would give
-per-consumer TTFT, end-to-end latency and token histograms **from the engine
-itself**, in Prometheus, joinable with everything else by `consumer`.
+**What this buys that nothing else could.** The gateway already produced
+per-consumer request rate, token counts, status mix and whole-request latency
+(`gateway_*`, from the access log). The engine adds three things the gateway
+structurally cannot see:
 
-**What it costs:**
-1. `--tokenizer-metrics-allowed-custom-labels consumer` on both replica command
-   blocks — a roll of both replicas, one at a time, no downtime.
-2. Higress must inject the header from the consumer it already knows
-   (`X-Mse-Consumer`), which means an Envoy header-add with a `%REQ()%` format
-   string, and the router must forward it.
-3. Label cardinality: one label value per consumer. Fine at our scale; it is
-   the thing to watch if the roster grows into the hundreds.
+| | why the gateway cannot |
+|---|---|
+| **Inter-token latency per consumer** | it sees a stream open and a stream close; a mid-decode stall looks identical to a smooth stream |
+| **Prefix cache hit per consumer** | cache accounting happens inside the radix tree |
+| **Replica attribution per consumer** | it hands every request to one router address and never learns whether r0 or r1 served it |
 
-Not done. It is the single highest-value addition left in the metrics stack,
-and it is the only way to answer "what is acme's p95 TTFT".
+Panels: Grafana -> *Usage & Quota* -> **Engine-side, by consumer** (5 panels).
+
+**Cardinality.** One label value per configured consumer (6 today), plus
+`consumer=""` for anything that did not come through the gateway — health
+probes, benchmarks, direct-hostname traffic. The allow-list filters label
+*names*, never values, so the gateway's `OVERWRITE_IF_EXISTS_OR_ADD` is what
+bounds the value set. Do not expose the engine or the router to clients
+directly while this flag is on.
+
+**Known gap, upstream:** `observe_one_aborted_request` does not take custom
+labels (`# TODO: also use custom_labels from the request`,
+tokenizer_manager.py), so aborted requests are still counted without a
+consumer.
+
+**Rollout state, 2026-09-05**
+
+| step | how | state |
+|---|---|---|
+| flag on r1 | `docker-compose.yml`, `./deploy/roll-replica.sh r1` | done, `consumer=""` label confirmed live |
+| flag on r0 | `./deploy/roll-replica.sh r0` | **pending** |
+| gateway header | `./deploy/higress-consumer-label.sh` | **pending** |
+
+Until both are done the panels stay empty, and r0/r1 report asymmetric label
+sets. Neither pending step affects serving: the flag without the header just
+means every request lands in `consumer=""`, and the header without the flag is
+an ignored request header.
