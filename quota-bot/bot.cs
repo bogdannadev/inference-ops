@@ -581,6 +581,7 @@ sealed class Worker(
             "/p95"        => new Reply(await LatencyAsync(a1, ct)),
             "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
             "/tiers"      => new Reply(TiersHelp()),
+            "/langfuse"   => new Reply(LangfuseHelp()),
             "/trace"      => new Reply(a1 is null
                                  ? Usage("/trace &lt;request-id&gt;", "/trace efd62f54-d5e3-9fe3-be99-b3945d617414")
                                  : TraceHelp(a1)),
@@ -613,6 +614,7 @@ sealed class Worker(
         /p95 [name] — latency percentiles, per consumer
         /errors [1h|24h|7d] — status mix per consumer
         /trace &lt;request-id&gt; — where to look one request up
+        /langfuse — what Langfuse can and cannot tell you
 
         <b>Is it healthy</b>
         /status — can I still operate the gateway
@@ -698,8 +700,13 @@ sealed class Worker(
         var ttftT   = PromScalarAsync(
             "histogram_quantile(0.95, sum(rate(sglang:time_to_first_token_seconds_bucket[5m])) by (le))", ct);
         var kvT     = PromScalarAsync("max((sglang:kv_used_tokens / sglang:kv_available_tokens)) * 100", ct);
+        // Prefix-cache hit rate. Worth a row since 2026-09-05: the router moved
+        // to cache_aware and this is where that shows up or fails to. Gauge is
+        // since engine start, so it reads 0 for a while after a roll — that is
+        // normal and deliberately NOT warned on, or every roll would cry wolf.
+        var cacheT  = PromScalarAsync("avg(sglang:cache_hit_rate) * 100", ct);
 
-        await Task.WhenAll(upT, totalT, alertsT, ledgerT, queueT, capT, failT, genT, ttftT, kvT);
+        await Task.WhenAll(upT, totalT, alertsT, ledgerT, queueT, capT, failT, genT, ttftT, kvT, cacheT);
 
         static string N(double? v, string fmt = "N0") =>
             v is null ? "\u2014" : ((double)v).ToString(fmt, CultureInfo.InvariantCulture);
@@ -716,7 +723,8 @@ sealed class Worker(
             $"{"spans",-12}queue {N(queue)}/{N(cap)}, {N(failT.Result, "N2")} failed/s",
             $"{"throughput",-12}{N(genT.Result)} tok/s",
             $"{"TTFT p95",-12}{N(ttftT.Result, "N2")} s",
-            $"{"KV pool",-12}{N(kvT.Result, "N1")} %"
+            $"{"KV pool",-12}{N(kvT.Result, "N1")} %",
+            $"{"cache hit",-12}{N(cacheT.Result, "N1")} % (since engine start)"
         ];
 
         var body = Table("<b>Stack health</b>", rows);
@@ -1103,16 +1111,68 @@ sealed class Worker(
                  + "appears on the gateway span and in the fact table.";
 
         var id = Esc(requestId);
+        // The join is TWO HOPS and was verified end-to-end on 2026-09-05
+        // (Stage D). The engine does NOT carry the gateway's request id — it
+        // mints its own 32-hex rid and ignores caller-supplied ones — so the
+        // second hop goes through the ROUTER's span, which does record the
+        // gateway id and whose trace the engine spans share.
         return $"<b>Request</b> <code>{id}</code>\n\n"
-             + $"<b>Trace</b> — {Esc(cfg.LangfuseUrl)}\n"
-             + $"Search for <code>{id}</code>. The gateway span carries it as "
-             + "<code>attributes.guid:x-request-id</code>, alongside the consumer and the token counts.\n\n"
-             + "<b>Exact record</b> — ClickHouse, on the host:\n"
-             + $"<pre>SELECT * FROM gateway.requests FINAL\nWHERE request_id = '{id}';</pre>"
-             + "\n<i>Engine spans carry the same request_id but a zero trace id: the router does not "
-             + "propagate trace context, so gateway and engine spans are separate traces joined on "
-             + "this value rather than one waterfall.</i>";
+             + "<b>1. What happened</b> — the fact table, ClickHouse on the host:\n"
+             + $"<pre>SELECT * FROM gateway.requests FINAL\nWHERE request_id = '{id}';</pre>\n"
+             + "Consumer, tokens, status and latency. This is the billing-grade record.\n\n"
+             + "<b>2. Inside the engine</b> — you need the trace id, not this id:\n"
+             + $"<pre>SELECT trace_id FROM events_core\nWHERE service_name = 'smg'\n  AND metadata_values[indexOf(\n        metadata_names,'attributes.request_id')] = '{id}'\nLIMIT 1;</pre>\n"
+             + $"Paste that trace id into {Esc(cfg.LangfuseUrl)} for the engine waterfall — "
+             + "prefill_waiting, prefill_forward, decode_forward, and a <code>Req</code> span "
+             + "with the token counts and TTFT.\n\n"
+             + "<i>Why two hops: the router does not honour the gateway's inbound traceparent, so "
+             + "it starts a fresh trace. It does copy this request id onto its own span, and the "
+             + "engine spans share the router's trace — so id gets you to the router, and the "
+             + "router's trace gets you to the engine. Searching Langfuse for this id directly "
+             + "finds only the gateway span.</i>";
     }
+
+    // What Langfuse is for, and what it is NOT for. Written 2026-09-05 after
+    // finding its token aggregate was 293x reality (decode_loop spans carrying
+    // attributes.decode_ct, read as usage — now filtered at the collector).
+    // The point of this command is that people were reading numbers off
+    // Langfuse and believing them.
+    private static string LangfuseHelp() =>
+        """
+        <b>What Langfuse shows you</b>
+
+        <b>Use it for one thing</b>
+        Opening a single request and seeing the engine's phase breakdown —
+        prefill_waiting, prefill_forward, decode_forward, tokenize, and a
+        <code>Req</code> span with token counts and TTFT. That waterfall is the
+        only place the inside of one request is visible.
+
+        Get there with /trace &lt;request-id&gt;. It takes two hops and the
+        command prints both.
+
+        <b>Do NOT use it for</b>
+        • <b>Billing or usage totals.</b> No model pricing is configured, so
+          cost is meaningless, and token sums are derived from spans rather
+          than the ledger. Use /usage, /top and /balance.
+        • <b>Per-user or per-session views.</b> They are empty. Identity sits
+          on the gateway span, tokens sit on the engine span, and the router
+          starts a new trace between them — Langfuse never sees them together.
+        • <b>Node health.</b> That is Grafana and /health.
+
+        <b>If a Langfuse doc page 404s the API</b>
+        This runs 4.5.0 in <code>events_only</code> mode. The v3 endpoints are
+        gone by design and return a message saying so. Use
+        <code>/api/public/v2/observations</code> and
+        <code>/api/public/v2/metrics</code>.
+
+        <b>One number used to lie</b>
+        Until 2026-09-05 its token aggregate read ~101M per day against a real
+        345k, because it counted per-decode-iteration spans as usage. Those are
+        dropped at the collector now, which also removed 77% of span volume.
+        Numbers before that date in Langfuse are not trustworthy.
+
+        Full map of which store answers what: <code>docs/METRICS-ECOSYSTEM.md</code>
+        """;
 
     // Rendered from the same Tiers table the /tier command validates against,
     // so the description and the thing being applied cannot drift apart.
