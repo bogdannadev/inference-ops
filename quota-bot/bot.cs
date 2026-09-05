@@ -1150,13 +1150,25 @@ sealed class Worker(
         Get there with /trace &lt;request-id&gt;. It takes two hops and the
         command prints both.
 
+        <b>Filtering by consumer works</b>
+        Every gateway span carries the consumer as Langfuse's user id, set by
+        the ai-statistics plugin from the authenticated key. A new key shows up
+        on its first request — nothing to register. Filter it in the Users page
+        or with <code>?userId=&lt;name&gt;</code> on the observations API.
+
+        In Grafana the same filter is the <b>Consumer</b> picker on the
+        Usage &amp; Quota and AI Gateway dashboards. That list is read from the
+        ledger, so a key appears there before it has sent anything.
+
         <b>Do NOT use it for</b>
         • <b>Billing or usage totals.</b> No model pricing is configured, so
           cost is meaningless, and token sums are derived from spans rather
           than the ledger. Use /usage, /top and /balance.
-        • <b>Per-user or per-session views.</b> They are empty. Identity sits
-          on the gateway span, tokens sit on the engine span, and the router
-          starts a new trace between them — Langfuse never sees them together.
+        • <b>Sessions.</b> That page is genuinely empty — nothing sets a
+          session id on the span, so multi-turn chats do not group.
+        • <b>Following one user INTO the engine.</b> The consumer is on the
+          gateway span; the engine's phase breakdown sits in a different trace,
+          because the router starts its own. /trace crosses that gap.
         • <b>Node health.</b> That is Grafana and /health.
 
         <b>If a Langfuse doc page 404s the API</b>

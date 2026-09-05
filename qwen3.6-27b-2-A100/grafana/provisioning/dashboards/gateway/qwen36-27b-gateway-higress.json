@@ -459,7 +459,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(route_upstream_model_consumer_metric_total_token, ai_consumer)",
+        "definition": "label_values(consumer:quota_balance:tokens, ai_consumer)",
         "hide": 0,
         "includeAll": true,
         "label": "consumer",
@@ -467,14 +467,16 @@
         "name": "consumer",
         "options": [],
         "query": {
-          "query": "label_values(route_upstream_model_consumer_metric_total_token, ai_consumer)",
+          "query": "label_values(consumer:quota_balance:tokens, ai_consumer)",
           "refId": "A"
         },
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "allValue": ".*",
+        "description": "Roster comes from the quota ledger, not from traffic: a key created a minute ago has a balance and no requests yet, and the access-log counters vanish from Prometheus entirely while the node is idle. All = .* rather than the OR of this list, so traffic from a consumer that is not in the ledger (or unauthenticated) still shows up instead of silently disappearing."
       }
     ]
   },
