@@ -1013,6 +1013,24 @@ The reason to do it eventually is #34608, the per-scheduler load socket —
 `cache_aware`'s balance guard (now set to 2) prices workers from a router-side
 in-flight counter that is known to be wrong. See `ROUTING.md`.
 
+**CLOSED same day.** Operator called for it, and it was taken deliberately at
+`num_running_reqs = 0 / num_queue_reqs = 0`:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml \
+  -f docker-compose.langfuse.yml up -d --no-deps qwen36-27b-router
+```
+
+Router came back healthy on `sha256:d6e7288...`, **`--policy cache_aware
+--balance-abs-threshold 2` preserved**, and both workers re-registered from
+`--worker-urls` without intervention. End-to-end through the router: 200 in
+0.54 s. Zero drift now — all three containers on the same digest:
+
+```
+qwen36-27b-r0  qwen36-27b-r1  qwen36-27b-router   ...4c4385ab3eda9  v0.5.19
+14/14 targets, 0 alerts
+```
+
 ### What was NOT done
 
 - **No repeat timing runs.** The Phase 2 A/B is n=1 per replica with build
