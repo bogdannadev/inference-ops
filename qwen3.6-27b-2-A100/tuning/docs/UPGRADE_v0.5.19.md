@@ -959,3 +959,68 @@ output across the upgrade boundary should know it moved.
 
 **Rollback remains one command** while r0 is still on v0.5.18: restore the
 anchor to `sha256:9e148f5a...` and `./deploy/roll-replica.sh r1`.
+
+## Phase 4 — converged, 2026-09-05
+
+Operator accepted the byte-identity result and called for convergence.
+`./deploy/roll-replica.sh r0`.
+
+**r0 boot gates — identical to r1 in every figure:**
+
+```
+max_mamba_cache_size   43   (conv 0.12 / ssm 3.09 / inter 2.11 / win 0.04 GB)
+KV Cache               #tokens 169408, K 5.17 GB, V 5.17 GB
+draft KV               #tokens 169408, K 0.32 GB, V 0.32 GB
+max_total_num_tokens   169408    context_len 169000    available_gpu_mem 8.49 GB
+boot to healthy        171 s
+GDN ratios             (1, 2, 3, 4)   _is_cuda True   ratio 3 fused
+Tree cache             UnifiedRadixCache  hybrid_ssm=True  hicache_attached=False
+```
+
+**Convergence verified:** both replica command blocks resolve to 94 flags each
+and differ only in the four places they must — `--port` (8001/8002), the GPU
+device id (0/1), the exposed port, and the healthcheck URL.
+
+**Final state:**
+
+```
+qwen36-27b-r0       ...4c4385ab3eda9   v0.5.19
+qwen36-27b-r1       ...4c4385ab3eda9   v0.5.19
+qwen36-27b-router   ...4823a7c29a1a1   v0.5.18   <- see below
+router              2/2 healthy
+prometheus          14/14 targets, 0 alerts
+policy              cache_aware --balance-abs-threshold 2
+```
+
+### Router drift is now REAL again — the opposite of the earlier correction
+
+Earlier in this document the v0.5.18 "router is behind" open item was closed as
+stale, because the router matched the anchor. Converging the replicas has
+re-opened it, this time genuinely:
+
+```
+compose anchor    sha256:d6e7288...  v0.5.19
+router running    sha256:9e148f5a... v0.5.18
+```
+
+`roll-replica.sh` deliberately never touches the router, so this is expected
+and it is safe — there is nothing in v0.5.19 the router needs. But it is
+latent in exactly the documented way: **the next `docker compose up -d` will
+recreate the router onto v0.5.19 and drop in-flight requests on both
+replicas.** Do it deliberately, in a quiet window, not as a side effect.
+
+The reason to do it eventually is #34608, the per-scheduler load socket —
+`cache_aware`'s balance guard (now set to 2) prices workers from a router-side
+in-flight counter that is known to be wrong. See `ROUTING.md`.
+
+### What was NOT done
+
+- **No repeat timing runs.** The Phase 2 A/B is n=1 per replica with build
+  confounded by replica. The A/B window is now closed: both replicas are on
+  v0.5.19, so any further measurement compares against a recorded number, not
+  a live control. Same limitation the v0.5.18 upgrade ended with — but unlike
+  that one, the measurement was at least taken under controlled conditions.
+- **HiCache: not enabled.** Retracted earlier in this document.
+- **`--max-running-requests` unchanged at 4.** The E4 lever in
+  `tuning/lowlevel/README.md` is the larger opportunity and is gated behind
+  routing work and a Mamba-slot trade.
