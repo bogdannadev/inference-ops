@@ -33,6 +33,39 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "name": "consumer",
+        "label": "Consumer",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values(consumer:quota_balance:tokens, ai_consumer)",
+          "refId": "A"
+        },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "sort": 1,
+        "options": [],
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "hide": 0,
+        "description": "Roster comes from the quota ledger, not from traffic: a key created a minute ago has a balance and no requests yet, and the access-log counters vanish from Prometheus entirely while the node is idle. All = .* rather than the OR of this list, so traffic from a consumer that is not in the ledger (or unauthenticated) still shows up instead of silently disappearing.",
+        "definition": "label_values(consumer:quota_balance:tokens, ai_consumer)",
+        "regex": "",
+        "skipUrlSync": false
       }
     ]
   },
@@ -307,7 +340,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_balance:tokens)",
+          "expr": "sum by (ai_consumer) (consumer:quota_balance:tokens{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -319,7 +352,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_spend:input24h)",
+          "expr": "sum by (ai_consumer) (consumer:quota_spend:input24h{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "B",
           "instant": true,
@@ -331,7 +364,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_spend:output24h)",
+          "expr": "sum by (ai_consumer) (consumer:quota_spend:output24h{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "C",
           "instant": true,
@@ -343,7 +376,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:token_ratio:in_per_out24h)",
+          "expr": "sum by (ai_consumer) (consumer:token_ratio:in_per_out24h{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "D",
           "instant": true,
@@ -355,7 +388,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_days_left)",
+          "expr": "sum by (ai_consumer) (consumer:quota_days_left{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "E",
           "instant": true,
@@ -367,7 +400,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:token_share:ratio1h)",
+          "expr": "sum by (ai_consumer) (consumer:token_share:ratio1h{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "F",
           "instant": true,
@@ -497,7 +530,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "count(consumer:quota_balance:tokens)",
+          "expr": "count(consumer:quota_balance:tokens{ai_consumer=~\"$consumer\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -558,7 +591,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:quota_balance:tokens)",
+          "expr": "sum by (ai_consumer) (consumer:quota_balance:tokens{ai_consumer=~\"$consumer\"})",
           "legendFormat": "{{ai_consumer}}",
           "refId": "A",
           "instant": true,
@@ -633,7 +666,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer,direction) (rate(gateway_tokens_total[$__rate_interval]))",
+          "expr": "sum by (consumer,direction) (rate(gateway_tokens_total{consumer=~\"$consumer\"}[$__rate_interval]))",
           "legendFormat": "{{consumer}} {{direction}}",
           "refId": "A",
           "instant": false,
@@ -697,7 +730,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_duration_count[$__rate_interval]))",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval]))",
           "legendFormat": "{{ai_consumer}}",
           "refId": "A",
           "instant": false,
@@ -761,7 +794,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_first_token_duration[$__rate_interval])) / clamp_min(sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_stream_duration_count[$__rate_interval])), 1)",
+          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_first_token_duration{ai_consumer=~\"$consumer\"}[$__rate_interval])) / clamp_min(sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_stream_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval])), 1)",
           "legendFormat": "{{ai_consumer}}",
           "refId": "A",
           "instant": false,
@@ -825,7 +858,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (consumer:token_share:ratio1h)",
+          "expr": "sum by (ai_consumer) (consumer:token_share:ratio1h{ai_consumer=~\"$consumer\"})",
           "legendFormat": "{{ai_consumer}}",
           "refId": "A",
           "instant": true,
@@ -897,7 +930,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket{consumer=~\"$consumer\"}[$__rate_interval])))",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
@@ -1046,7 +1079,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"2xx\"}[$__range]))",
+          "expr": "sum by (consumer) (increase(gateway_requests_total{consumer=~\"$consumer\", status_class=\"2xx\"}[$__range]))",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1058,7 +1091,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"4xx\"}[$__range]))",
+          "expr": "sum by (consumer) (increase(gateway_requests_total{consumer=~\"$consumer\", status_class=\"4xx\"}[$__range]))",
           "legendFormat": "",
           "refId": "B",
           "instant": true,
@@ -1070,7 +1103,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_requests_total{status_class=\"5xx\"}[$__range]))",
+          "expr": "sum by (consumer) (increase(gateway_requests_total{consumer=~\"$consumer\", status_class=\"5xx\"}[$__range]))",
           "legendFormat": "",
           "refId": "C",
           "instant": true,
@@ -1194,7 +1227,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_tokens_total{direction=\"input\"}[$__range])) / clamp_min(sum by (consumer) (increase(gateway_tokens_total{direction=\"output\"}[$__range])), 1)",
+          "expr": "sum by (consumer) (increase(gateway_tokens_total{consumer=~\"$consumer\", direction=\"input\"}[$__range])) / clamp_min(sum by (consumer) (increase(gateway_tokens_total{consumer=~\"$consumer\", direction=\"output\"}[$__range])), 1)",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1270,7 +1303,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:time_to_first_token_seconds_bucket{consumer!=\"\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:time_to_first_token_seconds_bucket{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])))",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
@@ -1334,7 +1367,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:inter_token_latency_seconds_bucket{consumer!=\"\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:inter_token_latency_seconds_bucket{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])))",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
@@ -1398,7 +1431,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "1 - sum by (consumer) (rate(sglang:uncached_prompt_tokens_histogram_sum{consumer!=\"\"}[$__rate_interval])) / clamp_min(sum by (consumer) (rate(sglang:prompt_tokens_histogram_sum{consumer!=\"\"}[$__rate_interval])), 1)",
+          "expr": "1 - sum by (consumer) (rate(sglang:uncached_prompt_tokens_histogram_sum{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])) / clamp_min(sum by (consumer) (rate(sglang:prompt_tokens_histogram_sum{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])), 1)",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
@@ -1462,7 +1495,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer,instance) (rate(sglang:generation_tokens_total{consumer!=\"\"}[$__rate_interval]))",
+          "expr": "sum by (consumer,instance) (rate(sglang:generation_tokens_total{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval]))",
           "legendFormat": "{{consumer}} @ {{instance}}",
           "refId": "A",
           "instant": false,
@@ -1526,7 +1559,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket[$__rate_interval]))) - histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:e2e_request_latency_seconds_bucket{consumer!=\"\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket{consumer=~\"$consumer\"}[$__rate_interval]))) - histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:e2e_request_latency_seconds_bucket{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])))",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
