@@ -80,15 +80,21 @@ call 3: 0.153s  warm
 call 4: 0.152s  warm
 ```
 
-**The first two are both cold.** `--policy round_robin` sends them to different
-replicas, and each has to prefill the prefix independently. A repeated prefix
-costs full prefill *twice* on this two-replica node before it is warm on both.
+**The first two were both cold** under the old `round_robin` policy: it sent
+them to different replicas, and each had to prefill the prefix independently,
+so a repeated prefix cost full prefill *twice* before it was warm on both.
 
-That is inherent to the routing choice and not a bug — `cache_aware` was
-disabled deliberately because it starved r0 with a shared hot system prompt. But
-it halves the value of prefix caching for a single conversation, and it means
-node-wide cache-hit figures (84.8%) understate what a cache-aware policy could
-achieve. Worth revisiting if agent traffic grows.
+**Fixed 2026-09-05.** The router now runs `cache_aware
+--balance-abs-threshold 2`. Measured against a same-day `round_robin` control,
+shared-prefix cache hit went 65.1% -> 97.7% with no replica starved and no
+latency regression. The trace above should now show call 2 warm. The
+`cache_aware` policy had been disabled in July for starving r0; the cause was
+a balance threshold that could never fire at this node's scale, not the policy.
+See `tuning/docs/ROUTING.md`.
+
+Note this applies only to traffic **through the router**. Requests on the
+direct hostname bypass it entirely and get no affinity, which is one more
+reason per-person keys behind the gateway matter.
 
 ## What can actually be enforced
 
