@@ -67,7 +67,7 @@ no answer. The tokenizer-side metrics now carry a `consumer` label — see
 **Per-key engine metrics** at the bottom of this file. The scheduler-side metrics (KV pool, queue depth, cache hit rate,
 MFU) remain node-wide by nature: they describe a shared GPU, not a request.
 
-### 4. Langfuse — the per-request waterfall, and nothing more
+### 4. Langfuse — one request at a time, and per-user rollups
 
 This is where the confusion was. Be precise about what it is:
 
@@ -89,12 +89,20 @@ the only place the *inside* of a single request is visible. Nothing else has it.
 
 **What it cannot do, and why:**
 
-- **No per-user or per-session view.** `user_id` is set on 7 spans out of
-  ~100,000 and `session_id` on **zero**. Langfuse's Users and Sessions pages
-  are therefore empty. The identity lives on the gateway span; the tokens live
-  on the engine span; and the router starts a new trace between them, so the
-  two are never in the same trace for Langfuse to roll up. See
-  `OBSERVABILITY.md` for the two-hop join that *does* work — outside Langfuse.
+- **Per-user works. Per-session does not.** An earlier version of this file
+  said `user_id` was set on "7 spans out of ~100,000" and called the Users page
+  empty. That was the wrong denominator, and it was misleading: **`user_id` is
+  set on 100% of the spans that can carry it** — 36 of 36 gateway ingress spans
+  over 24h — and 0% of engine spans, which have no way to know who called. The
+  fraction is tiny only because engine spans outnumber gateway spans ~6500:1.
+  Filtering by consumer in Langfuse works today, both in the Users page and via
+  `GET /api/public/v2/observations?userId=<consumer>`; verified 2026-09-05.
+  `session_id` really is empty (zero spans) — see the Sessions note below.
+- **A user's traces stop at the gateway.** The gateway ingress span carries the
+  identity *and* `gen_ai.usage.*`, so per-consumer token and latency views hold
+  up. What you cannot do is open one of those traces and see the engine's
+  phase breakdown inside it: the router starts a new trace, so the engine spans
+  live elsewhere. See `OBSERVABILITY.md` for the two-hop join that crosses it.
 - **Token and cost aggregates were wrong by 293x until 2026-09-05.** Langfuse
   read `attributes.decode_ct` off `decode_loop` spans as token usage: 98,198,709
   over 24h against a real 345,195. `decode_loop` is now dropped in the
@@ -144,6 +152,51 @@ if we ever want evaluators or Monitors; the upgrade itself is a pull, a
 recreate and roughly a minute of migrations, with a Postgres dump as the
 rollback.
 
+## A new key needs no registration anywhere
+
+Nothing has to be added to Grafana or Langfuse when a consumer is created.
+Both are driven off data the key produces on its own, which is the property
+worth protecting — a roster maintained by hand drifts the day someone forgets.
+
+**Langfuse.** The `ai-statistics` wasm plugin is bound to the routes, not to
+consumers, and maps `x-mse-consumer` onto two span attributes for every
+request:
+
+```json
+{"key": "consumer",         "value": "x-mse-consumer", "value_source": "request_header"}
+{"key": "langfuse.user.id", "value": "x-mse-consumer", "value_source": "request_header"}
+```
+
+`langfuse.user.id` is one of the attribute names Langfuse maps onto its
+first-class `userId`, so a new consumer appears in Users on its first request.
+`default_value` is `unauthenticated`, so failed-auth traffic is grouped rather
+than dropped.
+
+**Grafana.** *Usage & Quota* and *AI Gateway (Higress)* both carry a `consumer`
+template variable — multi-select, All by default — and every per-consumer panel
+filters on it. Two details are deliberate:
+
+- **The roster comes from the ledger**, `label_values(consumer:quota_balance:tokens,
+  ai_consumer)`, not from traffic. A key created a minute ago has a balance and
+  no requests, and the Vector-derived access-log counters disappear from
+  Prometheus entirely while the node is idle — sourcing the list from either
+  would leave a new key unselectable.
+- **All is `.*`, not the OR of that list.** So a consumer that is sending
+  traffic but is missing from the ledger still shows up instead of silently
+  vanishing from every panel.
+
+Two label names exist and are not interchangeable: `ai_consumer` on the ledger
+recording rules and Higress's own AI metrics, `consumer` on everything Vector
+derives from the access log and on the sglang tokenizer metrics.
+
+**Still missing: Sessions.** `session_id` is set on zero spans, so Langfuse's
+Sessions page is empty and multi-turn conversations do not group. The mechanism
+is the same one that already works for users — add a third `ai-statistics`
+attribute mapping `langfuse.session.id` from a request header. OpenCode already
+sends `X-Session-Id` (see the router routing-key note). Not done: it would
+group only the clients that send such a header, and no one has asked to see
+conversations grouped yet.
+
 ## Where to look, by question
 
 ```
@@ -158,6 +211,10 @@ rollback.
 "who is hammering the node"       -> /top, gateway_tokens_total by consumer
 "what is p95 TTFT for acme"       -> Grafana Usage & Quota, Engine-side row,
                                      or /p95 acme
+"just acme, everywhere"           -> the Consumer picker on Usage & Quota and
+                                     AI Gateway; in Langfuse, filter Users
+"I added a key, where is it"      -> already there. Grafana lists it from the
+                                     ledger, Langfuse from its first request
 ```
 
 ## Per-key engine metrics — live 2026-09-05
