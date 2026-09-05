@@ -533,3 +533,160 @@ Inherited from `tuning/README.md` and `next-session/README.md`, plus two new:
 - **Verify PTX against `ptxas`, not against documentation.** The probe in
   `refs/PTX_SM80_VERIFIED.md` contradicts a plain reading of the ISA doc for
   this toolchain. Compile it before believing it.
+
+---
+
+## E4 — the M axis. Re-reading E1 against the Ampere arithmetic-intensity model
+
+`STATUS: FINDING FROM EXISTING DATA, 2026-09-05. Experiment PLANNED.`
+
+E1 swept `M` at `[1, 6, 24, 48]` in order to capture the *grid* at each point.
+It therefore also measured, incidentally, what a change in batch costs on the
+six production weight shapes. That measurement was never read out. It is the
+largest lever this directory has found.
+
+### What the Ampere numbers say should happen
+
+A100 80GB PCIe: 108 SMs, 1935 GB/s HBM2e, 312 TFLOP/s BF16 dense tensor core.
+The machine balance is therefore ~161 FLOP/byte. A decode GEMM at `M = 4
+running x 6 draft tokens = 24` runs at **~2-4 FLOP/byte** — roughly 2% of
+balance. The tensor cores are idle almost all of the time; the kernel is
+waiting on HBM.
+
+The weight matrix is read **once per forward regardless of `M`**. Raising `M`
+adds FLOPs, not bytes. So on a machine two orders of magnitude away from its
+balance point, `M` should be very nearly free until the added math starts to
+matter — which on these shapes it will not, for a long way.
+
+### What was measured (E1 baseline run, workspace unset, GPU 1 drained)
+
+Time per `F.linear`, and achieved bandwidth against 1935 GB/s:
+
+```
+shape                MB       M=1            M=6           M=24           M=48
+mlp_gate_up         357   255.0/72.3%   254.4/72.5%   276.2/67.1%   339.5/54.9%
+mlp_down            178   155.2/59.4%   152.4/60.6%   156.9/59.1%   158.9/58.7%
+attn_qkv             84    89.2/48.6%    97.1/44.7%    99.4/43.9%    94.1/46.8%
+attn_o_proj          63    77.5/42.0%    77.4/42.1%    87.5/37.5%    81.2/40.7%
+gdn_in_proj_qkvz    168   150.0/57.8%   153.8/56.5%   157.7/55.3%   155.3/56.5%
+gdn_out_proj         63    80.8/40.2%    80.8/40.3%    88.4/37.1%    81.1/40.8%
+```
+
+Cost of doubling `M` from 24 to 48 — the same weight bytes, twice the tokens:
+
+```
+  mlp_gate_up        276.2us -> 339.5us    time x1.229    throughput x1.63
+  mlp_down           156.9us -> 158.9us    time x1.012    throughput x1.98
+  attn_qkv            99.4us ->  94.1us    time x0.947    throughput x2.11
+  attn_o_proj         87.5us ->  81.2us    time x0.928    throughput x2.16
+  gdn_in_proj_qkvz   157.7us -> 155.3us    time x0.985    throughput x2.03
+  gdn_out_proj        88.4us ->  81.1us    time x0.918    throughput x2.18
+  --------------------------------------------------------------------------
+  SUM                866.0us -> 910.1us    time x1.051    throughput x1.90
+```
+
+**Doubling the decode batch costs 5% more GEMM time and yields 1.90x the
+tokens.** Five of the six shapes are flat or *faster* in absolute time at
+M=48 — within E1's documented 2-6% run noise, so read those as "free". Only
+`mlp_gate_up`, the one shape with real tile pressure, pays (+22.9%), and it
+still returns 1.63x.
+
+Note the trap in the `%peak` column: it falls at M=48 on `mlp_gate_up`
+(67.1% -> 54.9%) and that looks like a regression. It is not. That metric is
+*weight bytes / time*, so doing more math on the same bytes necessarily lowers
+it. Time and tokens are the honest axes here, not achieved bandwidth.
+
+### Why this is the biggest lever in this directory
+
+Everything else here attacks *efficiency at fixed bytes* and E1/E2 closed both
+routes: split-K and workspace do nothing (E1), occupancy does nothing —
+8% -> 94% moved achieved bandwidth not at all (E1) — and L2 residency works but
+has no capacity to spare (E2). E1's own conclusion was that the only remaining
+levers are "fewer, larger GEMMs, or weight quantization".
+
+`M` is a third one, and it is neither a kernel change nor a numerics change.
+It is `--max-running-requests`. It requires no PTX, no new kernel, and no
+checkpoint.
+
+Corroborating evidence from an unrelated measurement: the July routing ladder
+found c>=6 "statistically identical" across policies because *"the admission
+cap became binding"*. The admission cap is exactly what this lever raises.
+
+### The constraint, measured not assumed
+
+`M = max_running_requests x speculative_num_draft_tokens`, so `M=48` means
+`--max-running-requests 8`. Read live from r0 with one request running:
+
+```
+sglang:mamba_used_tokens        4.0      <- 4 slots per running request
+sglang:mamba_available_tokens  17.0
+sglang:mamba_evictable_tokens  22.0      (4 + 17 + 22 = 43 = max_mamba_cache_size)
+sglang:mamba_usage              0.093    = 4/43
+```
+
+Four slots per request, **not** six — the ratio did not follow
+`--speculative-num-draft-tokens` from 4 to 6. So the hard ceiling is
+`43 / 4 = 10` concurrent requests, and 8 fits.
+
+**But it is not free, and the cost is cache.** At 8 running requests, 32 of 43
+Mamba slots are pinned by live sequences, leaving **11 evictable** where 22 are
+evictable today. The Mamba radix cache — `--mamba-radix-cache-strategy
+extra_buffer`, the thing that lets a cached prefix restore its linear-attention
+state — loses half its capacity under sustained load. On a hybrid where 48 of
+64 layers are GDN, that directly reduces prefix reuse.
+
+So the trade is **throughput against prefix cache**, which is the same currency
+`ROUTING.md` is trying to buy. Do not treat them independently.
+
+KV is the other bound: 169,408 tokens total, so 8 concurrent requests at the
+p95 context of ~141K tokens cannot coexist and the scheduler will retract.
+`--cuda-graph-max-bs-decode` must move with `--max-running-requests` or it
+silently caps the benefit (documented in `TUNING_PLAN.md` §1b), and decode
+graph capture memory grows against 8.35 GB of headroom.
+
+### E4, as an experiment
+
+Only `M` = 1, 6, 24, 48 exist. The production step is 4 -> 6 (`M`=36), which is
+unmeasured and sits in the one interval where `mlp_gate_up` starts to bend.
+
+**Method.** Re-run `bench/e1_gemm_workspace.py` with `m_values = [24, 32, 36,
+40, 48, 64]` and a single workspace setting, under the same discipline E1 and
+E2 used: drain r1 from the router (`DELETE /workers/<id>`), stop the DCGM
+exporter for CUPTI contention, baseline first and last to expose clock drift,
+restore both and verify the router at 2/2 healthy. Cost is ~7 minutes of GPU 1.
+
+**Gate.** `--max-running-requests 6` is worth rolling only if summed GEMM time
+at `M`=36 is within ~15% of `M`=24 *and* the Mamba evictable-slot count under
+real load stays above the point where prefix hit rate degrades. The second half
+cannot be answered on the bench — it needs `sglang:mamba_evictable_tokens` and
+`sglang:cache_hit_rate` watched under production load at the new setting.
+
+**Order.** After `ROUTING.md` step 1. Raising concurrency shrinks the Mamba
+prefix cache; improving routing raises its hit rate. Doing the second one first
+means the first is measured against a cache that is actually being used.
+
+---
+
+## What Ampere offers that we have not used, and why
+
+Read against the A100 whitepaper, for the 87.7% of decode that is cuBLASLt GEMM.
+
+| SM80 feature | reaches our bottleneck? | verdict |
+|---|---|---|
+| **Raise `M`** (arithmetic intensity) | **yes** | the E4 lever above. 1.90x tokens for +5% time. No kernel work |
+| **INT8 / INT4 tensor cores** (weight-only quant, AWQ/GPTQ) | **yes — the only feature that removes bytes** | W4A16 shrinks all 47.65 GB ~4x. Note E1's law cuts against it: smaller matrices run *less* efficiently (63 MB -> 37%, 357 MB -> 67%), so the win is under 4x. Changes outputs; no byte-identity gate. The large, real, expensive option |
+| **2:4 structured sparsity** | yes in principle — 2x math and ~44% of dense storage | **unavailable.** Needs a pruned + retrained Qwen3.8-27B checkpoint. None exists |
+| **FP8** | — | **not on SM80.** FP8 tensor cores are Hopper. On Ampere it is a storage format needing dequant, with no tensor-core path. Consistent with `UPGRADE_v0.5.18.md` rejecting fp8 draft KV |
+| **`cp.async` (LDGSTS)** | only inside kernels we own | cuBLASLt already uses it (`..._ldg8_...` in the selected kernel names). Our Triton GDN kernel emits **none** — which is why its `num_stages=3` is inert (E3) — but GDN is 2.49% of decode |
+| **L2 residency window** | reaches closed kernels, uniquely | **tested and rejected (E2).** Mechanism works; 40 MB against a 47.65 GB weight stream has no capacity to give |
+| **Async barriers / `mbarrier`** | kernels we own only | same 2.49% ceiling as E3 |
+| **Larger shared memory (164 KB/SM)** | no | at M=24 the tile is far below any shared-memory bound |
+| **MIG** | no | would partition one GPU per replica; we already run one replica per GPU |
+
+The shape of the conclusion is unchanged from E1 and is now better supported:
+**on a bandwidth-bound decode two orders of magnitude from machine balance,
+instruction-level work cannot help, because the instructions are not the
+bottleneck — the bytes are.** Only two things move: send fewer bytes
+(quantization), or get more tokens out of the bytes already sent (`M`,
+speculative decoding, prefix caching). This node already does the third, tuned
+the second, and has never touched the first.
