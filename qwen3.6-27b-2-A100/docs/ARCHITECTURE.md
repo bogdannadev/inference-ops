@@ -45,7 +45,7 @@ internet
 Caddy  (80/443, TLS, edge-auth key, no body cap — see Caddyfile)
    |  edge key swapped for internal SGLANG_API_KEY
    v
-qwen36-27b-router:8000   (OpenAI API, round_robin)
+qwen36-27b-router:8000   (OpenAI API, cache_aware)
    |            \
    v             v
 qwen36-27b-r0:8001    qwen36-27b-r1:8002
@@ -87,10 +87,18 @@ digest-pinned engine image. `--context-length 169000`, `--mem-fraction-static
 `--mamba-radix-cache-strategy extra_buffer`. Full flag rationale is inline in
 `docker-compose.yml`.
 
-Router policy is `round_robin`. The earlier `cache_aware` policy starved r0
-completely (one shared hot system prompt → affinity piled the whole team onto
-one worker); `round_robin` on two workers ≈ pick-the-less-loaded while the
-shared prefix caches on both replicas.
+Router policy is `cache_aware --balance-abs-threshold 2` (2026-09-05).
+
+`cache_aware` was disabled in July because it starved r0 — one shared hot
+system prompt piled the whole team onto one worker. The cause was found on
+2026-09-05: balancing requires `(max_load - min_load) > abs_threshold`, whose
+default is **64**, and with `--max-running-requests 4` per replica behind a
+16-request router that difference can never exceed ~16. The guard could not
+fire, so affinity ran unchecked. At a threshold of 2 it fires normally.
+
+Measured against a same-day `round_robin` control: shared-prefix cache hit
+65.1% -> 97.7%, split 10/3 instead of 0/122, p50 unchanged, tail improved.
+Full record in `tuning/docs/ROUTING.md`.
 
 ### Observability tier — `docker-compose.metrics.yml`
 

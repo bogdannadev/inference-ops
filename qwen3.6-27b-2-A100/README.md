@@ -2,7 +2,7 @@
 
 Private deployment serving `Qwen/Qwen3.8-27B` (BF16) with SGLang on a single
 host with two A100 80GB PCIe GPUs. Two independent `TP=1` replicas (one per
-GPU, no P2P) sit behind a `round_robin` SGLang router, which is exposed to the
+GPU, no P2P) sit behind a `cache_aware` SGLang router, which is exposed to the
 outside world only through a Caddy edge gateway.
 
 > **Names still say `qwen36`.** Containers, networks, the router, the Caddy
@@ -46,7 +46,7 @@ timescales and feeds back into the settings the other two obey.
 │   caddy :443            TLS · 401 guard · key swap · no body cap           │
 │     │                   ── rejects here never reach SGLang ──┐             │
 │     ▼                                                        │             │
-│   sgl-router :8000      round_robin · injects `traceparent`  │             │
+│   sgl-router :8000      cache_aware · injects `traceparent`  │             │
 │     │                                                        │             │
 │     ├──────────────┬───────────────────────────────────┐     │             │
 │     ▼              ▼                                   │     │             │
@@ -202,7 +202,7 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 
 - `qwen36-27b-r0` / `qwen36-27b-r1` — SGLang `TP=1` replicas, GPU0/GPU1,
   EAGLE speculative decoding, Mamba radix prefix caching
-- `qwen36-27b-router` — SGLang model-gateway, `round_robin`, OpenAI API, :8000
+- `qwen36-27b-router` — SGLang model-gateway, `cache_aware`, OpenAI API, :8000
 - `caddy` — TLS termination, edge-auth key swap, unbounded body size (only host ports)
 - `prometheus` — 9 scrape targets, 30d/20GB retention, 16 alert rules, hot reload
 - `grafana` — 7 dashboards (overview/sglang/router/gpu/host/edge/pipeline), SLO rules
@@ -222,7 +222,7 @@ context-length              169,000
 max-running-requests        4          decode CUDA graph bs [1,2,3,4]
 attention backend           flashinfer
 prefix caching              radix tree, mamba extra_buffer (HiCache removed)
-router policy               round_robin (cache_aware starved r0)
+router policy               cache_aware --balance-abs-threshold 2
 only host ports             80/443     Caddy; everything else loopback-only
 HiCache                     disabled   device radix tree unaffected
 request tracing             OTLP -> collector -> Langfuse, level 3
