@@ -35,6 +35,35 @@ processors:
     limit_mib: 512
     spike_limit_mib: 128
 
+  # STAGE D — one identity for all three signals.
+  #
+  # Prometheus stamps `node` and `stack` onto every series via
+  # `global.external_labels`. Spans arrive from three different SDKs (the
+  # sglang engine, the smg router, and Envoy in the gateway) and none of them
+  # knows what node it is on, so until now a span could not be attributed to
+  # this deployment at all -- only to a service name.
+  #
+  # Stamping here rather than in each emitter is deliberate: it is one place,
+  # it cannot drift between the three, and it applies to anything that ships
+  # to this collector later without touching that component's config.
+  #
+  # `upsert` not `insert`: if a future emitter sets these itself, its value
+  # wins and we do not silently overwrite a genuine second node's identity.
+  #
+  # NOTE deliberately NOT setting deployment.environment. Langfuse maps that
+  # onto its first-class `environment` field, which today reads `default` for
+  # every span. Changing it partitions the Langfuse UI -- historical spans stay
+  # in `default` while new ones move -- for no gain on a single-node stack.
+  # Flip it when a second node ships, not before.
+  resource/identity:
+    attributes:
+      - key: node
+        value: a100
+        action: upsert
+      - key: stack
+        value: qwen36-27b
+        action: upsert
+
   # Langfuse ingestion is one REST call per batch; batching is what stops that
   # becoming one HTTP round-trip per span. 5s matches the tolerance here —
   # these spans are for post-hoc latency forensics, not live alerting.
@@ -86,5 +115,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter, resource/identity, batch]
       exporters: [otlp_http/langfuse]

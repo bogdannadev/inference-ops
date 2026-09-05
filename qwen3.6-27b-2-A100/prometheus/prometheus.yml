@@ -23,6 +23,12 @@ global:
   # metrics to a shared target, without editing every rule again.
   external_labels:
     node: a100
+    # STAGE D: the same pair the otel-collector stamps on every span
+    # (`otel/collector.yaml`, processor `resource/identity`) and the same pair
+    # Vector writes into `gateway.requests`. Metrics, traces and the fact table
+    # now agree on what identifies this deployment, so a query can carry the
+    # same predicate across all three stores.
+    stack: qwen36-27b
     stack: qwen36-27b
 
 # Prometheus-native alerting rules (infra-level: endpoint up, GPU health).

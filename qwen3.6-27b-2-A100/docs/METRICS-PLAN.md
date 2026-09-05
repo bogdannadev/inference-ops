@@ -227,11 +227,112 @@ model load. 27/27 containers, 14/14 targets, 0 alerts, 0 duplicate rows, no
 fail-open, and an end-to-end request whose ledger delta matched the fact table
 exactly. Results in `docs/REBOOT-CHECKLIST.md`.
 
-## Stage D — converged OTel
+## Stage D — converged SEMANTICS ✅ DONE 2026-09-05
 
-Only after A, B and C are proven and the reboot test passes. Scope decided then;
-the argument against it today is a single silent failure domain across all three
-signals, which is exactly what Stage 0 exists to fix.
+Scope decided 2026-09-05: **converge semantics, not pipelines.** The three
+transports stay exactly as they are — Prometheus scrapes, the collector ships
+spans, Vector writes the fact table — because merging them creates the single
+silent failure domain Stage 0 exists to prevent. What converges is *identity*
+and *correlation*: the ability to carry one predicate, and one request, across
+all three stores.
+
+### 1. One identity, stamped in three places
+
+| signal | mechanism | value |
+|---|---|---|
+| metrics | `prometheus.yml` `global.external_labels` | `node: a100`, `stack: qwen36-27b` |
+| traces | `otel/collector.yaml` processor `resource/identity` | `node=a100`, `stack=qwen36-27b` |
+| fact table | `gateway.requests` columns + Vector transform | `node`, `stack` |
+
+`stack` was missing from Prometheus (only `node` was set, despite this file
+claiming both) and both were missing from spans and the fact table entirely.
+Spans arrive from three SDKs — `sglang`, `smg` (router), Envoy — and none knew
+what node it was on, so a span could be attributed to a *service* but not to a
+*deployment*.
+
+Stamping in the collector rather than in each emitter is deliberate: one place,
+cannot drift between the three, and applies to anything that ships there later.
+`action: upsert`, so a genuine second node's own value would win.
+
+Verified live: engine and router spans now carry
+`resourceAttributes.node=a100 / .stack=qwen36-27b`; a new fact row carries
+`node=a100 / stack=qwen36-27b`; Prometheus reports both external labels after a
+hot reload (no restart, no scrape gap). Existing fact rows inherit the values
+through column DEFAULTs, so history is not split.
+
+**Deliberately NOT set: `deployment.environment`.** Langfuse maps it onto its
+first-class `environment` field, which reads `default` for every span today.
+Changing it partitions the Langfuse UI — old spans stay in `default` while new
+ones move — for no gain on a single-node stack. Flip it when a second node
+ships.
+
+### 2. The join closes, in two hops — and the break is not where we thought
+
+**This corrects the Stage C finding.** Stage C recorded that gateway spans carry
+a real trace_id while engine spans carry `000000000000`, and concluded the
+router drops trace context on the way *down*. Measured again on 2026-09-05:
+
+```
+spans by trace, last 2h        traces
+  ['sglang']                     584
+  ['sglang','smg']               249   <- router and engine SHARE a trace
+  ['smg']                        283
+  ['higress-gateway...']           6   <- gateway is always alone
+zero trace_id, any service:        0
+```
+
+No span has an all-zero trace_id any more, and 249 traces contain both router
+and engine spans. **The router propagates context downstream correctly; what it
+does not do is honour the traceparent coming in from the gateway.** It starts a
+new trace and carries that one to the workers. So the break is
+gateway → router, not router → engine.
+
+That still leaves a complete path, because the router copies the gateway's
+request id onto its own span:
+
+```
+gateway.requests.request_id                     (UUID, from Envoy x-request-id)
+        |  equals
+        v
+higress span  attributes.guid:x-request-id
+        |  equals
+        v
+smg (router) span  attributes.request_id   ---> its trace_id
+                                                   |  equals
+                                                   v
+                                           sglang engine spans  trace_id
+```
+
+**Verified end to end on a real request** (`388cc7a0-0cb5-9d28-a670-4bcd753385e2`):
+1 fact row, 1 gateway span, 1 router span, **10 engine spans**. The runbook
+query is in `docs/OBSERVABILITY.md`.
+
+### 3. What is NOT achievable, and why
+
+- **Exemplars are out.** The chosen scope included linking Prometheus
+  histograms to trace ids. **SGLang emits no exemplars** — its `/metrics` has
+  zero exemplar-annotated samples — and Prometheus here runs without
+  `--enable-feature=exemplar-storage`. Enabling the flag would store nothing.
+  This needs upstream support in the engine's metrics layer; it is not a config
+  change we are declining to make.
+- **The engine cannot adopt the gateway's request id.** SGLang generates its
+  own 32-hex rid and ignores any caller-supplied one. In
+  `entrypoints/openai/serving_base.py`, `_generate_request_id_base()` is:
+
+  ```python
+  def _generate_request_id_base(self, request):
+      return None
+      # TODO(chang): the rid is used in io_strcut check and often violates
+      # `The rid should be a list` AssertionError
+      if rid := getattr(request, "rid", None):
+          return rid
+  ```
+
+  An unconditional `return None` in front of the code that would honour it —
+  dead by upstream decision. There is also no `x-request-id` header handling
+  anywhere in `srt/`. So a one-key join to the engine is impossible without
+  patching the engine; the two-hop join above is the correct answer, not a
+  workaround.
 
 ## Rules that hold across every stage
 
