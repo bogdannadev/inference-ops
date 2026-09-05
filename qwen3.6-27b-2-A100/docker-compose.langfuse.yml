@@ -133,6 +133,10 @@ services:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: clickhouse
       CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+      # Consumed by users.d/mcp-readonly.xml through from_env. Absent means the
+      # mcp user simply has no password entry and cannot authenticate, which is
+      # the right failure: admin-mcp stops working, ClickHouse stays closed.
+      MCP_CLICKHOUSE_PASSWORD_SHA256: ${MCP_CLICKHOUSE_PASSWORD_SHA256:-}
       TZ: UTC
 
     volumes:
@@ -149,6 +153,11 @@ services:
       - ./clickhouse/config.d/logging.xml:/etc/clickhouse-server/config.d/logging.xml:ro
       - ./clickhouse/config.d/system-log-ttl.xml:/etc/clickhouse-server/config.d/system-log-ttl.xml:ro
       - ./clickhouse/config.d/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
+      # A read-only identity for admin-mcp. Its password is NOT in this file or
+      # in the XML: the XML reads the sha256 from the environment below, so the
+      # committed config carries no secret. See the file for why readonly=2
+      # rather than 1.
+      - ./clickhouse/users.d/mcp-readonly.xml:/etc/clickhouse-server/users.d/mcp-readonly.xml:ro
 
     ports:
       - "127.0.0.1:8123:8123"

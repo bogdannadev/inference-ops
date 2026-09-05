@@ -348,3 +348,36 @@ langfuse.example.org {
 :2020 {
 	metrics
 }
+
+# -----------------------------------------------------------------------------
+# admin-mcp — the MCP server an admin's Claude client connects to.
+#
+# GATE 1 OF 2. Anthropic publishes the egress range its outbound traffic to
+# customer servers comes from; anything else is refused here, before the request
+# reaches a process that can read the fact table. Gate 2 is the bearer token the
+# server itself checks. Neither is sufficient alone: the allowlist is shared by
+# every Anthropic customer, and a token alone would be exposed to the whole
+# internet.
+#
+# If Anthropic changes that range this route starts 403ing and the connector
+# reports "couldn't reach the MCP server" — check
+# https://platform.claude.com/docs/en/api/ip-addresses before assuming the
+# server is down.
+#
+# NOT for browsers. Claude.ai reaches this server-side, from that range; a
+# browser tab never talks to it directly.
+# -----------------------------------------------------------------------------
+mcp.example.org {
+	tls contact@example.com
+
+	@notanthropic not remote_ip 160.79.104.0/21
+	respond @notanthropic "Not found" 404
+
+	reverse_proxy admin-mcp:8080 {
+		# MCP answers a tools/call either as one JSON object or as an SSE
+		# stream, and the client cannot know which in advance. Buffering would
+		# hold the streamed case until completion, so it is disabled for the
+		# same reason as Grafana and Langfuse above.
+		flush_interval -1
+	}
+}
