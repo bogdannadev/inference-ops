@@ -1202,6 +1202,338 @@
           "range": false
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Engine-side, by consumer",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Engine TTFT p95, by consumer",
+      "description": "Time to first token as the ENGINE measured it: queue wait plus prefill, with no gateway, router or network in it. Compare against 'Mean time to first token, by consumer' above, which is Higress's view of the same moment. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:time_to_first_token_seconds_bucket{consumer!=\"\"}[$__rate_interval])))",
+          "legendFormat": "{{consumer}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Inter-token latency p95, by consumer",
+      "description": "Gap between successive output tokens, per consumer. Nothing else in the stack can produce this: the gateway sees a stream start and a stream end, so a request that stalls halfway through decode looks identical to one that flowed evenly. This is the metric the per-key work was for. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:inter_token_latency_seconds_bucket{consumer!=\"\"}[$__rate_interval])))",
+          "legendFormat": "{{consumer}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prefix cache hit, by consumer",
+      "description": "Share of each consumer's prompt tokens served from the radix cache, derived as 1 - uncached/total. Per-consumer cache behaviour is what decides whether cache_aware routing pays off for them: a consumer with a long stable system prompt should sit near 1, a consumer sending unique prompts near 0. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "1 - sum by (consumer) (rate(sglang:uncached_prompt_tokens_histogram_sum{consumer!=\"\"}[$__rate_interval])) / clamp_min(sum by (consumer) (rate(sglang:prompt_tokens_histogram_sum{consumer!=\"\"}[$__rate_interval])), 1)",
+          "legendFormat": "{{consumer}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Output token rate, by consumer and replica",
+      "description": "Which GPU is doing whose work. The gateway cannot answer this \u2014 it hands every request to one router address and never learns which replica served it \u2014 so this is the only view that ties a consumer to r0 or r1, and the place a routing imbalance shows up per tenant. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer,instance) (rate(sglang:generation_tokens_total{consumer!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{consumer}} @ {{instance}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Edge overhead p95 (gateway minus engine), by consumer",
+      "description": "Whole-request duration at Envoy minus end-to-end latency at the engine: everything spent in TLS, key-auth, the quota plugin, the router and two network hops. Read it as an indicator, not an exact figure \u2014 this is a difference of two p95s, not the p95 of the difference, and the two histograms have different bucket edges. A consumer whose overhead grows while the engine line stays flat has a gateway problem, not a GPU one. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket[$__rate_interval]))) - histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:e2e_request_latency_seconds_bucket{consumer!=\"\"}[$__rate_interval])))",
+          "legendFormat": "{{consumer}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ]
     }
   ]
 }

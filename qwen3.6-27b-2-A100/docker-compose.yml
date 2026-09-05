@@ -647,6 +647,41 @@ services:
     # capability, and stops the value from flipping under us again. The
     # alternative fix (cap_add: SYS_PTRACE) buys a capability we do not need
     # for a code path we never use. Do not remove without re-reading this.
+    #
+    # --tokenizer-metrics-allowed-custom-labels consumer (added 2026-09-05,
+    # BOTH replicas).
+    #
+    # Puts the gateway's consumer name on every tokenizer-side metric, which is
+    # the only way to answer "what is acme's p95 TTFT". Prometheus was blind to
+    # identity before this: all 98 sglang:* families carried engine_type /
+    # instance / is_streaming / model / node and nothing about who asked.
+    #
+    # How it works (serving_base.py::extract_custom_labels, v0.5.19):
+    # the request handler reads the header named by
+    # --tokenizer-metrics-custom-labels-header (default x-custom-labels),
+    # parses it as a JSON object, and keeps ONLY the keys listed here. The
+    # values ride on ReqState and are merged into the metric labels in
+    # tokenizer_manager.collect_metrics. tokenizer_manager also seeds `consumer`
+    # as an empty-string label at startup, so an unlabelled request still lands
+    # in a well-formed series (consumer="") rather than a new one.
+    #
+    # The header is injected by Higress, not by the client:
+    #   higress.io/request-header-control-update on ai-chat / ai-completions
+    #   x-custom-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
+    # Higress renders that annotation into Envoy's request_headers_to_add with
+    # OVERWRITE_IF_EXISTS_OR_ADD, which is what makes this safe: a client that
+    # sends its own x-custom-labels has it REPLACED, so the label value can only
+    # ever be a consumer the gateway itself authenticated. Without that
+    # overwrite the flag would be a cardinality bomb — the allow-list filters
+    # label NAMES, never values.
+    #
+    # The route between them needs no configuration: sgl-model-gateway forwards
+    # every non-hop-by-hop request header to the worker
+    # (routers/header_utils.rs::apply_request_headers).
+    #
+    # Known gap, upstream: observe_one_aborted_request does not take custom
+    # labels ("TODO: also use custom_labels from the request",
+    # tokenizer_manager.py), so aborted requests are still counted globally.
     command: >
       --model-path Qwen/Qwen3.8-27B
       --served-model-name qwen36-27b
@@ -681,6 +716,7 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
+      --tokenizer-metrics-allowed-custom-labels consumer
       --stream-response-default-include-usage
       --enable-forward-pass-metrics
       --enable-trace
@@ -824,6 +860,7 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --enable-cache-report
+      --tokenizer-metrics-allowed-custom-labels consumer
       --stream-response-default-include-usage
       --enable-forward-pass-metrics
       --enable-trace
