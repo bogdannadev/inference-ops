@@ -1218,7 +1218,7 @@
     {
       "type": "timeseries",
       "title": "Engine TTFT p95, by consumer",
-      "description": "Time to first token as the ENGINE measured it: queue wait plus prefill, with no gateway, router or network in it. Compare against 'Mean time to first token, by consumer' above, which is Higress's view of the same moment. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "description": "Time to first token as the ENGINE measured it: queue wait plus prefill, with no gateway, router or network in it. Compare against 'Mean time to first token, by consumer' above, which is Higress's view of the same moment. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1282,7 +1282,7 @@
     {
       "type": "timeseries",
       "title": "Inter-token latency p95, by consumer",
-      "description": "Gap between successive output tokens, per consumer. Nothing else in the stack can produce this: the gateway sees a stream start and a stream end, so a request that stalls halfway through decode looks identical to one that flowed evenly. This is the metric the per-key work was for. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "description": "Gap between successive output tokens, per consumer. Nothing else in the stack can produce this: the gateway sees a stream start and a stream end, so a request that stalls halfway through decode looks identical to one that flowed evenly. This is the metric the per-key work was for. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1346,7 +1346,7 @@
     {
       "type": "timeseries",
       "title": "Prefix cache hit, by consumer",
-      "description": "Share of each consumer's prompt tokens served from the radix cache, derived as 1 - uncached/total. Per-consumer cache behaviour is what decides whether cache_aware routing pays off for them: a consumer with a long stable system prompt should sit near 1, a consumer sending unique prompts near 0. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "description": "Share of each consumer's prompt tokens served from the radix cache, derived as 1 - uncached/total. Per-consumer cache behaviour is what decides whether cache_aware routing pays off for them: a consumer with a long stable system prompt should sit near 1, a consumer sending unique prompts near 0. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1410,7 +1410,7 @@
     {
       "type": "timeseries",
       "title": "Output token rate, by consumer and replica",
-      "description": "Which GPU is doing whose work. The gateway cannot answer this \u2014 it hands every request to one router address and never learns which replica served it \u2014 so this is the only view that ties a consumer to r0 or r1, and the place a routing imbalance shows up per tenant. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "description": "Which GPU is doing whose work. The gateway cannot answer this \u2014 it hands every request to one router address and never learns which replica served it \u2014 so this is the only view that ties a consumer to r0 or r1, and the place a routing imbalance shows up per tenant. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1474,7 +1474,7 @@
     {
       "type": "timeseries",
       "title": "Edge overhead p95 (gateway minus engine), by consumer",
-      "description": "Whole-request duration at Envoy minus end-to-end latency at the engine: everything spent in TLS, key-auth, the quota plugin, the router and two network hops. Read it as an indicator, not an exact figure \u2014 this is a difference of two p95s, not the p95 of the difference, and the two histograms have different bucket edges. A consumer whose overhead grows while the engine line stays flat has a gateway problem, not a GPU one. Empty until both replicas run with --tokenizer-metrics-allowed-custom-labels consumer AND Higress injects x-custom-labels. Requests that did not come through the gateway carry consumer=\"\" and are excluded here.",
+      "description": "Whole-request duration at Envoy minus end-to-end latency at the engine: everything spent in TLS, key-auth, the quota plugin, the router and two network hops. Read it as an indicator, not an exact figure \u2014 this is a difference of two p95s, not the p95 of the difference, and the two histograms have different bucket edges. A consumer whose overhead grows while the engine line stays flat has a gateway problem, not a GPU one. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"

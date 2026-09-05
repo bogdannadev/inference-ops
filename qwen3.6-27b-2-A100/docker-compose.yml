@@ -667,17 +667,33 @@ services:
     #
     # The header is injected by Higress, not by the client:
     #   higress.io/request-header-control-update on ai-chat / ai-completions
-    #   x-custom-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
+    #   x-request-id-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
     # Higress renders that annotation into Envoy's request_headers_to_add with
     # OVERWRITE_IF_EXISTS_OR_ADD, which is what makes this safe: a client that
-    # sends its own x-custom-labels has it REPLACED, so the label value can only
-    # ever be a consumer the gateway itself authenticated. Without that
-    # overwrite the flag would be a cardinality bomb — the allow-list filters
-    # label NAMES, never values.
+    # sends its own copy has it REPLACED, so the label value can only ever be a
+    # consumer the gateway itself authenticated. Without that overwrite the flag
+    # would be a cardinality bomb — the allow-list filters label NAMES, never
+    # values.
     #
-    # The route between them needs no configuration: sgl-model-gateway forwards
-    # every non-hop-by-hop request header to the worker
-    # (routers/header_utils.rs::apply_request_headers).
+    # --tokenizer-metrics-custom-labels-header IS NOT COSMETIC. Its default is
+    # `x-custom-labels`, and that header NEVER ARRIVES: sgl-model-gateway
+    # forwards a hardcoded ALLOW-LIST of request headers to workers on the
+    # typed-request path that /v1/chat/completions takes —
+    # `authorization`, `x-request-id`, `x-correlation-id`, `traceparent`,
+    # `tracestate`, `x-smg-routing-key`, and anything prefixed
+    # `x-request-id-` (routers/header_utils.rs::should_forward_request_header,
+    # which has a unit test asserting exactly that). Everything else is
+    # dropped, silently — measured here 2026-09-05: with the default header
+    # name, a request carrying it straight to a replica labelled correctly and
+    # the same request through the router did not.
+    #
+    # `x-request-id-labels` rides the one prefix on that list. The router's
+    # request-id middleware matches --request-id-headers by EXACT name, so it
+    # does not mistake this for a request id.
+    #
+    # Do NOT read routers/header_utils.rs::apply_request_headers and conclude
+    # headers pass through. That function is permissive, and this path does not
+    # use it.
     #
     # Known gap, upstream: observe_one_aborted_request does not take custom
     # labels ("TODO: also use custom_labels from the request",
@@ -717,6 +733,7 @@ services:
       --enable-mfu-metrics
       --enable-cache-report
       --tokenizer-metrics-allowed-custom-labels consumer
+      --tokenizer-metrics-custom-labels-header x-request-id-labels
       --stream-response-default-include-usage
       --enable-forward-pass-metrics
       --enable-trace
@@ -861,6 +878,7 @@ services:
       --enable-mfu-metrics
       --enable-cache-report
       --tokenizer-metrics-allowed-custom-labels consumer
+      --tokenizer-metrics-custom-labels-header x-request-id-labels
       --stream-response-default-include-usage
       --enable-forward-pass-metrics
       --enable-trace

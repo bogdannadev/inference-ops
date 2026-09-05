@@ -63,9 +63,8 @@ Since Stage D every series carries `node="a100"` and `stack="qwen36-27b"`.
 **Its blind spot, until 2026-09-05:** the 98 engine metrics carried
 `engine_type`, `instance`, `is_streaming`, `model`, `model_name`, `node` and
 nothing about who asked, so "what is acme's p95 TTFT *inside the engine*" had
-no answer. The tokenizer-side metrics now take a `consumer` label — see
-**Per-key engine metrics** at the bottom of this file for the mechanism and the
-rollout state. The scheduler-side metrics (KV pool, queue depth, cache hit rate,
+no answer. The tokenizer-side metrics now carry a `consumer` label — see
+**Per-key engine metrics** at the bottom of this file. The scheduler-side metrics (KV pool, queue depth, cache hit rate,
 MFU) remain node-wide by nature: they describe a shared GPU, not a request.
 
 ### 4. Langfuse — the per-request waterfall, and nothing more
@@ -157,40 +156,62 @@ rollback.
 "is the cache working"            -> sglang:cache_hit_rate, and the routing
                                      evidence in tuning/docs/ROUTING.md
 "who is hammering the node"       -> /top, gateway_tokens_total by consumer
-"what is p95 TTFT for acme"       -> Grafana Usage & Quota, Engine-side row
-                                     (needs the rollout below finished)
+"what is p95 TTFT for acme"       -> Grafana Usage & Quota, Engine-side row,
+                                     or /p95 acme
 ```
 
-## Per-key engine metrics — wired 2026-09-05
+## Per-key engine metrics — live 2026-09-05
 
-The engine can label its own metrics per consumer. As of 2026-09-05 it is
-configured to, and the chain is:
+The engine labels its own metrics per consumer. Verified end to end: a request
+authenticated as `testafter` at the gateway arrives as
+`sglang:num_requests_total{consumer="testafter"}` on the replica that served it.
 
 ```
 client --Authorization: Bearer sk-...--> Higress
    key-auth resolves the consumer, sets X-Mse-Consumer
-   route annotation adds  x-custom-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
+   route annotation adds  x-request-id-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
        (OVERWRITE_IF_EXISTS_OR_ADD -- a client cannot forge it)
---> sgl-model-gateway forwards every non-hop-by-hop header unchanged
+--> sgl-model-gateway forwards it because of the x-request-id- prefix
 --> SGLang extract_custom_labels() parses the JSON, keeps allow-listed keys
---> consumer="acme" on the tokenizer metrics
+--> consumer="testafter" on the tokenizer metrics
 ```
 
-Verified in the v0.5.19 source rather than inferred:
-`entrypoints/openai/serving_base.py::extract_custom_labels` parses the header
-named by `--tokenizer-metrics-custom-labels-header` (default `x-custom-labels`)
-and filters to `--tokenizer-metrics-allowed-custom-labels`;
-`managers/tokenizer_manager.py::collect_metrics` merges those values into the
-label set for **TTFT, inter-token latency, and every metric behind
-`observe_one_finished_request`** (e2e latency, prompt/generation token
-histograms, cached and uncached prompt tokens). The router needs no
-configuration at all: `routers/header_utils.rs::apply_request_headers` forwards
-everything except hop-by-hop headers.
+Config, both replicas:
+`--tokenizer-metrics-allowed-custom-labels consumer`
+`--tokenizer-metrics-custom-labels-header x-request-id-labels`
+Gateway: `./deploy/higress-consumer-label.sh` (routes `ai-chat`, `ai-completions`).
 
-**What this buys that nothing else could.** The gateway already produced
-per-consumer request rate, token counts, status mix and whole-request latency
-(`gateway_*`, from the access log). The engine adds three things the gateway
-structurally cannot see:
+### The header name is load-bearing
+
+**SGLang's default header, `x-custom-labels`, never arrives.** The router
+forwards a hardcoded ALLOW-LIST on the typed-request path that
+`/v1/chat/completions` takes — `authorization`, `x-request-id`,
+`x-correlation-id`, `traceparent`, `tracestate`, `x-smg-routing-key`, and
+anything prefixed `x-request-id-`
+(`routers/header_utils.rs::should_forward_request_header`, which carries a unit
+test asserting exactly that set). Everything else is dropped with no log line.
+
+Do **not** read `routers/header_utils.rs::apply_request_headers` and conclude
+headers pass through. That function is permissive and this path does not use
+it. Reading it instead of probing cost two replica rolls on 2026-09-05.
+
+Measured, in this order:
+
+| probe | result |
+|---|---|
+| straight to a replica, `x-custom-labels` | `consumer="probe-direct"` |
+| through the router, `x-custom-labels` | nothing — dropped |
+| through the router, `x-request-id-labels`, x6 | `consumer="probe-via-router"` 6.0 |
+| through the gateway as `testafter`, x3 | `consumer="testafter"` 3.0 |
+
+The router's request-id middleware matches `--request-id-headers` by exact
+name, so it does not mistake `x-request-id-labels` for a request id.
+
+### What this buys that nothing else could
+
+The gateway already produced per-consumer request rate, token counts, status
+mix and whole-request latency (`gateway_*`, from the access log). The engine
+adds three things the gateway structurally cannot see:
 
 | | why the gateway cannot |
 |---|---|
@@ -199,28 +220,28 @@ structurally cannot see:
 | **Replica attribution per consumer** | it hands every request to one router address and never learns whether r0 or r1 served it |
 
 Panels: Grafana -> *Usage & Quota* -> **Engine-side, by consumer** (5 panels).
+Bot: `/p95` appends an engine block with ttft / itl / e2e.
 
-**Cardinality.** One label value per configured consumer (6 today), plus
-`consumer=""` for anything that did not come through the gateway — health
-probes, benchmarks, direct-hostname traffic. The allow-list filters label
-*names*, never values, so the gateway's `OVERWRITE_IF_EXISTS_OR_ADD` is what
-bounds the value set. Do not expose the engine or the router to clients
-directly while this flag is on.
+Labelled on TTFT, inter-token latency, and everything behind
+`observe_one_finished_request` (e2e latency, prompt and generation token
+histograms, cached and uncached prompt tokens).
+
+### Cardinality, and why it is bounded
+
+One label value per configured consumer (6 today), plus `consumer=""` for
+anything that did not come through the gateway — health probes, benchmarks,
+direct-hostname traffic.
+
+The SGLang allow-list filters label *names*, never values, so nothing in the
+engine stops a client minting values. What bounds them is the gateway's
+`OVERWRITE_IF_EXISTS_OR_ADD`: a client that sends its own `x-request-id-labels`
+has it replaced by the consumer Higress authenticated. **Do not expose the
+router or a replica directly to clients while this flag is on.**
+
+Two `probe-*` label values on r1 are leftovers from the 2026-09-05 verification.
+They are counters on a live process, so they clear on the next roll of r1
+rather than being deletable.
 
 **Known gap, upstream:** `observe_one_aborted_request` does not take custom
 labels (`# TODO: also use custom_labels from the request`,
-tokenizer_manager.py), so aborted requests are still counted without a
-consumer.
-
-**Rollout state, 2026-09-05**
-
-| step | how | state |
-|---|---|---|
-| flag on r1 | `docker-compose.yml`, `./deploy/roll-replica.sh r1` | done, `consumer=""` label confirmed live |
-| flag on r0 | `./deploy/roll-replica.sh r0` | **pending** |
-| gateway header | `./deploy/higress-consumer-label.sh` | **pending** |
-
-Until both are done the panels stay empty, and r0/r1 report asymmetric label
-sets. Neither pending step affects serving: the flag without the header just
-means every request lands in `consumer=""`, and the header without the flag is
-an ignored request header.
+tokenizer_manager.py), so aborted requests are still counted without a consumer.
