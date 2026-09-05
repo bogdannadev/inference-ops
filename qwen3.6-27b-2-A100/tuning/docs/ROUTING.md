@@ -173,3 +173,93 @@ Two things changed the value of routing affinity:
   scheduler. Every load-aware policy here — `power_of_two`, `cache_aware`'s
   balance guard, `min_load` assignment — is reading a number we now know is
   wrong. That is worth fixing before tuning thresholds against it.
+
+---
+
+# Result — step 1 APPLIED 2026-09-05. The root cause was correct.
+
+`--policy cache_aware --balance-abs-threshold 2`, applied to the router command
+block in `docker-compose.yml` and recreated with `docker compose -f
+docker-compose.yml -f docker-compose.metrics.yml -f docker-compose.langfuse.yml
+up -d --no-deps qwen36-27b-router`.
+
+**Control measured the same day, immediately before the change**, so the
+comparison is not against the August figure.
+
+| | round_robin (control) | cache_aware, abs=2 | |
+|---|---|---|---|
+| shared-prefix cache hit | 14,848 / 22,807 = **65.1%** | 22,272 / 22,807 = **97.7%** | **+32.6 pts** |
+| shared-prefix split r0/r1 | 6 / 6 | **10 / 3** | affinity, not starvation |
+| shared-prefix p50 | 2.086 s | 2.087 s | unchanged |
+| shared-prefix max | 3.221 s | **2.507 s** | tail improved |
+| disjoint split | 6 / 6 | 6 / 6 | control holds |
+| disjoint cache hit | 0 / 762 | 0 / 762 | correct |
+| failures | 0 | 0 | |
+
+**The c=2 row — the one that starved 0/122 in July — re-run at concurrency 2:**
+
+```
+shared_prefix  reqs r0/r1=10/2  balance 83%/17%  cached=22272/22807 (97.7%)
+               p50=1.951s  max=2.645s  failed=0
+disjoint       reqs r0/r1=6/6   balance 50%/50%  cached=0/762  failed=0
+```
+
+Both replicas serve. In July this row was **0/122**.
+
+**Both gates pass.** Cache hit is far above the 48.2% that motivated the work,
+and close to the ~91% ceiling implied by "11 of 12 requests hit a warm prefix".
+No replica is starved at c=2 or c=4. Latency did not regress; the tail improved.
+
+This confirms the diagnosis directly: at the default `--balance-abs-threshold`
+of 64 the guard could never fire at our scale, so affinity ran unchecked and
+pinned everything to one worker. At 2 it fires once a worker is two requests
+deeper, and affinity and balance coexist.
+
+## Post-change verification
+
+```
+router health   healthy, same image digest as the compose anchor
+argv            --policy cache_aware --balance-abs-threshold 2
+smg_worker_health{r0} 1      smg_worker_health{r1} 1
+smg_worker_selection_total{policy="cache_aware", model="qwen36-27b"}  48
+smg_router_request_errors_total                                       absent (zero)
+live traffic    200s in the router log, both replicas served
+```
+
+**The tokenizer warning is present and harmless here:**
+
+```
+WARN submit_tokenizer_job: No tokenizer_path or model_path found for model
+     unknown (checked worker labels and router config)
+```
+
+Same warning that made `prefix_hash` fail, but `cache_aware` keys its
+approximate radix tree on request **text**, not tokens, so it needs no
+tokenizer. Workers activate and serve normally. Do not read this as a fault.
+
+## Two things noticed, neither blocking
+
+1. **A second model entry exists.** Selection counters show
+   `model="qwen36-27b"` (48) *and* `model="qwen38-27b"` (1). Some client asks
+   for a name we do not serve as `--served-model-name`. Because `cache_aware`
+   assigns policy **per model**, that client gets its own independent
+   cache-aware tree — served, but a separate namespace that shares no prefix
+   affinity with the main one. Worth tracing to its source.
+2. **The recreate dropped one in-flight request.** Traffic arrives in bursts;
+   the gauge read 0, then 1 again within seconds, so no genuinely quiet window
+   existed. The documented cost was paid once, as expected.
+
+## Still open, unchanged by this
+
+- **Per-person keys (Stage B).** Direct-hostname traffic bypasses the router
+  entirely and gets no affinity at all.
+- **#34608, the per-scheduler load socket.** The balance guard we just tuned
+  prices workers from a router-side in-flight counter that misses
+  direct-hostname traffic and, for streaming responses, is held for the whole
+  response rather than scheduler-occupancy time. **The threshold of 2 is
+  calibrated against a number known to be wrong.** Revisit after the router can
+  read real scheduler load.
+- **Step 2 (`manual` + `x-smg-routing-key`) is not needed for now.**
+  `cache_aware` reached 97.7% with no client changes. Hold step 2 in reserve
+  for many short unrelated sessions, or a shared prefix dominant enough to make
+  the balance guard thrash.
