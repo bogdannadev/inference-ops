@@ -127,6 +127,18 @@ It falls back to hashing the `Authorization` header when no routing key is
 present. The whole team shares one edge key, so every request would hash to the
 **same worker**. That is the July starvation with extra steps.
 
+## Cost of applying any of this
+
+Every option here edits the router's own `command:` block, so it recreates the
+router container. Per `docs/OPERATIONS.md` that **drops in-flight requests on
+both replicas**. It is not a rolling change and it cannot ride along with
+`roll-replica.sh`, which deliberately never touches the router. Take it in a
+quiet window.
+
+Reverting is the same operation in reverse: restore the flag, recreate, one
+more in-flight drop. So "one reversible flag" is accurate about the config and
+not about the blast radius — budget two brief interruptions, not zero.
+
 ## Order of work
 
 1. **`--balance-abs-threshold 2` on `cache_aware`** — one flag, no client

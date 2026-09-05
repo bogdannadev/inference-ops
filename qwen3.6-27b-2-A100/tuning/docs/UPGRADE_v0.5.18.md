@@ -544,6 +544,11 @@ comparison. Not applied. Not new in v0.5.18.
 
 ### Open item — the router is still on the v0.5.17 image
 
+> **CLOSED 2026-09-05.** Verified: the router now runs the same digest as the
+> `x-sglang-image` anchor (v0.5.18). It was recreated at some point after this
+> was written. See `UPGRADE_v0.5.19.md`.
+
+
 `roll-replica.sh` only touches replicas, so `qwen36-27b-router` is still
 running `16aba892…` while the compose anchor now points at `9e148f5a…`. There
 were **no router changes in v0.5.18** (the single "router" hit in the release
