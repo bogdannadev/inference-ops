@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  A read-only ClickHouse identity for admin-mcp.
+
+  WHY A SECOND USER AT ALL. admin-mcp is reachable from the internet (behind
+  Caddy, an IP allowlist and a bearer token) and every one of its ClickHouse
+  tools builds its own SQL from a literal with bound parameters — nothing a
+  client sends is ever concatenated into a query. This user is the layer that
+  holds if that is ever untrue: the process simply has no credential that can
+  write to the trace store or the fact table.
+
+  WHY readonly=2 AND NOT 1. readonly=1 forbids the client from setting ANY
+  query setting, which would reject admin-mcp's own per-query caps
+  (max_execution_time, max_result_rows) with "Cannot modify ... in readonly
+  mode" — the guard would break the thing it was meant to protect. readonly=2
+  still refuses INSERT / ALTER / CREATE / DROP but permits settings, and the
+  <constraints> below cap what those settings can be raised to. So the process
+  can tighten its own limits and cannot loosen them past these.
+
+  The password never appears here. `from_env` reads it at startup from the
+  environment compose passes in, so this file is safe to commit.
+-->
+<clickhouse>
+  <profiles>
+    <mcp_readonly>
+      <readonly>2</readonly>
+      <allow_ddl>0</allow_ddl>
+
+      <!-- A tracing query that reads a hundred million rows is a mistake, not
+           an investigation. These are ceilings, not targets. -->
+      <max_execution_time>30</max_execution_time>
+      <max_result_rows>5000</max_result_rows>
+      <result_overflow_mode>break</result_overflow_mode>
+      <max_memory_usage>2000000000</max_memory_usage>
+      <max_rows_to_read>500000000</max_rows_to_read>
+      <read_overflow_mode>throw</read_overflow_mode>
+
+      <constraints>
+        <max_execution_time><max>30</max></max_execution_time>
+        <max_result_rows><max>5000</max></max_result_rows>
+        <max_memory_usage><max>2000000000</max></max_memory_usage>
+        <max_rows_to_read><max>500000000</max></max_rows_to_read>
+        <readonly><max>2</max></readonly>
+      </constraints>
+    </mcp_readonly>
+  </profiles>
+
+  <users>
+    <mcp>
+      <password_sha256_hex from_env="MCP_CLICKHOUSE_PASSWORD_SHA256"/>
+      <profile>mcp_readonly</profile>
+      <quota>default</quota>
+      <!-- Only reachable on the backend network; there is no published port. -->
+      <networks><ip>::/0</ip></networks>
+      <!-- `gateway` holds the request fact table, `default` holds the Langfuse
+           span tables (events_core / events_full). Nothing else is needed. -->
+      <allow_databases>
+        <database>gateway</database>
+        <database>default</database>
+      </allow_databases>
+    </mcp>
+  </users>
+</clickhouse>
