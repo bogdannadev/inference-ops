@@ -48,6 +48,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 ```
 /keys                       consumers, balances and tiers
 /balance [name]             balance, burn rate and runway
+/key                        pick a consumer from a list — its numbers, and where its traces are
 /tiers                      what each policy tier means
 /tier <name> <tier>         record a consumer's tier
 
@@ -215,6 +216,48 @@ tg-hook.duckdns.org {
 Edit the Caddyfile **in place** — it is a file bind-mount, and a temp-file
 rename swaps the inode so `caddy reload` silently re-reads the stale original.
 Verify through the admin API, not the reload exit code.
+
+## /key — the no-arguments path
+
+Every other per-consumer command needs a name typed correctly, and `/trace`
+needed a request id the operator had to go and find first. `/key` takes no
+arguments: the consumer list *is* the interface. Tap a name, get its numbers;
+tap again for where its traces live, or for a written report.
+`/trace` with no argument lands on the same picker.
+
+The card reads Prometheus only. That is a limit, not an oversight — this bot
+runs on `edge`, and the per-request fact table and the span store are
+backend-only, because an internet-reachable bot with a route to the worker
+ports is a worse trade than an operator pasting one SQL query. So *statistics*
+are answered here in full, and *the trace of one request* is answered with a
+Langfuse link and the query.
+
+Balance and runway come from the ledger; requests, tokens and gateway p95 from
+the access log; ttft, itl, e2e, prefix-cache hit and the replica split from the
+engine itself. The engine block exists only because the tokenizer metrics carry
+a `consumer` label — see `docs/METRICS-ECOSYSTEM.md`.
+
+### The report is written by the node
+
+`Report ↓` sends the consumer's numbers to qwen36-27b through the gateway and
+returns the answer as an HTML file. Three things about it are deliberate:
+
+- **It authenticates with the admin key.** `docs/KEY-TIERS.md` describes the
+  admin tier as management-only; this is the exception, recorded there. It is
+  the only credential the bot holds, and it is metered like any other — about
+  2.5-4k tokens a report against `quota-admin`'s balance.
+- **Thinking is off** (`chat_template_kwargs.enable_thinking = false`).
+  Measured on this node: with it on the model spends its first several hundred
+  tokens deliberating and the HTML arrives truncated; with it off the first
+  character is `<!doctype html>` and a full report is ~2.6k tokens in ~30s.
+- **It runs detached.** The worker gate bounds how many commands run at once,
+  and a 30-second model call has no business holding one of those slots.
+
+The model is given the numbers and told not to invent any; it can still be
+wrong about what they *mean*. The caption on every file says so. If the model
+hits its token ceiling the file gets a red banner at the top rather than
+silently half-rendering.
+
 
 ## Build
 

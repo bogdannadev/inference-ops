@@ -124,7 +124,16 @@ and this deployment has already been bitten once by a stray `key-auth.internal`.
 | **team** | internal humans via OpenCode | 10 M | monthly | 60,000 | 32,768 | normal |
 | **service** | production integrations | 50 M | monthly | 120,000 | 16,384 | normal |
 | **batch** | offline/bulk, latency-tolerant | 100 M | monthly | 30,000 | 70,000 | expected to queue |
-| **admin** | `quota-admin` | n/a | n/a | n/a | n/a | management only, never inference |
+| **admin** | `quota-admin` | n/a | n/a | n/a | n/a | management, plus the bot's own report generation |
+
+**The one exception to "admin never runs inference"** (2026-09-05). The bot's
+`/key → Report` button asks qwen36-27b to write a consumer's report, and
+authenticates that call with `quota-admin` — the only credential the bot holds.
+It is metered like any other consumer: roughly 2.5-4k tokens per report against
+`quota-admin`'s balance, which is why that key is funded rather than zeroed.
+Nothing else about the admin tier changed: it still serves no end users, and a
+report is an operator action, not traffic.
+
 
 ### Why these numbers
 
