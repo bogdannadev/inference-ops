@@ -1,0 +1,61 @@
+{
+  "label": "cacheaware_abs2",
+  "results": [
+    {
+      "workload": "shared_prefix",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 6.46,
+      "ok": 12,
+      "failed": 0,
+      "lat_p50": 2.087,
+      "lat_max": 2.507,
+      "cached_tokens_reported": 22272,
+      "prompt_tokens_reported": 22807,
+      "per_replica": {
+        "r0": {
+          "reqs": 10.0,
+          "prompt_tokens": 19007.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 3.0,
+          "prompt_tokens": 90174.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "77%",
+        "r1": "23%"
+      }
+    },
+    {
+      "workload": "disjoint",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 6.97,
+      "ok": 12,
+      "failed": 0,
+      "lat_p50": 2.214,
+      "lat_max": 2.425,
+      "cached_tokens_reported": 0,
+      "prompt_tokens_reported": 762,
+      "per_replica": {
+        "r0": {
+          "reqs": 6.0,
+          "prompt_tokens": 380.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 6.0,
+          "prompt_tokens": 382.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "50%",
+        "r1": "50%"
+      }
+    }
+  ]
+}
