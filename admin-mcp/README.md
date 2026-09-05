@@ -129,18 +129,29 @@ something measured elsewhere.
 docker compose up -d --build
 ```
 
-Requires, once:
+Both one-time steps are **done** (2026-09-05):
 
-1. `MCP_CLICKHOUSE_PASSWORD_SHA256` in `qwen3.6-27b-2-A100/.env` and one
-   recreate of the ClickHouse container, to create the read-only user.
-   Prometheus-backed tools work without it; the ClickHouse ones return a message
-   saying exactly this.
-2. `caddy reload`. **Edit the Caddyfile in place** — it is a file bind-mount, and
-   a temp-file rename swaps the inode so the reload silently succeeds against
-   the stale config. Verify through the admin API, not the reload exit code.
+1. The read-only ClickHouse user, from
+   `qwen3.6-27b-2-A100/clickhouse/users.d/mcp-readonly.xml` plus
+   `MCP_CLICKHOUSE_PASSWORD_SHA256` in that project's `.env`. Verified by POST,
+   not GET — ClickHouse treats a GET as read-only for *every* user, so a GET
+   test proves nothing about the profile. POST `INSERT` and POST `DROP` both
+   return `Code 164 READONLY`; POST `SELECT` works.
+2. `qw38-27b-mcp.duckdns.org` → 89.250.81.248, and `caddy reload`. Do not
+   reload a site block whose hostname does not resolve yet: Caddy starts an ACME
+   loop it cannot win and the failures count against Let's Encrypt's rate
+   limits, delaying the certificate even after the record appears.
 
-Then in Claude: add a custom connector at `https://qw38-27b-mcp.duckdns.org/mcp`
+**Edit the Caddyfile in place** — it is a file bind-mount, and a temp-file
+rename swaps the inode so the reload silently succeeds against the stale
+config. Verify through the admin API, not the reload's exit code.
+
+In Claude: add a custom connector at `https://qw38-27b-mcp.duckdns.org/mcp`
 with the bearer token from `.env` as an `Authorization` header.
+
+Verified from this host, which is *not* in Anthropic's range: both an
+unauthenticated request and one carrying a valid bearer get `404`. The
+allowlist is the outer gate and the token cannot substitute for it.
 
 ## Build
 
