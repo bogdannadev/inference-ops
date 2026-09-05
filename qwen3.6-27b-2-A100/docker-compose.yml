@@ -201,8 +201,24 @@
 # runtime server_args from /get_server_info between the two builds — `--help`
 # does NOT show defaults that are resolved at startup, which is exactly how
 # v0.5.17 flipped mm_feature_transport underneath us.
-#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.18-cu130
-x-sglang-image: &sglang-image lmsysorg/sglang@sha256:9e148f5ac788e856a06166bd6347a831831eb9fcfab4d1770874823a7c29a1a1
+#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.19-cu130
+#
+# v0.5.19 (2026-09-05). Plan and gates: tuning/docs/UPGRADE_v0.5.19.md
+#   torch 2.13.0 UNCHANGED; only FlashInfer moves, 0.6.17 -> 0.6.18.
+#   The reason to roll: PR #34859 puts our GDN head-group ratio 3
+#   (linear_num_value_heads 48 / linear_num_key_heads 16, across 48 of 64
+#   layers) onto the fused QKVZBA split/reshape/cat path. On v0.5.18 the CUDA
+#   tuple was (1,2,4), so ratio 3 took the unfused fallback -- two
+#   .contiguous() copies plus a torch.cat, every layer, every forward.
+#   Expect <=1%, most likely inside the ~1.5% noise floor, and visible on
+#   prefill/TTFT if anywhere. It is measured, not assumed.
+#
+#   NOTE while r1 is rolled and r0 is not: this anchor is shared by BOTH
+#   replicas AND the router, but roll-replica.sh recreates only the replica
+#   named. r0 and the router keep running v0.5.18 until something recreates
+#   them. That asymmetry IS the A/B window. Do not run a bare
+#   `docker compose up -d` during it.
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
 
 x-replica-common: &replica-common
   image: *sglang-image
