@@ -570,7 +570,7 @@ sealed class Worker(
 
         return cmd switch
         {
-            "/start" or "/help" => new Reply(Help()),
+            "/start" or "/help" => new Reply(HelpText),
             "/status"     => new Reply(await StatusAsync(ct)),
             "/keys"       => new Reply(await KeysAsync(ct)),
             "/balance"    => new Reply(await BalanceAsync(a1, ct)),
@@ -594,47 +594,117 @@ sealed class Worker(
             "/setquota"   => (a1 is null || a2 is null) ? new Reply(Usage("/setquota &lt;name&gt; &lt;tokens&gt;", "/setquota acme 1000000")) : Arm(userId, a1, a2, PendingKind.SetQuota),
             "/clearquota" => a1 is null ? new Reply(Usage("/clearquota &lt;name&gt;", "/clearquota acme")) : Arm(userId, a1, "0", PendingKind.SetQuota),
             "/revoke"     => a1 is null ? new Reply(Usage("/revoke &lt;name&gt;", "/revoke acme")) : Arm(userId, a1, null, PendingKind.Revoke),
-            _             => new Reply($"Unknown command <code>{Esc(Head(cmd))}</code>.\n\nSend /help to see what this bot can do.")
+            // A command that is documented but lands here is a wiring bug,
+            // not user error, and saying so beats "unknown command".
+            _             => new Reply(IsKnownCommand(cmd)
+                                 ? $"<code>{Esc(Head(cmd))}</code> is listed but not wired up. That is a bug in the bot, not in what you typed."
+                                 : $"Unknown command <code>{Esc(Head(cmd))}</code>.\n\nSend /help to see what this bot can do.")
         };
     }
 
-    private static string Help() =>
-        """
-        <b>Gateway access management</b>
+    // ---- command table ----------------------------------------------------
+    //
+    // ONE row per command. /help AND the Telegram menu are both rendered from
+    // this, because they had already drifted: /langfuse shipped in the
+    // dispatcher and in /help but never reached setMyCommands, so it worked
+    // and was invisible in the client's command menu.
+    //
+    // Order here is MENU order — roughly how often an operator reaches for it,
+    // since Telegram shows the list verbatim. /help regroups by Group without
+    // reordering inside a group.
+    //
+    // Group "" hides a row from /help. /start is deliberately absent: it is
+    // Telegram's implicit entry point and a pure alias of /help.
+    //
+    // NOT compiler-enforced: adding a `case` to DispatchAsync without a row
+    // here leaves a command undocumented. The reverse — a row with no case —
+    // IS caught, by the fallback branch of that switch.
+    private sealed record Cmd(
+        string Name, string Group, string Args, string Blurb, string MenuText);
 
-        <b>Who and how much</b>
-        /keys — consumers, balances and tiers
-        /balance [name] — balance, burn rate and runway
-        /tiers — what each policy tier means
-        /tier &lt;name&gt; &lt;tier&gt; — record a consumer's tier
+    private static readonly string[] HelpGroups =
+    [
+        "Who and how much", "What they used", "Is it healthy",
+        "Grant", "Destructive — these ask first"
+    ];
 
-        <b>What they used</b>
-        /usage [1h|24h|7d|30d] — tokens in/out per consumer
-        /top [1h|24h|7d] — busiest consumers, with errors
-        /p95 [name] — latency percentiles, per consumer (gateway + engine)
-        /errors [1h|24h|7d] — status mix per consumer
-        /trace &lt;request-id&gt; — where to look one request up
-        /langfuse — what Langfuse can and cannot tell you
+    private static readonly Cmd[] Commands =
+    [
+        new("status",  "Is it healthy", "", "can I still operate the gateway",
+            "Infrastructure health"),
+        new("keys", "Who and how much", "", "consumers, balances and tiers",
+            "Consumers and their balances"),
+        new("balance", "Who and how much", "[name]",
+            "balance, burn rate and runway", "Balance for one consumer or all"),
+        new("usage", "What they used", "[1h|24h|7d|30d]",
+            "tokens in/out per consumer", "Tokens and requests over a window"),
+        new("health", "Is it healthy", "",
+            "is the stack healthy, and can I believe it",
+            "Stack and telemetry health"),
+        new("alerts", "Is it healthy", "", "what is firing right now",
+            "What is firing right now"),
+        new("top", "What they used", "[1h|24h|7d]",
+            "busiest consumers, with errors", "Busiest consumers over a window"),
+        new("p95", "What they used", "[name]",
+            "latency percentiles, per consumer (gateway + engine)",
+            "Latency percentiles per consumer"),
+        new("errors", "What they used", "[1h|24h|7d]",
+            "status mix per consumer", "Status mix per consumer"),
+        new("tiers", "Who and how much", "", "what each policy tier means",
+            "What each policy tier means"),
+        new("trace", "What they used", "&lt;request-id&gt;",
+            "where to look one request up", "Where to look one request up"),
+        new("langfuse", "What they used", "",
+            "what Langfuse can and cannot tell you",
+            "What Langfuse can and cannot show"),
+        new("tier", "Who and how much", "&lt;name&gt; &lt;tier&gt;",
+            "record a consumer's tier", "Record a consumer's policy tier"),
+        new("newkey", "Grant", "&lt;name&gt; [tokens]",
+            "create a key, seed it, return its OpenCode config",
+            "Create a key and return its OpenCode config"),
+        new("opencode", "Grant", "&lt;name&gt;",
+            "re-send an existing consumer's config",
+            "Re-send a consumer's OpenCode config"),
+        new("topup", "Grant", "&lt;name&gt; &lt;tokens&gt;", "add to a balance",
+            "Add tokens to a consumer"),
+        new("setquota", "Destructive — these ask first",
+            "&lt;name&gt; &lt;tokens&gt;", "<i>replaces</i> a balance",
+            "Overwrite a balance (asks to confirm)"),
+        new("clearquota", "Destructive — these ask first", "&lt;name&gt;",
+            "sets a balance to zero", "Set a balance to zero (asks to confirm)"),
+        new("revoke", "Destructive — these ask first", "&lt;name&gt;",
+            "deletes a key and its balance",
+            "Delete a key and its balance (asks to confirm)"),
+        new("help", "", "", "", "Show all commands")
+    ];
 
-        <b>Is it healthy</b>
-        /status — can I still operate the gateway
-        /health — is the stack healthy, and can I believe it
-        /alerts — what is firing right now
+    private static bool IsKnownCommand(string cmd) =>
+        Commands.Any(c => cmd.Length == c.Name.Length + 1
+                          && cmd.AsSpan(1).SequenceEqual(c.Name));
 
-        <b>Grant</b>
-        /newkey &lt;name&gt; [tokens] — create a key, seed it, return its OpenCode config
-        /opencode &lt;name&gt; — re-send an existing consumer's config
-        /topup &lt;name&gt; &lt;tokens&gt; — add to a balance
+    // Built once. The text is constant, so rendering it per /help would be
+    // pure waste on a command an operator hits repeatedly while learning.
+    private static readonly string HelpText = BuildHelp();
 
-        <b>Destructive — these ask first</b>
-        /setquota &lt;name&gt; &lt;tokens&gt; — <i>replaces</i> a balance
-        /clearquota &lt;name&gt; — sets a balance to zero
-        /revoke &lt;name&gt; — deletes a key and its balance
-
-        Credentials are shown once, by /newkey. /keys lists names only.
-        Quota is a single TOTAL-token balance — input and output are charged
-        the same. See /tiers.
-        """;
+    private static string BuildHelp()
+    {
+        var sb = new StringBuilder("<b>Gateway access management</b>\n");
+        foreach (var group in HelpGroups)
+        {
+            sb.Append("\n<b>").Append(group).Append("</b>\n");
+            foreach (var c in Commands)
+            {
+                if (c.Group != group) continue;
+                sb.Append('/').Append(c.Name);
+                if (c.Args.Length > 0) sb.Append(' ').Append(c.Args);
+                sb.Append(" — ").Append(c.Blurb).Append('\n');
+            }
+        }
+        sb.Append("\nCredentials are shown once, by /newkey. /keys lists names only.\n")
+          .Append("Quota is a single TOTAL-token balance — input and output are charged\n")
+          .Append("the same. See /tiers.");
+        return sb.ToString();
+    }
 
     // ---- reads ------------------------------------------------------------
 
@@ -1625,28 +1695,10 @@ sealed class Worker(
     {
         // Ordered by how often they are reached for, not alphabetically:
         // Telegram shows this list verbatim.
-        BotCommand[] menu =
-        [
-            new("status",     "Infrastructure health"),
-            new("keys",       "Consumers and their balances"),
-            new("balance",    "Balance for one consumer or all"),
-            new("usage",      "Tokens and requests over a window"),
-            new("alerts",     "What is firing right now"),
-            new("health",     "Stack and telemetry health"),
-            new("top",        "Busiest consumers over a window"),
-            new("p95",        "Latency percentiles per consumer"),
-            new("errors",     "Status mix per consumer"),
-            new("tiers",      "What each policy tier means"),
-            new("trace",      "Where to look one request up"),
-            new("tier",       "Record a consumer's policy tier"),
-            new("topup",      "Add tokens to a consumer"),
-            new("newkey",     "Create a key and return its OpenCode config"),
-            new("opencode",   "Re-send a consumer's OpenCode config"),
-            new("setquota",   "Overwrite a balance (asks to confirm)"),
-            new("clearquota", "Set a balance to zero (asks to confirm)"),
-            new("revoke",     "Delete a key and its balance (asks to confirm)"),
-            new("help",       "Show all commands")
-        ];
+        // Rendered from the one command table, in its order — see Commands.
+        var menu = Array.ConvertAll(
+            Array.FindAll(Commands, c => c.MenuText.Length > 0),
+            c => new BotCommand(c.Name, c.MenuText));
         try
         {
             using var content = new StringContent(
