@@ -215,6 +215,8 @@ conversations grouped yet.
                                      AI Gateway; in Langfuse, filter Users
 "I added a key, where is it"      -> already there. Grafana lists it from the
                                      ledger, Langfuse from its first request
+"everything about one key"        -> /key in the bot: pick it from a list, no
+                                     typing. Report writes an HTML file
 ```
 
 ## Per-key engine metrics — live 2026-09-05
