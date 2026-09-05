@@ -1507,7 +1507,7 @@
     {
       "type": "timeseries",
       "title": "Edge overhead p95 (gateway minus engine), by consumer",
-      "description": "Whole-request duration at Envoy minus end-to-end latency at the engine: everything spent in TLS, key-auth, the quota plugin, the router and two network hops. Read it as an indicator, not an exact figure \u2014 this is a difference of two p95s, not the p95 of the difference, and the two histograms have different bucket edges. A consumer whose overhead grows while the engine line stays flat has a gateway problem, not a GPU one. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
+      "description": "Difference of two p95s from histograms with different bucket edges \u2014 an indicator only, and it can go NEGATIVE, which is an artefact rather than the gateway being faster than the engine. MEASURED TRUTH, from duration_ms - llm_ms per request in gateway.requests over 30 days: p50 1ms, p95 3ms, p99 7ms, max 14ms. The gateway filter chain costs single-digit milliseconds. If this panel shows seconds, it is showing quantile arithmetic, not overhead \u2014 go to the fact table.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
