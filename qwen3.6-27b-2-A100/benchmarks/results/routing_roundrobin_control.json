@@ -1,0 +1,61 @@
+{
+  "label": "roundrobin_control",
+  "results": [
+    {
+      "workload": "shared_prefix",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 7.01,
+      "ok": 12,
+      "failed": 0,
+      "lat_p50": 2.086,
+      "lat_max": 3.221,
+      "cached_tokens_reported": 14848,
+      "prompt_tokens_reported": 22807,
+      "per_replica": {
+        "r0": {
+          "reqs": 6.0,
+          "prompt_tokens": 11401.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 6.0,
+          "prompt_tokens": 11406.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "50%",
+        "r1": "50%"
+      }
+    },
+    {
+      "workload": "disjoint",
+      "n": 12,
+      "concurrency": 4,
+      "wall_s": 7.01,
+      "ok": 12,
+      "failed": 0,
+      "lat_p50": 2.16,
+      "lat_max": 2.536,
+      "cached_tokens_reported": 0,
+      "prompt_tokens_reported": 762,
+      "per_replica": {
+        "r0": {
+          "reqs": 6.0,
+          "prompt_tokens": 381.0,
+          "cached_tokens": 0
+        },
+        "r1": {
+          "reqs": 6.0,
+          "prompt_tokens": 381.0,
+          "cached_tokens": 0
+        }
+      },
+      "balance": {
+        "r0": "50%",
+        "r1": "50%"
+      }
+    }
+  ]
+}
