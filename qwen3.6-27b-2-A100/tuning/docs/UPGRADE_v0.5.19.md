@@ -538,16 +538,25 @@ backs out by deleting two flags — it adds no persistent state.
 
 ## Open item carried forward
 
-The **router is still on the v0.5.17 image** (`16aba892…`), per
-`UPGRADE_v0.5.18.md`. `roll-replica.sh` does not touch it, so it is now two
-releases behind the replicas. There were no router changes in v0.5.18; v0.5.19
-does carry Rust-server work (#33370 process-local KV indexer and router
-integration, #37221, #37222, #36920). None of it is required, but the drift is
-now larger. The next `docker compose up -d` will recreate the router onto the
-new digest, and per `docs/OPERATIONS.md` a router restart drops in-flight
-requests on both replicas. Do it deliberately, in a quiet window — and note
-that #34608 (per-scheduler load socket) is the reason to *want* a router
-refresh eventually.
+**Corrected 2026-09-05 — this item is closed.** `UPGRADE_v0.5.18.md` recorded
+the router as still running the v0.5.17 image (`16aba892...`) because
+`roll-replica.sh` does not touch it. Verified today, that is **stale**: the
+router runs `sha256:9e148f5a...`, byte-identical to the `x-sglang-image` anchor,
+i.e. v0.5.18. Something recreated it in the interim (most likely a
+`docker compose up -d` during the metrics campaign). There is no router drift.
+
+What still holds is the operational note in `docs/OPERATIONS.md`: a router
+restart **drops in-flight requests on both replicas**, and it is not needed
+after a roll because the router tracks workers by URL and re-adds a returning
+worker itself. So any change to the router's own command block — including the
+routing-policy work in `ROUTING.md` — must be taken in a quiet window
+deliberately, not folded into a replica roll.
+
+v0.5.19 does carry Rust-server changes (#33370 process-local KV indexer and
+router integration, #35125, #37221, #37222, #36920). None is required. The
+reason to eventually refresh the router is #34608 — the per-scheduler load
+socket — because every load-aware policy currently prices workers from a
+router-side in-flight counter that misses direct-hostname traffic.
 
 ## Sources
 
