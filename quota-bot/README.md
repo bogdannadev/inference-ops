@@ -46,28 +46,28 @@ from it. This block is a copy and can go stale — the bot cannot.
 `/start` is an alias of `/help`.
 
 ```
-/keys                       consumers, balances and tiers
-/balance [name]             balance, burn rate and runway
-/key                        pick a consumer from a list — its numbers, and where its traces are
-/tiers                      what each policy tier means
+/keys                       every key, its balance and tier
+/balance [name]             balances, most urgent first
+/key                        one key: numbers, settings, traces
+/tiers                      tier defaults and what they enforce
 /tier <name> <tier>         record a consumer's tier
-/policy <name>              a consumer's settings, and which come from its tier
-/set <name> <setting> <value|default>   change one setting for one consumer
+/policy <name>              one key's limits, with buttons
+/set <name> <setting> <value|default>   change one setting by typing it
 
-/usage [1h|24h|7d|30d]      tokens in/out per consumer
-/top [1h|24h|7d]            busiest consumers, with errors
-/p95 [name]                 latency percentiles, per consumer (gateway + engine)
-/errors [1h|24h|7d]         status mix per consumer
-/trace <request-id>         where to look one request up
-/langfuse                   what Langfuse can and cannot tell you
-/prices                     reference prices for this model: OpenRouter and Alibaba Cloud
+/usage [1h|24h|7d|30d]      tokens and reference cost per key
+/top [1h|24h|7d]            busiest keys, share and errors
+/p95 [name]                 latency per key, gateway and engine
+/prices                     OpenRouter and Alibaba price table
+/errors [1h|24h|7d]         error answers per key
+/trace <request-id>         find one request, end to end
+/langfuse                   what Langfuse is good for
 
-/status                     can I still operate the gateway
-/health                     is the stack healthy, and can I believe it
+/status                     can I operate the gateway
+/health                     is the stack healthy
 /alerts                     what is firing right now
 
-/newkey [name]              create a key: pick a tier with one tap, adjust anything after
-/opencode <name>            re-send an existing consumer's config
+/newkey [name]              create a key, one tap per tier
+/opencode <name>            re-send a key's config
 /topup <name> <tokens>      add to a balance
 
 /setquota <name> <tokens>   replaces a balance
@@ -80,6 +80,22 @@ returns the same 403 *No quota left* for "never seeded", "exhausted" and "Redis
 is down", so an unseeded key looks broken in a way that wastes an afternoon.
 
 Credentials are printed once, by `/newkey`. `/keys` lists names only.
+
+## Layout on a phone
+
+Every reply was captured through a fake Bot API and checked, because what reads
+well in code does not read well in a 32-column code block. The rules live on
+`Fmt` in bot.cs: a consumer name is never a padded column (it broke on a
+24-character name and ran the numbers together), numbers are compact, a `<pre>`
+table holds only fixed-width label/value pairs, and the explanation goes last in
+an expandable blockquote. `/top`, `/usage`, `/errors` and the key card switch
+window by button, editing the message in place.
+
+To re-run the capture: start a copy of the bot with
+`TELEGRAM_API_BASE=http://<fake>:8081` and a dummy token next to a tiny HTTP
+server that logs each JSON body, POST synthetic updates at its webhook, and
+check every `text` for tag balance, length and `<pre>` width. Do not send
+`/opencode` through it — the capture would hold a real credential.
 
 ## Tiers are defaults; every value can be set per consumer
 
