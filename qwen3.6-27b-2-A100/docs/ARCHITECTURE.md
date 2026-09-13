@@ -83,7 +83,7 @@ bind to `127.0.0.1` only.
 
 Both replicas run byte-identical flags (only `--port` differs) from the same
 digest-pinned engine image. `--context-length 169000`, `--mem-fraction-static
-0.92`, `--max-running-requests 4`, EAGLE 6/5, radix cache
+0.94`, `--max-running-requests 4`, DFlash2 (block 8) + HiCache ratio 3, radix cache
 `--mamba-radix-cache-strategy extra_buffer`. Full flag rationale is inline in
 `docker-compose.yml`.
 

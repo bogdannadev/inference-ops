@@ -666,6 +666,10 @@ a better experiment than the one originally planned.
 
 # HiCache — RETRACTED as a Phase 3 action
 
+> **Superseded 2026-09-13:** the trigger below fired (`token_usage` 1.00 with
+> long interleaved agent sessions). HiCache was re-measured and applied together
+> with DFlash2 — see `HICACHE_DFLASH2.md`.
+
 **The recommendation earlier in this document to enable HiCache at
 `--hicache-ratio 3` is withdrawn.** It was written before finding that
 **HiCache has already been run on this node and removed on measurement.**

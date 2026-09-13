@@ -1,0 +1,72 @@
+{
+ "label": "dflash2_chunk4096",
+ "steps": [
+  {
+   "step": "A_cold",
+   "ttft_s": 14.245,
+   "prompt_tokens": 44993,
+   "cached": null,
+   "cached_details": null,
+   "error": null
+  },
+  {
+   "step": "A_device_hit",
+   "ttft_s": 1.399,
+   "prompt_tokens": 44993,
+   "cached": 44992,
+   "cached_details": null,
+   "error": null
+  },
+  {
+   "step": "evictor_0",
+   "ttft_s": 16.937,
+   "prompt_tokens": 51942,
+   "cached": null,
+   "cached_details": null,
+   "error": null
+  },
+  {
+   "step": "evictor_1",
+   "ttft_s": 17.828,
+   "prompt_tokens": 51923,
+   "cached": null,
+   "cached_details": null,
+   "error": null
+  },
+  {
+   "step": "evictor_2",
+   "ttft_s": 17.839,
+   "prompt_tokens": 51906,
+   "cached": null,
+   "cached_details": null,
+   "error": null
+  },
+  {
+   "step": "evictor_3",
+   "ttft_s": 17.759,
+   "prompt_tokens": 52067,
+   "cached": null,
+   "cached_details": null,
+   "error": null
+  },
+  {
+   "step": "A_after_eviction",
+   "ttft_s": 1.836,
+   "prompt_tokens": 44993,
+   "cached": 44992,
+   "cached_details": null,
+   "error": null
+  }
+ ],
+ "delta": {
+  "evicted_tokens": 155648.0,
+  "cached_host": 44992.0,
+  "cached_device": 44992.0
+ },
+ "verdict": {
+  "cold_ttft_s": 14.245,
+  "after_eviction_ttft_s": 1.836,
+  "speedup": 7.8,
+  "host_hit": true
+ }
+}
