@@ -194,6 +194,28 @@ transforms:
       # _seconds and reads correctly in Grafana without a unit override.
       .duration_s = to_float!(.duration_ms) / 1000.0
 
+      # UNBILLED CUTS. ai-quota charges from the final usage frame, so a request
+      # that ends before it — client disconnect (DC), stream idle timeout (SI),
+      # upstream reset, protocol error or timeout (UC, UPE, UT) — is charged
+      # nothing, and SGLang's token counters skip aborted requests too. Measured
+      # 2026-09-13 with deliberate cuts: 0 charged, 0 on the engine counters.
+      # One consumer had 24 of 666 chat requests end that way, 2,303 s of wall
+      # time. Nothing else in the stack counts them.
+      #
+      # Set on EVERY event, 0 unless it is a cut, and both halves of that are
+      # load-bearing:
+      #   - Prometheus sees no increase in a counter whose first sample is
+      #     already 1, so a series that only appeared on a cut would read as
+      #     zero forever;
+      #   - log_to_metric drops the WHOLE event when any metric's field is
+      #     missing (caught by the unit test), so leaving it unset on ai-models
+      #     would silently cost those requests their requests_total as well.
+      billable = includes(["ai-chat", "ai-completions"], .route)
+      flags = string(.response_flags) ?? ""
+      cut = billable && (int(.total_tokens) ?? 0) == 0 && match(flags, r'(^|,)(DC|SI|UC|UPE|UT)(,|$)')
+      .unbilled_cut = if cut { 1 } else { 0 }
+      .unbilled_cut_s = if cut { .duration_s } else { 0.0 }
+
   gateway_metrics:
     type: log_to_metric
     inputs: [gateway_metric_fields]
@@ -242,6 +264,26 @@ transforms:
           consumer: "{{consumer}}"
           model: "{{model}}"
           direction: output
+
+      # Requests cut off before their usage frame, and their wall time. See
+      # unbilled_cut in gateway_metric_fields.
+      - type: counter
+        field: unbilled_cut
+        name: unbilled_requests_total
+        namespace: gateway
+        increment_by_value: true
+        tags:
+          consumer: "{{consumer}}"
+          route: "{{route}}"
+
+      - type: counter
+        field: unbilled_cut_s
+        name: unbilled_seconds_total
+        namespace: gateway
+        increment_by_value: true
+        tags:
+          consumer: "{{consumer}}"
+          route: "{{route}}"
 
       # The distribution ai-statistics cannot give us. Percentiles are computed
       # by the exporter below, so p95 per consumer becomes a real query.

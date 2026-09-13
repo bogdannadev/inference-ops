@@ -1,13 +1,17 @@
 # Key tiers — draft for review
 
-**Status: tiers are RECORDED, not ENFORCED, as of 2026-09-04.**
+**Status: tiers are RECORDED, not ENFORCED, as of 2026-09-13.**
 
-`/tier <name> <tier>` writes the assignment to `chat_tier:<consumer>` in the
-same Redis as the balances, and `/keys` shows it. Nothing reads it at request
-time: ai-quota still charges a flat input+output total and cannot vary by tier,
-and `ai-token-ratelimit` is bundled but not installed. Recording the intent is
-what makes it reviewable and is the prerequisite for enforcing it — it is not
-the enforcement.
+A tier is a set of DEFAULTS for every setting — quota, refill, daily limit,
+tokens/min, max_tokens — and any one of them can be set on a single consumer
+(`/set <name> <setting> <value>`, stored in `chat_policy:<name>`); `/policy`
+shows each value and whether it follows the tier. The table lives in
+`quota-bot/bot.cs` (`Policy.All`) and is served to admin-mcp from there.
+
+Only the balance is enforced. `quota` seeds a new key's balance. Nothing reads
+refill, daily or tpm at request time: ai-quota charges a flat input+output
+total, `ai-token-ratelimit` is bundled but not installed, and the refill job
+does not exist yet. max_tokens is one global ceiling.
 
 Assigned so far: `quota-admin` → admin, `testafter` → team, `danila` → team.
 `acme` and `legacy-shared` are deliberately unassigned — see "Unassigned" below.
@@ -118,13 +122,19 @@ credential. One consumer per person or per integration; the tier is metadata.
 Multiplying credential *types* would multiply the ways to get key-auth wrong,
 and this deployment has already been bitten once by a stray `key-auth.internal`.
 
-| Tier | For | Quota | Refill | Tokens/min | `max_tokens` | Concurrency posture |
-|---|---|---|---|---|---|---|
-| **trial** | evaluation, unvetted third parties | 100 K | one-shot | 3,000 | 2,048 | may be starved first |
-| **team** | internal humans via OpenCode | 10 M | monthly | 60,000 | 32,768 | normal |
-| **service** | production integrations | 50 M | monthly | 120,000 | 16,384 | normal |
-| **batch** | offline/bulk, latency-tolerant | 100 M | monthly | 30,000 | 70,000 | expected to queue |
-| **admin** | `quota-admin` | n/a | n/a | n/a | n/a | management, plus the bot's own report generation |
+| Tier | For | Quota | Refill | Daily | Tokens/min | `max_tokens` | Concurrency posture |
+|---|---|---|---|---|---|---|---|
+| **trial** | evaluation, unvetted third parties | 100 K | manual | 50 K | 3,000 | 2,048 | may be starved first |
+| **team** | internal humans via OpenCode | 10 M | monthly | 1 M | 60,000 | 32,768 | normal |
+| **service** | production integrations | 50 M | monthly | 5 M | 120,000 | 16,384 | normal |
+| **batch** | offline/bulk, latency-tolerant | 100 M | monthly | 10 M | 30,000 | 70,000 | expected to queue |
+| **admin** | `quota-admin` | n/a | manual | none | none | gateway | management, plus the bot's own report generation |
+
+**Daily is a tenth of the quota**, so one bad day cannot spend a month. Real
+agent traffic runs far above the team row — one consumer used 32.6 M tokens on
+2026-09-12 — so check `/policy` (it flags a consumer over its daily limit)
+before enforcing any of this. **Refill** is `manual` or an automatic reset of the
+balance to quota each day, week or month; unused tokens do not carry over.
 
 **The one exception to "admin never runs inference"** (2026-09-05). The bot's
 `/key → Report` button asks qwen36-27b to write a consumer's report, and
