@@ -87,6 +87,7 @@ top_consumers <window>             ranking by tokens
 node_health                        targets, alerts, throughput, KV pressure
 prometheus_query <promql>          arbitrary instant query, read-only by nature
 list_tiers                         the tier table, for choosing one
+get_policy <name>                  a consumer's settings, and which follow its tier
 ```
 
 Write, each requiring `confirm` to equal the consumer name exactly:
@@ -97,6 +98,7 @@ set_balance   <name> <tokens>            REPLACE a balance
 create_key    <name> [tier] [quota]      new consumer; credential returned ONCE
 revoke_key    <name>                     delete consumer and balance
 set_tier      <name> <tier>              record a tier (bookkeeping, not enforcement)
+set_policy    <name> <field> <value>     change one setting, or 'default' to follow the tier
 ```
 
 `create_key` takes either a **tier** — which seeds the quota from the shared

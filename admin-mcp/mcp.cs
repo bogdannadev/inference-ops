@@ -427,6 +427,16 @@ sealed class ReadTools
         sb.Append("engine_itl_p95_s=").Append(Backends.Num(itl, 4)).Append("   # gap between output tokens\n");
         sb.Append("prefix_cache_hit=").Append(Backends.Num(cache, 3)).Append('\n');
 
+        // Requests cut off before their final usage frame are charged ZERO by
+        // ai-quota, and the engine's token counters skip them too (measured
+        // 2026-09-13). No `or vector(0)`: absent means no data, not none.
+        var cut = await S($"sum(increase(gateway_unbilled_requests_total{sel}[{w}]))");
+        var cutS = await S($"sum(increase(gateway_unbilled_seconds_total{sel}[{w}]))");
+        sb.Append("cut_unbilled_requests=").Append(Backends.Num(cut))
+          .Append("  # client disconnect / stream timeout / upstream error: charged 0 tokens\n");
+        sb.Append("cut_unbilled_seconds=").Append(Backends.Num(cutS))
+          .Append("  # their wall time; the engine may have generated for up to this long\n");
+
         // THE LEDGER DOES NOT MEASURE COST. ai-quota deducts a flat
         // input+output total and cannot be configured to weight them, but an
         // output token costs ~68x an uncached input token and ~4800x a cached
@@ -700,13 +710,13 @@ sealed class WriteTools
 sealed class KeyTools
 {
     [McpServerTool(Name = "list_tiers", ReadOnly = true)]
-    [Description("The policy tiers a new consumer can be given, with what each is "
-        + "for and the token quota it seeds. CALL THIS BEFORE create_key and "
-        + "recommend a tier that matches the stated use case rather than inventing "
-        + "a quota. Quota and tokens_per_minute are RECORDED, not enforced: ai-quota "
-        + "deducts a flat input+output total and cannot vary by tier, and the "
-        + "rate-limit plugin is bundled but not installed. So a tier sets the "
-        + "starting balance and documents intent; it does not throttle anyone.")]
+    [Description("The policy tiers a new consumer can be given: for each, what it is for "
+        + "and its DEFAULT quota, refill, daily limit, tokens per minute and max_tokens. "
+        + "CALL THIS BEFORE create_key and recommend a tier that matches the stated use "
+        + "case rather than inventing numbers. Every value is a default that can be "
+        + "changed per consumer with set_policy. Only quota is applied, as a new key's "
+        + "starting balance; fields suffixed _NOT_ENFORCED / _NOT_RUNNING are recorded "
+        + "and enforced by nothing yet, so never quote them to a consumer as limits.")]
     public static async Task<string> ListTiers(
         Backends b, IHttpClientFactory http, CancellationToken ct)
     {
@@ -818,5 +828,65 @@ sealed class KeyTools
         return r.IsSuccessStatusCode
             ? body
             : $"Not set. quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 400)}";
+    }
+
+    [McpServerTool(Name = "get_policy", ReadOnly = true)]
+    [Description("One consumer's effective settings — quota, refill, daily, tpm, max_tokens — "
+        + "each with its value and its source: 'tier' when it follows the consumer's tier, "
+        + "'set' when it was set on this consumer by hand, 'none' when the consumer has no "
+        + "tier and nothing set. Each also says whether it is enforced; today only the "
+        + "balance is.")]
+    public static async Task<string> GetPolicy(
+        Backends b, IHttpClientFactory http,
+        [Description("Consumer name.")] string name,
+        CancellationToken ct)
+    {
+        if (b.Cfg.BotSecret.Length == 0)
+            return "Key lifecycle is not configured: ADMIN_API_SECRET is unset.";
+        if (!Backends.SafeName(name)) return $"Not a valid consumer name: {name}";
+
+        using var c = http.CreateClient("bot");
+        using var r = await c.GetAsync($"admin/policy/{Uri.EscapeDataString(name)}", ct);
+        var body = await r.Content.ReadAsStringAsync(ct);
+        return r.IsSuccessStatusCode
+            ? body
+            : $"quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 400)}";
+    }
+
+    [McpServerTool(Name = "set_policy", Destructive = false, Idempotent = true)]
+    [Description("Change ONE setting for one consumer, or put it back to its tier's value "
+        + "with value 'default'. Settings: quota (tokens a refill grants), refill (manual, "
+        + "daily, weekly, monthly), daily (tokens per UTC day, 0 = no limit), tpm (tokens "
+        + "per minute, 0 = no limit), max_tokens (0 = gateway ceiling). Amounts accept "
+        + "2000000, 2M or 500k. This NEVER changes a balance — use set_balance or "
+        + "topup_balance for that — and apart from the balance nothing here is enforced "
+        + "yet. Returns the consumer's whole effective policy. Requires confirm to equal "
+        + "the name exactly.")]
+    public static async Task<string> SetPolicy(
+        Backends b, IHttpClientFactory http,
+        [Description("Consumer name.")] string name,
+        [Description("quota, refill, daily, tpm or max_tokens.")] string field,
+        [Description("The new value, or 'default' to follow the tier again.")] string value,
+        [Description("Must equal the name exactly, or the call is refused.")] string confirm,
+        CancellationToken ct)
+    {
+        if (!b.Cfg.WritesEnabled)
+            return "Writes are disabled on this server (MCP_WRITES_ENABLED is not true).";
+        if (b.Cfg.BotSecret.Length == 0)
+            return "Key lifecycle is not configured: ADMIN_API_SECRET is unset.";
+        if (!Backends.SafeName(name)) return $"Not a valid consumer name: {name}";
+        if (!string.Equals(confirm, name, StringComparison.Ordinal))
+            return $"Refused: confirm must be exactly \"{name}\".";
+
+        var payload = new JsonObject { ["name"] = name, ["field"] = field, ["value"] = value };
+        using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        using var c = http.CreateClient("bot");
+        using var r = await c.PostAsync("admin/policy", content, ct);
+        var body = await r.Content.ReadAsStringAsync(ct);
+        if (!r.IsSuccessStatusCode)
+            return $"Not set. quota-bot returned HTTP {(int)r.StatusCode}: {Backends.Trim(body, 400)}";
+
+        await b.AuditAsync($"set_policy name={name} field={field} value={value}", ct);
+        return body;
     }
 }

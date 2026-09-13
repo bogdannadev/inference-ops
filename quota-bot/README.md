@@ -51,6 +51,8 @@ from it. This block is a copy and can go stale — the bot cannot.
 /key                        pick a consumer from a list — its numbers, and where its traces are
 /tiers                      what each policy tier means
 /tier <name> <tier>         record a consumer's tier
+/policy <name>              a consumer's settings, and which come from its tier
+/set <name> <setting> <value|default>   change one setting for one consumer
 
 /usage [1h|24h|7d|30d]      tokens in/out per consumer
 /top [1h|24h|7d]            busiest consumers, with errors
@@ -63,7 +65,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 /health                     is the stack healthy, and can I believe it
 /alerts                     what is firing right now
 
-/newkey <name> [tokens]     create a key, seed it, return its OpenCode config
+/newkey [name]              create a key: pick a tier with one tap, adjust anything after
 /opencode <name>            re-send an existing consumer's config
 /topup <name> <tokens>      add to a balance
 
@@ -77,6 +79,45 @@ returns the same 403 *No quota left* for "never seeded", "exhausted" and "Redis
 is down", so an unseeded key looks broken in a way that wastes an afternoon.
 
 Credentials are printed once, by `/newkey`. `/keys` lists names only.
+
+## Tiers are defaults; every value can be set per consumer
+
+A tier carries a default for every setting — `quota`, `refill`, `daily`,
+`tpm`, `max_tokens` — and a consumer stores only the values set on it by hand,
+in `chat_policy:<name>` next to its balance. The effective value is the
+hand-set one if present, the tier's otherwise. So changing a tier default moves
+everyone still following it, a hand-set value survives a tier change, and
+`/set <name> <setting> default` puts one back. `/policy` and the key card's
+**Settings** button show each value with where it came from; `/keys` stars any
+consumer with something set by hand. The same model is served at
+`GET /admin/policy/<name>` and `POST /admin/policy` for admin-mcp.
+
+**Everything is a button.** `/newkey <name>` answers with one button per tier;
+one tap creates the key with that tier's defaults and returns its config
+(`/newkey` alone asks for the name first; `/newkey <name> <tokens>` is the old
+untiered form). The credential message offers **Settings**, which opens a
+screen where every value is a button: tap one for presets, *Tier default* or
+*Custom…* (the bot asks, the next plain message answers, any command cancels).
+Settings screens edit themselves in place; the credential message is never
+edited, so the key cannot be scrolled or edited away. Balance buttons are money,
+so each is a single-use token bound to the operator: a double tap on +10M adds
+10M once, and *Set to quota* still asks first.
+
+**Only the balance is enforced.** `quota` seeds a new key and never moves a live
+balance; `refill`, `daily` and `tpm` wait on the refill job and
+ai-token-ratelimit, and `max_tokens` is one global ceiling. Every surface says
+so per setting. `/policy` also shows today's UTC usage against the daily limit,
+so what enforcement would do to a consumer is visible before it is switched on.
+
+## Requests cut off are charged nothing
+
+ai-quota charges from the final usage frame. A request that ends before it —
+client disconnect, stream idle timeout, upstream error — is charged zero, and
+SGLang's own token counters skip aborted requests too. Measured 2026-09-13 with
+deliberate cuts; one consumer had 24 of 666 chat requests end that way. Vector
+counts them as `gateway_unbilled_{requests,seconds}_total` (see
+`vector/vector.yaml`, tests in `vector/vector_test.yaml`), and the key card,
+the written report and admin-mcp's `consumer_stats` show them.
 
 ## Quota is one total-token number
 

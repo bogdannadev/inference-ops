@@ -398,29 +398,113 @@ if (cfg.AdminApiSecret.Length >= 32)
     {
         if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
         var arr = new JsonArray();
-        // Enforcement is STRUCTURAL here, not a note in prose. Of the three
-        // numbers a tier carries, only `quota` is applied: ai-quota seeds and
-        // deducts against it. tokens_per_minute needs ai-token-ratelimit, which
-        // is bundled and not installed; max_tokens is capped globally at 70000
-        // by request-validation and does not vary per tier. A field that is
-        // read as a promise and enforced by nothing ends up quoted to a
-        // customer, so each row says which of its own numbers are real.
-        foreach (var (name, t) in Worker.Tiers)
+        // Enforcement is STRUCTURAL here, not a note in prose. Only `quota` is
+        // applied, and only as the starting balance of a new key; everything
+        // else a tier carries is recorded until the gateway rate limiter and the
+        // refill job exist. A field that is read as a promise and enforced by
+        // nothing ends up quoted to a customer, so every unenforced field says
+        // so in its own name, not only in the note.
+        foreach (var t in Policy.All)
             arr.Add((JsonNode)new JsonObject
             {
-                ["tier"] = name,
+                ["tier"] = t.Name,
+                ["for"] = t.For,
                 ["quota"] = t.Quota,
+                ["refill_NOT_RUNNING"] = Policy.RefillName(t.Refill),
+                ["daily_limit_NOT_ENFORCED"] = t.Daily,
                 ["tokens_per_minute_NOT_ENFORCED"] = t.Tpm,
                 ["max_tokens_NOT_ENFORCED"] = t.MaxTokens,
-                ["for"] = t.For,
                 ["enforced"] = new JsonArray { (JsonNode)"quota" },
-                ["note"] = "Only `quota` is applied. tokens_per_minute needs the "
-                         + "ai-token-ratelimit plugin, which is bundled but not installed. "
-                         + "max_tokens is a single global 70000 ceiling, not per-tier. "
+                ["note"] = "Only `quota` is applied, as the starting balance of a new key. "
+                         + "0 means no limit for daily_limit and tokens_per_minute, and the "
+                         + $"gateway's global {cfg.OutputLimit} ceiling for max_tokens. Every value "
+                         + "can be overridden per consumer (POST /admin/policy). "
                          + "Do not quote the unenforced numbers to a consumer as limits.",
             });
         return Results.Text(arr.ToJsonString(), "application/json");
     });
+
+    // One consumer's effective settings: each value, and whether it comes from
+    // the tier or was set on this consumer by hand.
+    app.MapGet("/admin/policy/{name}", async (string name, HttpRequest req, KeyStore keys,
+                                              Ledger ledger, CancellationToken ct) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+        if (!Worker.IsValidName(name)) return J(400, new JsonObject { ["error"] = "invalid name" });
+        if (!(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return J(404, new JsonObject { ["error"] = $"no consumer named '{name}'" });
+
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        await Task.WhenAll(tierT, ovT);
+        return J(200, PolicyJson(name, tierT.Result, ovT.Result));
+    });
+
+    // Set one value on one consumer, or put it back to the tier's with
+    // "default". Never moves a balance: quota is what a refill grants, and the
+    // balance is changed only by an explicit top-up or set.
+    app.MapPost("/admin/policy", async (HttpRequest req, KeyStore keys, Ledger ledger,
+                                        CancellationToken ct) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+
+        JsonNode? body;
+        try { body = await JsonNode.ParseAsync(req.Body, cancellationToken: ct); }
+        catch (JsonException) { return J(400, new JsonObject { ["error"] = "malformed JSON body" }); }
+
+        var name = body?["name"]?.GetValue<string>() ?? "";
+        var fieldArg = body?["field"]?.GetValue<string>() ?? "";
+        var valueArg = body?["value"]?.ToString() ?? "";
+        if (!Worker.IsValidName(name)) return J(400, new JsonObject { ["error"] = "invalid name" });
+        if (Policy.Field(fieldArg) is not { } field)
+            return J(400, new JsonObject
+            {
+                ["error"] = $"unknown field '{fieldArg}'",
+                ["known"] = new JsonArray(Policy.Fields.Select(f => (JsonNode)f.Key).ToArray()),
+            });
+        if (!(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return J(404, new JsonObject { ["error"] = $"no consumer named '{name}'" });
+
+        string? stored = null;
+        if (!Policy.IsDefaultWord(valueArg)
+            && !Policy.TryNormalise(field, valueArg, cfg.OutputLimit, out stored, out var why))
+            return J(400, new JsonObject { ["error"] = why });
+
+        var before = await ledger.OverridesAsync(name, ct);
+        if (stored is null) await ledger.ClearOverrideAsync(name, field.Key, ct);
+        else await ledger.SetOverrideAsync(name, field.Key, stored, ct);
+
+        await File.AppendAllTextAsync(cfg.AuditPath,
+            $"{DateTimeOffset.UtcNow:O} admin-api policy name={name} field={field.Key} "
+          + $"from={before.GetValueOrDefault(field.Key, "tier")} to={stored ?? "tier"}\n", ct);
+
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        await Task.WhenAll(tierT, ovT);
+        return J(200, PolicyJson(name, tierT.Result, ovT.Result));
+    });
+
+    JsonObject PolicyJson(string name, string? tier, Dictionary<string, string> overrides)
+    {
+        var settings = new JsonObject();
+        foreach (var r in Policy.Resolve(tier, overrides))
+            settings[r.Field.Key] = new JsonObject
+            {
+                ["value"] = r.Value,
+                ["shown"] = r.Value is null ? "unset" : Policy.Show(r.Field, r.Value, cfg.OutputLimit),
+                ["source"] = r.Source,
+                ["enforced"] = r.Field.Enforced,
+                ["status"] = r.Field.Status,
+            };
+        return new JsonObject
+        {
+            ["name"] = name,
+            ["tier"] = tier ?? "unassigned",
+            ["settings"] = settings,
+            ["note"] = "source is 'tier' when the value follows the tier and 'set' when it was "
+                     + "set on this consumer. Only the balance is enforced today.",
+        };
+    }
 
     app.MapPost("/admin/keys", async (HttpRequest req, KeyStore keys, Ledger ledger,
                                       IHttpClientFactory http, CancellationToken ct) =>
@@ -442,10 +526,10 @@ if (cfg.AdminApiSecret.Length >= 32)
         // required, and the default matches what /newkey has always used.
         if (tier is { Length: > 0 })
         {
-            if (!Worker.Tiers.TryGetValue(tier, out var t))
+            if (!Policy.Tiers.TryGetValue(tier, out var t))
             {
                     var known = new JsonArray();
-                    foreach (var k in Worker.Tiers.Keys) known.Add((JsonNode)k!);
+                    foreach (var k in Policy.Tiers.Keys) known.Add((JsonNode)k!);
                     return J(400, new JsonObject
                     {
                         ["error"] = $"unknown tier '{tier}'",
@@ -533,10 +617,10 @@ if (cfg.AdminApiSecret.Length >= 32)
         var name = body?["name"]?.GetValue<string>() ?? "";
         var tier = body?["tier"]?.GetValue<string>() ?? "";
         if (!Worker.IsValidName(name)) return J(400, new JsonObject { ["error"] = "invalid name" });
-        if (!Worker.Tiers.ContainsKey(tier))
+        if (!Policy.Tiers.ContainsKey(tier))
         {
             var known = new JsonArray();
-            foreach (var k in Worker.Tiers.Keys) known.Add((JsonNode)k!);
+            foreach (var k in Policy.Tiers.Keys) known.Add((JsonNode)k!);
             return J(400, new JsonObject { ["error"] = $"unknown tier '{tier}'", ["known"] = known });
         }
 
@@ -548,13 +632,13 @@ if (cfg.AdminApiSecret.Length >= 32)
         await File.AppendAllTextAsync(cfg.AuditPath,
             $"{DateTimeOffset.UtcNow:O} admin-api tier name={name} tier={tier}\n", ct);
 
-        // Recorded, not enforced — the same caveat /tier carries. ai-quota
-        // deducts a flat total and cannot vary by tier, and the rate-limit
-        // plugin is bundled but not installed.
-        return J(200, new JsonObject { ["name"] = name, ["tier"] = tier, ["enforced"] = false });
+        // Recorded, not enforced — the same caveat /tier carries. The response
+        // is the consumer's whole effective policy, so a caller sees at once
+        // which values the new tier moved and which were set by hand and kept.
+        return J(200, PolicyJson(name, tier, await ledger.OverridesAsync(name, ct)));
     });
 
-    log.LogInformation("admin API mapped at /admin/* (create, revoke, tier)");
+    log.LogInformation("admin API mapped at /admin/* (create, revoke, tier, policy)");
 }
 else if (cfg.AdminApiSecret.Length > 0)
 {
@@ -640,6 +724,9 @@ sealed class Worker(
     // that travels in the button's callback_data. In memory on purpose: a
     // restart drops them, which fails in the safe direction.
     private readonly ConcurrentDictionary<string, Pending> _pending = new();
+
+    // Questions awaiting a typed answer, one per operator. See PendingInput.
+    private readonly ConcurrentDictionary<long, PendingInput> _inputs = new();
 
     // Bounds how many updates are handled at once. Eight is far more than a
     // handful of operators will ever generate; the point is that the limit
@@ -731,7 +818,23 @@ sealed class Worker(
 
         var started = Stopwatch.GetTimestamp();
         var command = Head(text);
-        var reply = await DispatchWithTypingAsync(msg.Chat.Id, msg.From.Id, text.Trim(), ct);
+
+        // A question the bot asked is answered by the next plain text. Any
+        // command abandons it, so a forgotten prompt can never swallow a later
+        // /topup's arguments.
+        Reply reply;
+        if (text.StartsWith('/'))
+        {
+            _inputs.TryRemove(msg.From.Id, out _);
+            reply = await DispatchWithTypingAsync(msg.Chat.Id, msg.From.Id, text.Trim(), ct);
+        }
+        else if (_inputs.TryRemove(msg.From.Id, out var input) && DateTimeOffset.UtcNow <= input.Expires)
+        {
+            command = $"(answer to {input.Kind})";
+            reply = await AnswerInputAsync(msg.From.Id, input, text.Trim(), ct);
+        }
+        else
+            reply = await DispatchWithTypingAsync(msg.Chat.Id, msg.From.Id, text.Trim(), ct);
         var worked = Stopwatch.GetElapsedTime(started);
         if (reply.Text is { Length: > 0 }) await SendAsync(msg.Chat.Id, reply, ct);
 
@@ -779,6 +882,7 @@ sealed class Worker(
         if (data.StartsWith("kc:", StringComparison.Ordinal)
             || data.StartsWith("kt:", StringComparison.Ordinal)
             || data.StartsWith("kr:", StringComparison.Ordinal)
+            || data.StartsWith("kp:", StringComparison.Ordinal)
             || data == "kl:")
         {
             var reply = await KeyCallbackAsync(data, chatId.Value, ct);
@@ -787,20 +891,35 @@ sealed class Worker(
             return;
         }
 
+        // Settings screens. They EDIT the message they were tapped on, so a
+        // run of changes is one screen rather than a scroll of stale copies.
+        // Also not token-bound: each tap is one idempotent write of a policy
+        // value (set X to 2M twice is set X to 2M), audited, and repeatable by
+        // any allowlisted operator with /set anyway. Money is not in here —
+        // balance buttons go through the token path below.
+        if (data.Length > 3 && data[0] == 'p' && data[2] == ':')
+        {
+            var (reply, edit) = await PolicyCallbackAsync(data, cb.From.Id, ct);
+            await AnswerCallbackAsync(cb.Id, ct);
+            if (edit) await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            else await SendAsync(chatId.Value, reply, ct);
+            return;
+        }
+
         var token = data.Length > 3 ? data[3..] : "";
         _pending.TryRemove(token, out var p);
 
-        string text;
-        if (p is null) text = "That confirmation is no longer valid. Run the command again.";
+        Reply result;
+        if (p is null) result = new Reply("That button is no longer valid. Run the command again.");
         // The token is bound to the user who armed it, so one operator cannot
         // confirm another's pending destructive action from a shared screen.
-        else if (p.UserId != cb.From.Id) text = "That confirmation belongs to someone else.";
-        else if (DateTimeOffset.UtcNow > p.Expires) text = "Confirmation expired. Nothing was changed.";
-        else if (!data.StartsWith("ok:", StringComparison.Ordinal)) text = "Cancelled. Nothing was changed.";
-        else text = await p.Run(ct);
+        else if (p.UserId != cb.From.Id) result = new Reply("That confirmation belongs to someone else.");
+        else if (DateTimeOffset.UtcNow > p.Expires) result = new Reply("That button expired. Nothing was changed.");
+        else if (!data.StartsWith("ok:", StringComparison.Ordinal)) result = new Reply("Cancelled. Nothing was changed.");
+        else result = await p.Run(ct);
 
         await AnswerCallbackAsync(cb.Id, ct);
-        await SendAsync(chatId.Value, new Reply(text), ct);
+        await SendAsync(chatId.Value, result, ct);
     }
 
     private async Task<Reply> DispatchAsync(long userId, string text, CancellationToken ct)
@@ -829,11 +948,22 @@ sealed class Worker(
             // this consumer", not a request id they would have to go and find
             // first. Falling back to the picker beats a usage hint.
             "/trace"      => a1 is null ? await KeyPickerAsync(ct) : new Reply(TraceHelp(a1)),
-            "/tier"       => new Reply((a1 is null || a2 is null)
-                                 ? Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service")
-                                 : await TierAsync(a1, a2, ct)),
+            "/tier"       => (a1 is null || a2 is null)
+                                 ? new Reply(Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service"))
+                                 : await TierAsync(a1, a2, ct),
+            "/policy"     => a1 is null ? await KeyPickerAsync(ct) : await PolicyCardAsync(a1, null, ct),
+            "/set"        => (a1 is null || a2 is null || parts.Length < 4)
+                                 ? new Reply(Usage("/set &lt;name&gt; &lt;quota|refill|daily|tpm|max_tokens&gt; &lt;value|default&gt;",
+                                                   "/set acme daily 2M"))
+                                 : await SetPolicyAsync(a1, a2, parts[3], ct),
             "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
-            "/newkey"     => new Reply(a1 is null ? Usage("/newkey &lt;name&gt; [quota]", "/newkey acme 1000000") : await NewKeyAsync(a1, a2, ct)),
+            // No name: ask for one. Name only: tier buttons, one tap creates.
+            // Name and a number: the original untiered form, kept for scripts
+            // and muscle memory.
+            "/newkey"     => a1 is null ? AskInput(userId, InputKind.NewKeyName, "", null,
+                                              "Send the new key's name: 1–32 characters of lowercase letters, digits, <code>-</code> or <code>_</code>.")
+                           : a2 is null ? await NewKeyPickerAsync(userId, a1.ToLowerInvariant(), ct)
+                           : await NewKeyAsync(a1, null, a2, ct),
             "/topup"      => new Reply((a1 is null || a2 is null) ? Usage("/topup &lt;name&gt; &lt;tokens&gt;", "/topup acme 500000") : await TopUpAsync(a1, a2, ct)),
             "/setquota"   => (a1 is null || a2 is null) ? new Reply(Usage("/setquota &lt;name&gt; &lt;tokens&gt;", "/setquota acme 1000000")) : Arm(userId, a1, a2, PendingKind.SetQuota),
             "/clearquota" => a1 is null ? new Reply(Usage("/clearquota &lt;name&gt;", "/clearquota acme")) : Arm(userId, a1, "0", PendingKind.SetQuota),
@@ -906,9 +1036,15 @@ sealed class Worker(
             "What Langfuse can and cannot show"),
         new("tier", "Who and how much", "&lt;name&gt; &lt;tier&gt;",
             "record a consumer's tier", "Record a consumer's policy tier"),
-        new("newkey", "Grant", "&lt;name&gt; [tokens]",
-            "create a key, seed it, return its OpenCode config",
-            "Create a key and return its OpenCode config"),
+        new("policy", "Who and how much", "&lt;name&gt;",
+            "a consumer's settings, and which come from its tier",
+            "A consumer's settings and their source"),
+        new("set", "Who and how much", "&lt;name&gt; &lt;setting&gt; &lt;value|default&gt;",
+            "change one setting for one consumer",
+            "Change one setting for one consumer"),
+        new("newkey", "Grant", "[name]",
+            "create a key: pick a tier with one tap, adjust anything after",
+            "Create a key: one tap per tier"),
         new("opencode", "Grant", "&lt;name&gt;",
             "re-send an existing consumer's config",
             "Re-send a consumer's OpenCode config"),
@@ -1073,8 +1209,10 @@ sealed class Worker(
         var balancesT = ledger.ListAsync(ct);
         var tiersT = ledger.TiersAsync(ct);
         var consumersT = keys.ReadConsumersAsync(ct);
-        await Task.WhenAll(balancesT, tiersT, consumersT);
+        var overriddenT = ledger.OverriddenAsync(ct);
+        await Task.WhenAll(balancesT, tiersT, consumersT, overriddenT);
         var balances = balancesT.Result; var tiers = tiersT.Result; var consumers = consumersT.Result;
+        var overridden = overriddenT.Result;
 
         if (consumers.Count == 0)
             return "No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.";
@@ -1088,12 +1226,17 @@ sealed class Worker(
             // "-" rather than a guessed default: an unassigned consumer is a
             // real state and should look like one.
             var tier = tiers.GetValueOrDefault(name, "\u2014");
+            // A star rather than a column: most consumers follow their tier,
+            // and the ones that do not are the ones worth a second look.
+            if (overridden.Contains(name)) tier += "*";
             return $"{name,-16}{bal,14}  {tier}";
         });
 
         var untiered = consumers.Keys.Count(n => !tiers.ContainsKey(n));
         var body = Table($"<b>Consumers</b> ({consumers.Count})", new[] { header }.Concat(rows))
                  + "\nCredentials are not shown. Use /opencode &lt;name&gt;.";
+        if (consumers.Keys.Any(overridden.Contains))
+            body += "\n<i>* has settings changed from its tier \u2014 /policy &lt;name&gt;.</i>";
         if (untiered > 0)
             body += $"\n<i>{untiered} without a tier \u2014 set with /tier &lt;name&gt; &lt;tier&gt;.</i>";
         return body;
@@ -1200,17 +1343,52 @@ sealed class Worker(
 
     // ---- key lifecycle ----------------------------------------------------
 
-    private async Task<string> NewKeyAsync(string name, string? quotaArg, CancellationToken ct)
+    private static string NameProblem(string name) =>
+        $"<code>{Esc(Head(name))}</code> is not a valid name.\n\nUse 1\u201332 characters: lowercase letters, digits, <code>-</code> or <code>_</code>.";
+
+    private static string AlreadyExists(string name) =>
+        $"<b>{Esc(name)}</b> already exists.\n\nUse <code>/opencode {Esc(name)}</code> to re-send its config, or <code>/revoke {Esc(name)}</code> to replace it.";
+
+    // Step one of the one-tap flow: a button per tier, each carrying a
+    // single-use token. The name is checked now so a bad one fails before the
+    // operator picks anything, and checked again at creation because ten
+    // minutes is long enough for someone else to take it.
+    private async Task<Reply> NewKeyPickerAsync(long userId, string name, CancellationToken ct)
     {
-        if (!IsValidName(name))
-            return $"<code>{Esc(name)}</code> is not a valid name.\n\nUse 1\u201332 characters: lowercase letters, digits, <code>-</code> or <code>_</code>.";
+        if (!IsValidName(name)) return new Reply(NameProblem(name));
+        if ((await keys.ReadConsumersAsync(ct)).ContainsKey(name)) return new Reply(AlreadyExists(name));
+
+        var rows = new List<InlineKeyboardButton[]>();
+        var text = new StringBuilder($"<b>Create {Esc(name)}</b> \u2014 tap a tier. The key is created at once "
+                                   + "with that tier's defaults; every value can be changed afterwards.\n");
+        foreach (var t in Policy.All.Where(t => t.Name != "admin"))
+        {
+            var tier = t.Name;
+            var token = Tokenize(userId, TimeSpan.FromMinutes(10), c => NewKeyAsync(name, tier, null, c));
+            rows.Add([new InlineKeyboardButton(
+                $"{tier} \u00b7 {Policy.Compact(t.Quota)} \u00b7 {Policy.RefillName(t.Refill)}", "ok:" + token)]);
+            text.Append($"\n<b>{tier}</b> \u2014 {Esc(t.For)}: {Policy.Compact(t.Quota)} tokens, "
+                      + $"{Policy.RefillName(t.Refill)} refill, {(t.Daily == 0 ? "no" : Policy.Compact(t.Daily))} per day");
+        }
+        var untiered = Tokenize(userId, TimeSpan.FromMinutes(10), c => NewKeyAsync(name, null, "1000000", c));
+        rows.Add([new InlineKeyboardButton("no tier \u00b7 1M", "ok:" + untiered),
+                  new InlineKeyboardButton("Cancel", "no:" + untiered)]);
+        text.Append("\n\n<i>Only the balance is enforced today; the rest is recorded. See /tiers.</i>");
+        return new Reply(text.ToString(), new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    // tier null = untiered with quotaArg (default 1,000,000); tier set = the
+    // tier's quota and the tier recorded in the same step.
+    private async Task<Reply> NewKeyAsync(string name, string? tier, string? quotaArg, CancellationToken ct)
+    {
+        if (!IsValidName(name)) return new Reply(NameProblem(name));
         var existing = await keys.ReadConsumersAsync(ct);
-        if (existing.ContainsKey(name))
-            return $"<b>{Esc(name)}</b> already exists.\n\nUse <code>/opencode {Esc(name)}</code> to re-send its config, or <code>/revoke {Esc(name)}</code> to replace it.";
+        if (existing.ContainsKey(name)) return new Reply(AlreadyExists(name));
 
         var quota = 1_000_000L;
-        if (quotaArg is not null && !TryParseTokens(quotaArg, out quota))
-            return $"<code>{Esc(quotaArg)}</code> is not a token count.\n\nGive a whole number, like <code>1000000</code>.";
+        if (tier is not null && Policy.Tiers.TryGetValue(tier, out var def)) quota = def.Quota;
+        else if (quotaArg is not null && !TryParseTokens(quotaArg, out quota))
+            return new Reply($"<code>{Esc(quotaArg)}</code> is not a token count.\n\nGive a whole number, like <code>1000000</code>.");
 
         var credential = "Bearer sk-" + Base62(32);
         await keys.AddAsync(name, credential, ct);
@@ -1219,15 +1397,54 @@ sealed class Worker(
         // "never seeded" as for "exhausted", so an unseeded key looks broken in
         // a way that wastes an afternoon.
         await QuotaSetAsync(name, quota, ct);
-        await AuditAsync($"newkey name={name} quota={quota}", ct);
+        if (tier is not null) await ledger.SetTierAsync(name, tier, ct);
+        await AuditAsync($"newkey name={name} quota={quota} tier={tier ?? "-"}", ct);
 
-        // Tell them it is shown once BEFORE the block, so the warning is not
-        // below the fold on a phone.
-        return $"Created <b>{Esc(name)}</b> with <code>{quota:N0}</code> tokens.\n\n"
-             + "\u26a0\ufe0f <b>This credential is shown once.</b> Tap the block to copy it.\n\n"
-             + $"<pre>{Esc(OpenCodeJson(credential))}</pre>\n"
-             + $"Save as <code>~/.config/opencode/opencode.json</code>.";
+        // This message holds the credential, so its buttons open NEW messages
+        // (kp:, kc:) and never edit this one \u2014 an edited-away credential is
+        // gone for good. Warning BEFORE the block, so it is not below the fold
+        // on a phone.
+        var keyboard = new InlineKeyboardMarkup([
+            [new InlineKeyboardButton("Settings", $"kp:{name}"),
+             new InlineKeyboardButton("Key card", $"kc:24h:{name}")]
+        ]);
+        return new Reply(
+            $"Created <b>{Esc(name)}</b>{(tier is null ? "" : $" on <b>{Esc(tier)}</b>")} with <code>{quota:N0}</code> tokens.\n\n"
+          + "\u26a0\ufe0f <b>This credential is shown once.</b> Tap the block to copy it.\n\n"
+          + $"<pre>{Esc(OpenCodeJson(credential))}</pre>\n"
+          + $"Save as <code>~/.config/opencode/opencode.json</code>.\n\n"
+          + "<i>Settings changes any value for this key.</i>",
+            keyboard);
     }
+
+    // A single-use button: the token is removed on the first tap, so a double
+    // tap cannot run the action twice. Expired tokens are swept here because
+    // nothing else ever would \u2014 an unused button would otherwise stay in the
+    // dictionary for the life of the process.
+    private string Tokenize(long userId, TimeSpan ttl, Func<CancellationToken, Task<Reply>> run)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var (k, v) in _pending)
+            if (v.Expires < now) _pending.TryRemove(k, out _);
+        var token = Base62(16);
+        _pending[token] = new Pending(userId, now + ttl, run);
+        return token;
+    }
+
+    private Reply AskInput(long userId, InputKind kind, string name, string? field, string prompt)
+    {
+        _inputs[userId] = new PendingInput(kind, name, field, DateTimeOffset.UtcNow.AddMinutes(5));
+        return new Reply(prompt + "\n\n<i>Waiting 5 minutes. Any command cancels.</i>");
+    }
+
+    private async Task<Reply> AnswerInputAsync(long userId, PendingInput input, string text, CancellationToken ct) =>
+        input.Kind switch
+        {
+            InputKind.NewKeyName => await NewKeyPickerAsync(userId, text.ToLowerInvariant(), ct),
+            InputKind.Field      => await SetPolicyAsync(input.Name, input.Field ?? "", text, ct),
+            InputKind.TopUp      => new Reply(await TopUpAsync(input.Name, text, ct)),
+            _                    => new Reply("Nothing was waiting for that.")
+        };
 
     private async Task<string> OpenCodeAsync(string name, CancellationToken ct)
     {
@@ -1298,7 +1515,7 @@ sealed class Worker(
                     var before = await QuotaGetAsync(name, ct);
                     await QuotaSetAsync(name, target, ct);
                     await AuditAsync($"setquota name={name} from={before?.ToString(CultureInfo.InvariantCulture) ?? "none"} to={target}", ct);
-                    return $"<b>{Esc(name)}</b> balance set to <code>{target:N0}</code> (was {before?.ToString("N0", CultureInfo.InvariantCulture) ?? "unset"}).";
+                    return new Reply($"<b>{Esc(name)}</b> balance set to <code>{target:N0}</code> (was {before?.ToString("N0", CultureInfo.InvariantCulture) ?? "unset"}).");
                 });
                 // Say what it REPLACES, not just what it sets. The whole reason
                 // this needs confirming is that people reach for it expecting
@@ -1311,10 +1528,10 @@ sealed class Worker(
             case PendingKind.Revoke:
                 _pending[token] = new Pending(userId, expires, async ct =>
                 {
-                    if (!await keys.RemoveAsync(name, ct)) return $"No consumer named <b>{Esc(name)}</b>.";
+                    if (!await keys.RemoveAsync(name, ct)) return new Reply($"No consumer named <b>{Esc(name)}</b>.");
                     await ledger.DeleteAsync(name, ct);
                     await AuditAsync($"revoke name={name}", ct);
-                    return $"Revoked <b>{Esc(name)}</b>. The key no longer authenticates and the balance is gone.";
+                    return new Reply($"Revoked <b>{Esc(name)}</b>. The key no longer authenticates and the balance is gone.");
                 });
                 prompt = $"<b>Revoke {Esc(name)}?</b>\n\n"
                        + "Their key stops working immediately and their balance is deleted. "
@@ -1388,24 +1605,6 @@ sealed class Worker(
     // backend-only, and putting an internet-reachable bot on the backend would
     // give it a route to the worker ports. ClickHouse stays the durable record
     // behind Grafana; these are the operator's glance.
-
-    // The draft tiers from docs/KEY-TIERS.md, sized against measurements taken
-    // on this node: an output token costs ~68x an uncached input token, the
-    // engine sustains ~387 output tok/s, and concurrency is 8.
-    //
-    // Quota and TPM are RECORDED, not enforced. ai-quota deducts a flat
-    // input+output total and cannot vary by tier; ai-token-ratelimit is bundled
-    // but not installed. Writing the intent down is what makes it reviewable
-    // and is the prerequisite for enforcing it later — it is not the enforcement.
-    internal static readonly Dictionary<string, (long Quota, int Tpm, int MaxTokens, string For)> Tiers =
-        new(StringComparer.Ordinal)
-        {
-            ["trial"]   = (   100_000,   3_000,  2_048, "evaluation, unvetted third parties"),
-            ["team"]    = (10_000_000,  60_000, 32_768, "internal humans via OpenCode"),
-            ["service"] = (50_000_000, 120_000, 16_384, "production integrations"),
-            ["batch"]   = (100_000_000, 30_000, 70_000, "offline, latency-tolerant"),
-            ["admin"]   = (         0,       0,      0, "management only, never inference"),
-        };
 
     // Deliberately a signpost, not a lookup.
     //
@@ -1521,6 +1720,7 @@ sealed class Worker(
             "kc:" => await KeyCardAsync(rest, window, ct),
             "kt:" => KeyTraceCard(rest),
             "kr:" => KeyReportStart(rest, chatId, ct),
+            "kp:" => await PolicyCardAsync(rest, null, ct),
             _     => new Reply("Unknown selection. Run /key again.")
         };
     }
@@ -1530,6 +1730,7 @@ sealed class Worker(
         double? Balance, double? Runway, double? Requests, double? NotOk,
         double? TokensIn, double? TokensOut, double? GatewayP95,
         double? Ttft, double? Itl, double? E2e, double? CacheHit,
+        double? Unbilled, double? UnbilledSeconds,
         Dictionary<string, double> ByReplica);
 
     private async Task<KeyStats> KeyStatsAsync(string name, string w, CancellationToken ct)
@@ -1552,12 +1753,20 @@ sealed class Worker(
         var e2eT  = PromScalarAsync($"histogram_quantile(0.95, sum by (le) (rate(sglang:e2e_request_latency_seconds_bucket{sel}[{w}])))", ct);
         var cchT  = PromScalarAsync($"1 - sum(rate(sglang:uncached_prompt_tokens_histogram_sum{sel}[{w}])) / clamp_min(sum(rate(sglang:prompt_tokens_histogram_sum{sel}[{w}])), 1)", ct);
         var repT  = PromAsync($"sum by (instance) (increase(sglang:generation_tokens_total{sel}[{w}]))", ct, "instance");
+        // Requests cut off before their final usage frame, which ai-quota
+        // therefore charged nothing (measured 2026-09-13, see vector.yaml).
+        // Deliberately no `or vector(0)`: before the counter existed, and for
+        // a consumer idle long enough for Vector to expire its series, the
+        // honest answer is "no data", not zero.
+        var ubT   = PromScalarAsync($"sum(increase(gateway_unbilled_requests_total{sel}[{w}]))", ct);
+        var ubsT  = PromScalarAsync($"sum(increase(gateway_unbilled_seconds_total{sel}[{w}]))", ct);
 
-        await Task.WhenAll(balT, runT, reqT, badT, inT, outT, gwT, ttfT, itlT, e2eT, cchT, repT);
+        await Task.WhenAll(balT, runT, reqT, badT, inT, outT, gwT, ttfT, itlT, e2eT, cchT, repT, ubT, ubsT);
 
         return new KeyStats(balT.Result, runT.Result, reqT.Result, badT.Result,
                             inT.Result, outT.Result, gwT.Result, ttfT.Result,
-                            itlT.Result, e2eT.Result, cchT.Result, repT.Result);
+                            itlT.Result, e2eT.Result, cchT.Result,
+                            ubT.Result, ubsT.Result, repT.Result);
     }
 
     // An absent series and a zero are different facts and are printed
@@ -1590,6 +1799,7 @@ sealed class Worker(
             $"{"not 2xx",-14}{Num(st.NotOk),14}",
             $"{"tokens in",-14}{Num(st.TokensIn),14}",
             $"{"tokens out",-14}{Num(st.TokensOut),14}",
+            $"{"cut, unbilled",-14}{Num(st.Unbilled),14}",
             "",
             $"{"p95 gateway",-14}{Num(st.GatewayP95, 2),14} s",
             $"{"p95 e2e",-14}{Num(st.E2e, 2),14} s",
@@ -1615,6 +1825,12 @@ sealed class Worker(
               + "the access log. ttft, itl, e2e, cache and the replica split: the "
               + "engine itself.</i>";
 
+        if (st.Unbilled is >= 0.5)
+            body += $"\n\n⚠️ <b>{Num(st.Unbilled)} request(s) were cut off and charged nothing</b> "
+                  + "— client disconnect, stream timeout or upstream error before the final usage "
+                  + $"frame. They ran {Num(st.UnbilledSeconds)} s in total; the engine may have "
+                  + "generated for up to that long.";
+
         if (st.Ttft is null && st.Requests > 0)
             body += "\n\n<i>No engine-side numbers in this window. That is normal "
                   + "shortly after a replica roll — the labels start empty — and "
@@ -1624,7 +1840,8 @@ sealed class Worker(
             [new InlineKeyboardButton(window == "1h"  ? "• 1h"  : "1h",  $"kc:1h:{name}"),
              new InlineKeyboardButton(window == "24h" ? "• 24h" : "24h", $"kc:24h:{name}"),
              new InlineKeyboardButton(window == "7d"  ? "• 7d"  : "7d",  $"kc:7d:{name}")],
-            [new InlineKeyboardButton("Traces", $"kt:{name}"),
+            [new InlineKeyboardButton("Settings", $"kp:{name}"),
+             new InlineKeyboardButton("Traces", $"kt:{name}"),
              new InlineKeyboardButton("Report ↓", $"kr:{name}")],
             [new InlineKeyboardButton("← All keys", "kl:")]
         ]);
@@ -1739,6 +1956,8 @@ sealed class Worker(
             b.Append("not_2xx=").Append(Num(st.NotOk)).Append('\n');
             b.Append("tokens_in=").Append(Num(st.TokensIn)).Append('\n');
             b.Append("tokens_out=").Append(Num(st.TokensOut)).Append('\n');
+            b.Append("cut_unbilled_requests=").Append(Num(st.Unbilled)).Append('\n');
+            b.Append("cut_unbilled_seconds=").Append(Num(st.UnbilledSeconds)).Append('\n');
             b.Append("gateway_p95_s=").Append(Num(st.GatewayP95, 3)).Append('\n');
             b.Append("engine_e2e_p95_s=").Append(Num(st.E2e, 3)).Append('\n');
             b.Append("engine_ttft_p95_s=").Append(Num(st.Ttft, 3)).Append('\n');
@@ -1771,7 +1990,10 @@ sealed class Worker(
         + "concurrency 8 (2 replicas x 4). Decode is memory-bandwidth bound. Measured cost: "
         + "an output token costs ~68x an uncached input token and ~4800x a cached one, so "
         + "prefix cache hit rate and the input:output ratio drive cost more than volume does. "
-        + "Quota is a single total-token balance; input and output are charged the same.";
+        + "Quota is a single total-token balance; input and output are charged the same. "
+        + "A request cut off before its final usage frame (client disconnect, stream timeout, "
+        + "upstream error) is charged zero tokens although the engine may have worked on it; "
+        + "cut_unbilled_* counts those and their wall time.";
 
     private async Task<string> GenerateReportAsync(string name, string facts, CancellationToken ct)
     {
@@ -1941,69 +2163,313 @@ sealed class Worker(
         Full map of which store answers what: <code>docs/METRICS-ECOSYSTEM.md</code>
         """;
 
-    // Rendered from the same Tiers table the /tier command validates against,
-    // so the description and the thing being applied cannot drift apart.
-    private static string TiersHelp()
+    // Rendered from Policy.All, the same table /tier validates against and
+    // /policy resolves from, so the description and the thing being applied
+    // cannot drift apart.
+    private string TiersHelp()
     {
-        var header = $"{"tier",-9}{"quota",12}{"tok/min",9}{"max_tok",9}";
-        var rows = Tiers.Where(t => t.Key != "admin").Select(t =>
-            $"{t.Key,-9}{t.Value.Quota,12:N0}{t.Value.Tpm,9:N0}{t.Value.MaxTokens,9:N0}");
+        var header = $"{"tier",-8}{"quota",6}{"refill",8}{"daily",6}{"tpm",6}{"max",7}";
+        var rows = Policy.All.Where(t => t.Name != "admin").Select(t =>
+            $"{t.Name,-8}{Policy.Compact(t.Quota),6}{Policy.RefillName(t.Refill),8}"
+          + $"{(t.Daily == 0 ? "\u221e" : Policy.Compact(t.Daily)),6}"
+          + $"{(t.Tpm == 0 ? "\u221e" : Policy.Compact(t.Tpm)),6}"
+          + $"{(t.MaxTokens == 0 ? "gw" : t.MaxTokens.ToString(CultureInfo.InvariantCulture)),7}");
 
-        var body = Table("<b>Policy tiers</b>", new[] { header }.Concat(rows));
-        foreach (var t in Tiers)
-            body += $"\n<b>{t.Key}</b> \u2014 {Esc(t.Value.For)}";
+        var body = Table("<b>Policy tiers</b> \u2014 defaults", new[] { header }.Concat(rows));
+        foreach (var t in Policy.All)
+            body += $"\n<b>{t.Name}</b> \u2014 {Esc(t.For)}";
+
+        body += "\n\n<b>What each setting means</b>";
+        foreach (var f in Policy.Fields)
+            body += $"\n<code>{f.Key}</code> \u2014 {Esc(f.Meaning)}";
 
         return body
-          + "\n\n<b>Recorded, not enforced.</b> Nothing reads a tier at request time yet: "
-          + "ai-quota charges a flat input+output total and cannot vary by consumer tier, and "
-          + "rate limiting needs ai-token-ratelimit, which ships in the gateway image but is "
-          + "not installed. /tier writes the intent down so it is reviewable."
+          + "\n\n<b>Every value is a default.</b> A consumer follows its tier until one value is "
+          + "set on it with <code>/set &lt;name&gt; &lt;setting&gt; &lt;value&gt;</code>; that value then "
+          + "stays when the tier changes, and <code>default</code> puts it back. /policy shows which is which."
+          + "\n\n<b>Only the balance is enforced today.</b> quota seeds a new key's balance. The refill "
+          + "job and the gateway rate limiter (daily, tpm) are not running yet, and max_tokens is one "
+          + $"global {cfg.OutputLimit:N0} ceiling for everyone."
           + "\n\n<b>Quota is one number.</b> Input and output are deducted at the same rate, "
           + "though on this node an output token costs roughly 68\u00d7 an uncached input token "
-          + "and ~4800\u00d7 a cached one. A consumer re-sending long context can therefore burn "
-          + "quota far faster than the work it asks for \u2014 /usage and /top show the i:o ratio."
-          + "\n\n<i>Setting a tier does not change a balance. /tier says what to run if you "
-          + "want them aligned.</i>";
+          + "and ~4800\u00d7 a cached one \u2014 /usage and /top show the i:o ratio."
+          + "\n\n<i>Setting a tier or a quota never changes a balance.</i>";
     }
 
-    private async Task<string> TierAsync(string name, string tier, CancellationToken ct)
+    private async Task<Reply> TierAsync(string name, string tier, CancellationToken ct)
     {
         tier = tier.ToLowerInvariant();
-        if (!Tiers.TryGetValue(tier, out var t))
-            return $"Unknown tier <code>{Esc(tier)}</code>.\n\nOne of: "
-                 + string.Join(", ", Tiers.Keys.Select(k => $"<code>{k}</code>"));
+        if (!Policy.Tiers.TryGetValue(tier, out var t))
+            return new Reply($"Unknown tier <code>{Esc(tier)}</code>.\n\nOne of: "
+                 + string.Join(", ", Policy.Tiers.Keys.Select(k => $"<code>{k}</code>")));
 
         var balances = await ledger.ListAsync(ct);
         if (!balances.ContainsKey(name))
-            return $"<b>{Esc(name)}</b> has no balance recorded, so it is not a live consumer.\n\n"
-                 + "Create it with <code>/newkey</code> first.";
+            return new Reply($"<b>{Esc(name)}</b> has no balance recorded, so it is not a live consumer.\n\n"
+                 + "Create it with <code>/newkey</code> first.");
 
+        var before = await ledger.TierAsync(name, ct);
         await ledger.SetTierAsync(name, tier, ct);
-        await AuditAsync($"tier name={name} tier={tier}", ct);
+        await AuditAsync($"tier name={name} from={before ?? "none"} to={tier}", ct);
 
-        var body = $"<b>{Esc(name)}</b> is now recorded as <b>{Esc(tier)}</b> \u2014 {Esc(t.For)}.";
-        if (tier == "admin")
-            return body + "\n\n<i>Management only. Nothing enforces that; it is a note to operators.</i>";
-
-        string[] rows =
-        [
-            $"{"quota",-12}{t.Quota,14:N0}",
-            $"{"tokens/min",-12}{t.Tpm,14:N0}",
-            $"{"max_tokens",-12}{t.MaxTokens,14:N0}"
-        ];
-        body += "\n" + Table("", rows);
+        var notice = $"<b>{Esc(name)}</b> is now <b>{Esc(tier)}</b> \u2014 {Esc(t.For)}.";
 
         // Say plainly where the balance stands against the tier, and do NOT
         // move it. Changing a balance is money, and it is a separate decision
         // from recording what tier someone is on.
         var bal = balances[name];
-        if (bal != t.Quota)
-            body += $"\n\u26a0\ufe0f Balance is <code>{bal:N0}</code>, tier says <code>{t.Quota:N0}</code>. "
-                  + $"Nothing was changed \u2014 run <code>/setquota {Esc(name)} {t.Quota}</code> to align.";
+        if (tier != "admin" && bal != t.Quota)
+            notice += $"\n\u26a0\ufe0f Balance is <code>{bal:N0}</code>, tier quota is <code>{t.Quota:N0}</code>. "
+                    + $"Nothing was changed \u2014 <code>/setquota {Esc(name)} {t.Quota}</code> aligns it.";
+        return await PolicyCardAsync(name, notice, ct);
+    }
 
-        body += "\n<i>Recorded only. ai-quota charges a flat input+output total and cannot vary by tier; "
-              + "rate limits need ai-token-ratelimit, which is bundled but not installed.</i>";
-        return body;
+    // ---- per-consumer policy ------------------------------------------------
+    //
+    // What one consumer is allowed, value by value, and where each value comes
+    // from. The "from" column is the point of the screen: a consumer that
+    // follows its tier moves when the tier's default moves, and one that was set
+    // by hand does not, and those look identical in every other view.
+    private async Task<Reply> PolicyCardAsync(string name, string? notice, CancellationToken ct)
+    {
+        if (!SafeName(name) || !(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
+
+        // Today in UTC, as ai-statistics counts it: input+output, the same total
+        // a token-per-day limit counts. Clamped to a minute so the window is
+        // valid just after midnight.
+        var sinceMidnight = Math.Max(60, (int)(DateTimeOffset.UtcNow - DateTimeOffset.UtcNow.Date).TotalSeconds);
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        var balT = ledger.ListAsync(ct);
+        var todayT = PromScalarAsync(
+            $"sum(increase(route_upstream_model_consumer_metric_total_token{{ai_consumer=\"{name}\"}}[{sinceMidnight}s]))", ct);
+        await Task.WhenAll(tierT, ovT, balT, todayT);
+
+        var tier = tierT.Result;
+        var resolved = Policy.Resolve(tier, ovT.Result);
+
+        var rows = new List<string> { $"{"setting",-11}{"value",14}  from" };
+        foreach (var r in resolved)
+            rows.Add($"{r.Field.Label,-11}{(r.Value is null ? "\u2014" : Policy.Show(r.Field, r.Value, cfg.OutputLimit)),14}  {r.Source}");
+
+        var body = (notice is null ? "" : notice + "\n\n")
+                 + Table($"<b>{Esc(name)}</b> \u2014 tier <b>{Esc(tier ?? "unassigned")}</b>", rows);
+
+        var bal = balT.Result.TryGetValue(name, out var b) ? b.ToString("N0", CultureInfo.InvariantCulture) : "not seeded";
+        body += $"\nBalance <code>{bal}</code>";
+        if (todayT.Result is { } today)
+        {
+            body += $" \u00b7 today (UTC) <code>{today:N0}</code> tokens";
+            // Not enforced yet, so this is a forecast, not an event: it says what
+            // switching the limiter on would do to this consumer today.
+            var daily = resolved.First(r => r.Field.Key == "daily").Value;
+            if (daily is not null && long.TryParse(daily, CultureInfo.InvariantCulture, out var d) && d > 0 && today > d)
+                body += $"\n\u26a0\ufe0f Over its daily limit of <code>{d:N0}</code> \u2014 once limits are "
+                      + "enforced this consumer would be refused for the rest of the day.";
+        }
+
+        body += "\n\n<b>Enforced now:</b> the balance only. "
+              + "<b>Recorded:</b> refill, daily, tpm, max_tokens \u2014 the refill job and the gateway "
+              + "limiter come next. quota seeds a new key and never moves a live balance."
+              + "\n\n<i>Tap a value to change it. \u2731 marks one set on this key rather than taken from its tier.</i>";
+
+        // One button per setting, showing its value, so the screen is both the
+        // readout and the control. Labels are short: Telegram truncates a
+        // button to its width, and two share a row.
+        InlineKeyboardButton Btn(ResolvedSetting r) => new(
+            $"{r.Field.Label}: {ShortValue(r)}{(r.Source == "set" ? " \u2731" : "")}",
+            $"pe:{r.Field.Key}:{name}");
+        var keyboard = new InlineKeyboardMarkup([
+            [Btn(resolved[0]), Btn(resolved[1])],
+            [Btn(resolved[2]), Btn(resolved[3])],
+            [Btn(resolved[4]), new InlineKeyboardButton($"tier: {tier ?? "none"}", $"pt:{name}")],
+            [new InlineKeyboardButton($"balance: {(balT.Result.ContainsKey(name) ? Policy.Compact(b) : "\u2014")}", $"pb:{name}")],
+            [new InlineKeyboardButton("\u2190 Key card", $"kc:24h:{name}")]
+        ]);
+        return new Reply(body, keyboard);
+    }
+
+    private string ShortValue(ResolvedSetting r)
+    {
+        if (r.Value is null) return "\u2014";
+        if (r.Field.Key == "refill") return r.Value;
+        if (!long.TryParse(r.Value, CultureInfo.InvariantCulture, out var n)) return r.Value;
+        return (r.Field.Key, n) switch
+        {
+            ("max_tokens", 0) => $"gw {Policy.Compact(cfg.OutputLimit)}",
+            ("max_tokens", _) => n.ToString(CultureInfo.InvariantCulture),
+            ("daily" or "tpm", 0) => "\u221e",
+            _ => Policy.Compact(n),
+        };
+    }
+
+    // ---- settings buttons -------------------------------------------------
+    //
+    //   pp:<name>                   the settings screen (edit in place)
+    //   pe:<field>:<name>           one setting's editor
+    //   pv:<field>:<value>:<name>   set it (value "d" = back to the tier)
+    //   pc:<field>:<name>           ask for a typed value (field "topup" = custom top-up)
+    //   pt:<name> / ps:<tier>:<name> change tier
+    //   pb:<name>                   balance: top-ups and set-to-quota, token-bound
+    //
+    // Names cannot contain ':' (SafeName) and neither can a stored value, so
+    // splitting is unambiguous. The longest, pv:max_tokens:70000:<32 chars>, is
+    // 52 bytes, inside Telegram's 64-byte callback_data limit.
+    private async Task<(Reply Reply, bool Edit)> PolicyCallbackAsync(string data, long userId, CancellationToken ct)
+    {
+        var kind = data[..3];
+        var parts = data[3..].Split(':');
+        var name = parts[^1];
+        if (!SafeName(name)) return (new Reply("That is not a consumer name this bot recognises."), false);
+
+        switch (kind)
+        {
+            case "pp:": return (await PolicyCardAsync(name, null, ct), true);
+            case "pt:": return (await TierPickerAsync(name, ct), true);
+            case "pb:": return (await BalanceScreenAsync(userId, name, ct), true);
+
+            case "pe:" when parts.Length == 2 && Policy.Field(parts[0]) is { } f:
+                return (await FieldEditorAsync(name, f, ct), true);
+
+            case "pv:" when parts.Length == 3 && Policy.Field(parts[0]) is { } f:
+                return (await SetPolicyAsync(name, f.Key, parts[1] == "d" ? "default" : parts[1], ct), true);
+
+            case "ps:" when parts.Length == 2:
+                return (await TierAsync(name, parts[0], ct), true);
+
+            case "pc:" when parts.Length == 2 && parts[0] == "topup":
+                return (AskInput(userId, InputKind.TopUp, name, null,
+                    $"Send how many tokens to <b>add</b> to <b>{Esc(name)}</b>: 500000, 2M or 500k."), false);
+
+            case "pc:" when parts.Length == 2 && Policy.Field(parts[0]) is { } f:
+                return (AskInput(userId, InputKind.Field, name, f.Key,
+                    $"Send the new <b>{Esc(f.Label)}</b> for <b>{Esc(name)}</b> \u2014 {Esc(f.Meaning)}.\n"
+                  + (f.Key == "refill" ? "One of manual, daily, weekly, monthly." : "Like 2000000, 2M or 500k")
+                  + (f.Key is "daily" or "tpm" ? ", or unlimited." : f.Key == "refill" ? "" : ".")
+                  + " <code>default</code> follows the tier again."), false);
+        }
+        return (new Reply("Unknown button. Run /policy again."), false);
+    }
+
+    private static readonly Dictionary<string, string[]> Presets = new(StringComparer.Ordinal)
+    {
+        ["quota"]      = ["1000000", "5000000", "10000000", "20000000", "50000000", "100000000"],
+        ["refill"]     = ["manual", "daily", "weekly", "monthly"],
+        ["daily"]      = ["100000", "500000", "1000000", "2000000", "5000000", "10000000", "20000000", "50000000", "0"],
+        ["tpm"]        = ["10000", "30000", "60000", "120000", "250000", "0"],
+        ["max_tokens"] = ["4096", "8192", "16384", "32768", "0"],
+    };
+
+    private async Task<Reply> FieldEditorAsync(string name, PolicyField f, CancellationToken ct)
+    {
+        if (!(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.");
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        await Task.WhenAll(tierT, ovT);
+
+        var tier = tierT.Result;
+        var now = Policy.Resolve(tier, ovT.Result).First(r => r.Field.Key == f.Key);
+        var tierDefault = tier is not null && Policy.Tiers.TryGetValue(tier, out var def) ? Policy.TierValue(def, f) : null;
+
+        var text = $"<b>{Esc(name)}</b> \u2014 <b>{Esc(f.Label)}</b>\n{Esc(f.Meaning)}\n\n"
+                 + $"Now <code>{(now.Value is null ? "unset" : Esc(Policy.Show(f, now.Value, cfg.OutputLimit)))}</code> "
+                 + (now.Source == "set" ? "(set on this key)" : now.Source == "tier" ? "(from the tier)" : "")
+                 + (tierDefault is null ? "\nNo tier, so there is no default to go back to."
+                                        : $"\nTier <b>{Esc(tier!)}</b> default: <code>{Esc(Policy.Show(f, tierDefault, cfg.OutputLimit))}</code>")
+                 + $"\n\n<i>{Esc(f.Status)}.</i>";
+
+        var buttons = Presets[f.Key].Select(v => new InlineKeyboardButton(
+            (v == now.Value ? "\u2022 " : "") + ShortValue(new ResolvedSetting(f, v, "")),
+            $"pv:{f.Key}:{v}:{name}")).ToList();
+        var rows = new List<InlineKeyboardButton[]>();
+        for (var i = 0; i < buttons.Count; i += 3) rows.Add(buttons.Skip(i).Take(3).ToArray());
+
+        var tail = new List<InlineKeyboardButton>();
+        if (now.Source == "set" && tierDefault is not null)
+            tail.Add(new InlineKeyboardButton("Tier default", $"pv:{f.Key}:d:{name}"));
+        tail.Add(new InlineKeyboardButton("Custom\u2026", $"pc:{f.Key}:{name}"));
+        rows.Add(tail.ToArray());
+        rows.Add([new InlineKeyboardButton("\u2190 Settings", $"pp:{name}")]);
+        return new Reply(text, new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    private async Task<Reply> TierPickerAsync(string name, CancellationToken ct)
+    {
+        var tier = await ledger.TierAsync(name, ct);
+        var overrides = await ledger.OverridesAsync(name, ct);
+        var rows = Policy.All.Select(t => new[] { new InlineKeyboardButton(
+            $"{(t.Name == tier ? "\u2022 " : "")}{t.Name} \u00b7 {Policy.Compact(t.Quota)} \u00b7 {Policy.RefillName(t.Refill)}",
+            $"ps:{t.Name}:{name}") }).ToList();
+        rows.Add([new InlineKeyboardButton("\u2190 Settings", $"pp:{name}")]);
+        var kept = overrides.Count == 0 ? ""
+            : $"\n\nKept whatever the tier: {string.Join(", ", overrides.Keys.Select(k => $"<code>{Esc(k)}</code>"))} "
+            + "(set on this key). Put one back to the tier from its own button.";
+        return new Reply($"<b>{Esc(name)}</b> \u2014 tier is <b>{Esc(tier ?? "unassigned")}</b>.\n\n"
+                       + "A new tier changes every value that follows the tier. It never changes the balance."
+                       + kept, new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    // Money, so every button is a single-use token bound to this operator:
+    // a double tap on +10M adds 10M once. Top-ups run on tap, the same as a
+    // typed /topup; replacing the balance keeps its confirmation step.
+    private async Task<Reply> BalanceScreenAsync(long userId, string name, CancellationToken ct)
+    {
+        if (!(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.");
+        var balT = QuotaGetAsync(name, ct);
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        await Task.WhenAll(balT, tierT, ovT);
+
+        var quotaStr = Policy.Resolve(tierT.Result, ovT.Result)[0].Value;
+        long? quota = long.TryParse(quotaStr, CultureInfo.InvariantCulture, out var q) && q > 0 ? q : null;
+        var ttl = TimeSpan.FromMinutes(10);
+
+        InlineKeyboardButton Add(long amount) => new($"+{Policy.Compact(amount)}",
+            "ok:" + Tokenize(userId, ttl, async c => new Reply(await TopUpAsync(name, amount.ToString(CultureInfo.InvariantCulture), c))));
+
+        var rows = new List<InlineKeyboardButton[]> { new[] { Add(1_000_000), Add(5_000_000), Add(10_000_000) } };
+        if (quota is { } qv)
+            rows.Add([Add(qv) with { Text = $"+quota ({Policy.Compact(qv)})" },
+                      new InlineKeyboardButton($"Set to {Policy.Compact(qv)}\u2026",
+                          "ok:" + Tokenize(userId, ttl, c => Task.FromResult(Arm(userId, name, qv.ToString(CultureInfo.InvariantCulture), PendingKind.SetQuota))))]);
+        rows.Add([new InlineKeyboardButton("Custom top-up\u2026", $"pc:topup:{name}")]);
+        rows.Add([new InlineKeyboardButton("\u2190 Settings", $"pp:{name}")]);
+
+        return new Reply(
+            $"<b>{Esc(name)}</b> \u2014 balance <code>{balT.Result?.ToString("N0", CultureInfo.InvariantCulture) ?? "unknown"}</code>"
+          + (quota is null ? "" : $", quota <code>{quota:N0}</code>")
+          + "\n\nTop-ups <b>add</b> and run on tap, once per button. <b>Set</b> replaces the balance and asks first."
+          + "\n<i>Buttons expire in 10 minutes.</i>",
+            new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    private async Task<Reply> SetPolicyAsync(string name, string fieldArg, string valueArg, CancellationToken ct)
+    {
+        if (Policy.Field(fieldArg) is not { } field)
+            return new Reply($"Unknown setting <code>{Esc(Head(fieldArg))}</code>.\n\nOne of: "
+                 + string.Join(", ", Policy.Fields.Select(f => $"<code>{f.Key}</code>")));
+        if (!IsValidName(name) || !(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
+
+        string? stored = null;
+        if (!Policy.IsDefaultWord(valueArg)
+            && !Policy.TryNormalise(field, valueArg, cfg.OutputLimit, out stored, out var why))
+            return new Reply($"{Esc(why)}\n\n<code>default</code> puts {Esc(field.Key)} back to the tier's value.");
+
+        var before = await ledger.OverridesAsync(name, ct);
+        if (stored is null) await ledger.ClearOverrideAsync(name, field.Key, ct);
+        else await ledger.SetOverrideAsync(name, field.Key, stored, ct);
+        await AuditAsync($"set name={name} field={field.Key} from={before.GetValueOrDefault(field.Key, "tier")} to={stored ?? "tier"}", ct);
+
+        var notice = stored is null
+            ? $"<b>{Esc(field.Label)}</b> follows the tier again."
+            : $"<b>{Esc(field.Label)}</b> set to <code>{Esc(Policy.Show(field, stored, cfg.OutputLimit))}</code> for this consumer.";
+        if (field.Key == "quota")
+            notice += "\n<i>The balance was not changed. /topup or /setquota move it.</i>";
+        return await PolicyCardAsync(name, notice, ct);
     }
 
     private static bool ValidWindow(string w) => w is "1h" or "24h" or "7d" or "30d";
@@ -2472,6 +2938,197 @@ sealed class Worker(
 }
 
 // ===========================================================================
+// Policy — what a consumer is allowed: tier defaults, per-consumer overrides.
+//
+// A tier is a named set of defaults for EVERY setting, and a consumer stores
+// only the values set on it by hand (Ledger, chat_policy:<name>). The effective
+// value is the override when there is one and the tier's otherwise. So moving
+// a tier default moves every consumer still following it, and a value set by
+// hand survives both that and a change of tier.
+//
+// ENFORCEMENT IS PER SETTING, and each one carries its own status. As of
+// 2026-09-13 only the balance is enforced (ai-quota); quota seeds a new key.
+// refill waits on the refill job, daily and tpm on ai-token-ratelimit, and
+// max_tokens is one global ceiling in request-validation. A number read as a
+// limit and enforced by nothing gets quoted to a customer, which is why every
+// surface that shows these says which is which.
+//
+// Sizing, from docs/KEY-TIERS.md: an output token costs ~68x an uncached input
+// token here, the node sustains ~387 output tok/s, and concurrency is 8. The
+// daily limit is a tenth of the tier's quota, so one bad day cannot spend a
+// month. Note real agent traffic runs far above the team numbers (one consumer
+// used 32.6M tokens on 2026-09-12); /policy flags a consumer over its daily
+// limit so that is visible before anything enforces it.
+// ===========================================================================
+enum RefillMode { Manual, Daily, Weekly, Monthly }
+
+// 0 means "no limit" for Daily and Tpm, and "the gateway's global ceiling" for MaxTokens.
+sealed record TierDef(string Name, string For, long Quota, RefillMode Refill,
+                      long Daily, long Tpm, long MaxTokens);
+
+sealed record PolicyField(string Key, string Label, string Meaning, bool Enforced, string Status);
+
+readonly record struct ResolvedSetting(PolicyField Field, string? Value, string Source);
+
+static class Policy
+{
+    // MENU ORDER. Rendered in this order by /tiers and /admin/tiers.
+    public static readonly TierDef[] All =
+    [
+        new("trial",   "evaluation, unvetted third parties",     100_000, RefillMode.Manual,      50_000,   3_000,  2_048),
+        new("team",    "internal humans via OpenCode",        10_000_000, RefillMode.Monthly, 1_000_000,  60_000, 32_768),
+        new("service", "production integrations",             50_000_000, RefillMode.Monthly, 5_000_000, 120_000, 16_384),
+        new("batch",   "offline, latency-tolerant",          100_000_000, RefillMode.Monthly, 10_000_000, 30_000, 70_000),
+        new("admin",   "management only, plus the bot's own reports", 0, RefillMode.Manual,           0,       0,      0),
+    ];
+
+    public static readonly Dictionary<string, TierDef> Tiers =
+        All.ToDictionary(t => t.Name, StringComparer.Ordinal);
+
+    public static readonly PolicyField[] Fields =
+    [
+        new("quota", "quota", "tokens a refill grants; also a new key's starting balance",
+            false, "seeds a new key; never moves a live balance"),
+        new("refill", "refill", "manual, or an automatic reset of the balance to quota: daily, weekly or monthly",
+            false, "recorded; the refill job is not running yet"),
+        new("daily", "daily", "input+output tokens per UTC day; 0 = no limit",
+            false, "recorded; needs the gateway rate limiter"),
+        new("tpm", "tokens/min", "input+output tokens per minute; 0 = no limit",
+            false, "recorded; needs the gateway rate limiter"),
+        new("max_tokens", "max_tokens", "largest max_tokens one request may ask for; 0 = the gateway ceiling",
+            false, "recorded; the gateway enforces one global ceiling"),
+    ];
+
+    public static PolicyField? Field(string raw) => raw.ToLowerInvariant() switch
+    {
+        "quota" => Fields[0],
+        "refill" => Fields[1],
+        "daily" or "day" or "daily_limit" => Fields[2],
+        "tpm" or "tokens_per_minute" => Fields[3],
+        "max_tokens" or "maxtokens" or "max" => Fields[4],
+        _ => null
+    };
+
+    public static bool IsDefaultWord(string raw) =>
+        raw.ToLowerInvariant() is "default" or "tier" or "reset";
+
+    public static string RefillName(RefillMode m) => m switch
+    {
+        RefillMode.Daily => "daily",
+        RefillMode.Weekly => "weekly",
+        RefillMode.Monthly => "monthly",
+        _ => "manual"
+    };
+
+    public static string TierValue(TierDef t, PolicyField f) => f.Key switch
+    {
+        "quota" => t.Quota.ToString(CultureInfo.InvariantCulture),
+        "refill" => RefillName(t.Refill),
+        "daily" => t.Daily.ToString(CultureInfo.InvariantCulture),
+        "tpm" => t.Tpm.ToString(CultureInfo.InvariantCulture),
+        _ => t.MaxTokens.ToString(CultureInfo.InvariantCulture),
+    };
+
+    // Source is "set" for a hand-set value, "tier" when it follows the tier, and
+    // "none" for an unassigned consumer with nothing set — a real state that
+    // must not be dressed up as a default.
+    public static ResolvedSetting[] Resolve(string? tier, IReadOnlyDictionary<string, string> overrides)
+    {
+        var def = tier is not null && Tiers.TryGetValue(tier, out var t) ? t : null;
+        var result = new ResolvedSetting[Fields.Length];
+        for (var i = 0; i < Fields.Length; i++)
+        {
+            var f = Fields[i];
+            result[i] = overrides.TryGetValue(f.Key, out var v) ? new(f, v, "set")
+                      : def is not null ? new(f, TierValue(def, f), "tier")
+                      : new(f, null, "none");
+        }
+        return result;
+    }
+
+    // Stored form is canonical: plain integers and lowercase refill names, so
+    // the enforcement side can read the hash without re-parsing "2M".
+    public static bool TryNormalise(PolicyField f, string raw, int gatewayMax, out string? stored, out string error)
+    {
+        stored = null; error = "";
+        var s = raw.Trim().ToLowerInvariant();
+
+        if (f.Key == "refill")
+        {
+            if (s is "manual" or "daily" or "weekly" or "monthly") { stored = s; return true; }
+            error = "refill is one of: manual, daily, weekly, monthly.";
+            return false;
+        }
+
+        if (s is "unlimited" or "none" or "off" && f.Key is "daily" or "tpm" or "max_tokens")
+            s = "0";
+        if (!TryParseAmount(s, out var n))
+        {
+            error = $"'{raw}' is not a number. Use 2000000, 2_000_000, 2M or 500k.";
+            return false;
+        }
+
+        var (min, max) = f.Key switch
+        {
+            "quota" => (0L, 10_000_000_000L),
+            "daily" => (0L, 10_000_000_000L),
+            "tpm" => (0L, 100_000_000L),
+            _ => (0L, (long)gatewayMax),
+        };
+        if (n < min || n > max)
+        {
+            error = f.Key == "max_tokens"
+                ? $"max_tokens must be 0..{gatewayMax:N0} — the gateway refuses anything above {gatewayMax:N0} for everyone."
+                : $"{f.Key} must be between {min:N0} and {max:N0}.";
+            return false;
+        }
+        stored = n.ToString(CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    // 2000000, 2_000_000, 2,000,000, 2M, 1.5m, 500k. Decimal suffixes only on
+    // purpose: "2M" meaning 2,097,152 would be a surprise in a token budget.
+    private static bool TryParseAmount(string s, out long n)
+    {
+        n = 0;
+        s = s.Replace("_", "").Replace(",", "");
+        long mult = 1;
+        if (s.EndsWith('k')) { mult = 1_000; s = s[..^1]; }
+        else if (s.EndsWith('m')) { mult = 1_000_000; s = s[..^1]; }
+        else if (s.EndsWith('b')) { mult = 1_000_000_000; s = s[..^1]; }
+        if (!decimal.TryParse(s, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var d)) return false;
+        var v = d * mult;
+        if (v != decimal.Truncate(v) || v < 0 || v > long.MaxValue) return false;
+        n = (long)v;
+        return true;
+    }
+
+    public static string Show(PolicyField f, string stored, int gatewayMax)
+    {
+        if (f.Key == "refill") return stored;
+        if (!long.TryParse(stored, CultureInfo.InvariantCulture, out var n)) return stored;
+        return (f.Key, n) switch
+        {
+            ("max_tokens", 0) => "gateway max",
+            ("daily" or "tpm", 0) => "unlimited",
+            _ => n.ToString("N0", CultureInfo.InvariantCulture),
+        };
+    }
+
+    // 100K, 10M, 1.5M. For tables that have to fit a phone.
+    public static string Compact(long n) => n switch
+    {
+        >= 1_000_000_000 => Trim(n / 1_000_000_000m) + "B",
+        >= 1_000_000 => Trim(n / 1_000_000m) + "M",
+        >= 10_000 => Trim(n / 1_000m) + "K",
+        _ => n.ToString(CultureInfo.InvariantCulture),
+    };
+
+    private static string Trim(decimal d) =>
+        Math.Round(d, 1).ToString("0.#", CultureInfo.InvariantCulture);
+}
+
+// ===========================================================================
 // Reads the client certificate out of the kubeconfig the Higress deployment
 // generates. Deliberately a few lines of string handling rather than a YAML
 // dependency: the two fields are single-line base64 and a YAML parser is a lot
@@ -2682,6 +3339,65 @@ sealed class Ledger(BotConfig cfg)
         await c.CommandAsync(ct, "SET", TierPrefix + name, tier);
     }
 
+    public async Task<string?> TierAsync(string name, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        return await c.CommandAsync(ct, "GET", TierPrefix + name) as string is { Length: > 0 } t ? t : null;
+    }
+
+    // Per-consumer overrides, one hash per consumer holding ONLY the values set
+    // by hand. A value absent from the hash follows the tier; that absence is
+    // the whole "follows its tier" state, so there is no flag to keep in sync.
+    // Same Redis and same reasoning as the tier key above.
+    private const string PolicyPrefix = "chat_policy:";
+
+    public async Task<Dictionary<string, string>> OverridesAsync(string name, CancellationToken ct)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var c = await ConnectAsync(ct);
+        if (await c.CommandAsync(ct, "HGETALL", PolicyPrefix + name) is object?[] flat)
+            for (var i = 0; i + 1 < flat.Length; i += 2)
+                if (flat[i] is string k && flat[i + 1] is string v) result[k] = v;
+        return result;
+    }
+
+    // Which consumers have at least one override. Only the key names are read:
+    // HSET never leaves an empty hash behind and HDEL of the last field deletes
+    // the key, so existence is exactly "has an override".
+    public async Task<HashSet<string>> OverriddenAsync(CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        var keys = await ScanAsync(c, PolicyPrefix + "*", ct);
+        return keys.Select(k => k[PolicyPrefix.Length..]).ToHashSet(StringComparer.Ordinal);
+    }
+
+    public async Task SetOverrideAsync(string name, string field, string value, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        await c.CommandAsync(ct, "HSET", PolicyPrefix + name, field, value);
+    }
+
+    public async Task ClearOverrideAsync(string name, string field, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        await c.CommandAsync(ct, "HDEL", PolicyPrefix + name, field);
+    }
+
+    private static async Task<List<string>> ScanAsync(RespConnection c, string pattern, CancellationToken ct)
+    {
+        var keys = new List<string>();
+        var cursor = "0";
+        do
+        {
+            var reply = await c.CommandAsync(ct, "SCAN", cursor, "MATCH", pattern, "COUNT", "200");
+            if (reply is not object?[] { Length: 2 } page) break;
+            cursor = page[0] as string ?? "0";
+            if (page[1] is object?[] batch)
+                foreach (var k in batch) if (k is string s) keys.Add(s);
+        } while (cursor != "0");
+        return keys;
+    }
+
     public async Task<Dictionary<string, long>> ListAsync(CancellationToken ct)
     {
         var result = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -2716,9 +3432,9 @@ sealed class Ledger(BotConfig cfg)
     public async Task DeleteAsync(string name, CancellationToken ct)
     {
         using var c = await ConnectAsync(ct);
-        // Both keys. Otherwise a consumer re-created under the same name
-        // silently inherits the revoked one's tier.
-        await c.CommandAsync(ct, "DEL", Prefix + name, TierPrefix + name);
+        // Every key. Otherwise a consumer re-created under the same name
+        // silently inherits the revoked one's tier and hand-set limits.
+        await c.CommandAsync(ct, "DEL", Prefix + name, TierPrefix + name, PolicyPrefix + name);
     }
 
     private async Task<RespConnection> ConnectAsync(CancellationToken ct)
@@ -2995,6 +3711,29 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
         }
     }
 
+    // Replace a message's text and keyboard. Only for screens that are
+    // navigation (settings, editors), never for a message carrying something
+    // the operator must keep — a credential edited away is gone from the chat.
+    // Falls back to a new message when the edit is refused, e.g. the original
+    // is older than 48 hours; "message is not modified" is the one refusal
+    // that needs nothing.
+    public async Task EditOrSendAsync(long chatId, long messageId, Reply reply, CancellationToken ct)
+    {
+        if (messageId > 0 && reply.Text.Length <= 3500)
+        {
+            var payload = new EditMessageText(chatId, messageId, reply.Text, "HTML", reply.Keyboard);
+            using var content = new StringContent(
+                JsonSerializer.Serialize(payload, BotJson.Default.EditMessageText), Encoding.UTF8);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var r = await http.CreateClient("telegram").PostAsync("editMessageText", content, ct);
+            if (r.IsSuccessStatusCode) return;
+            var body = await r.Content.ReadAsStringAsync(ct);
+            if (body.Contains("message is not modified", StringComparison.Ordinal)) return;
+            log.LogWarning("editMessageText failed, sending instead: HTTP {Code} {Body}", (int)r.StatusCode, body);
+        }
+        await SendAsync(chatId, reply, ct);
+    }
+
     private static IEnumerable<string> Chunk(string s, int max)
     {
         if (s.Length <= max) { yield return s; yield break; }
@@ -3164,7 +3903,14 @@ sealed record BotConfig(
     string LangfuseUrl, string LangfuseProjectId);
 
 enum PendingKind { SetQuota, Revoke }
-sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<string>> Run);
+sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<Reply>> Run);
+
+// The next plain-text message from an operator answers a question the bot
+// asked: a new key's name, a custom value, a custom top-up. Field is the setting
+// for Kind "field". In memory like Pending: a restart forgets the question,
+// which fails safe — the text then lands as an unknown command.
+enum InputKind { NewKeyName, Field, TopUp }
+sealed record PendingInput(InputKind Kind, string Name, string? Field, DateTimeOffset Expires);
 
 // A command's answer: text plus an optional inline keyboard.
 sealed record Reply(string Text, InlineKeyboardMarkup? Keyboard = null);
@@ -3177,6 +3923,9 @@ sealed class Update
 }
 sealed class Message
 {
+    // Needed to edit a settings screen in place rather than stacking a new
+    // message on every tap.
+    [JsonPropertyName("message_id")] public long MessageId { get; set; }
     [JsonPropertyName("text")] public string? Text { get; set; }
     [JsonPropertyName("from")] public User? From { get; set; }
     [JsonPropertyName("chat")] public Chat? Chat { get; set; }
@@ -3203,6 +3952,13 @@ sealed class Chat
 // a 400. HTML needs three.
 sealed record SendMessage(
     [property: JsonPropertyName("chat_id")] long ChatId,
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("parse_mode")] string ParseMode = "HTML",
+    [property: JsonPropertyName("reply_markup")] InlineKeyboardMarkup? ReplyMarkup = null);
+
+sealed record EditMessageText(
+    [property: JsonPropertyName("chat_id")] long ChatId,
+    [property: JsonPropertyName("message_id")] long MessageId,
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("parse_mode")] string ParseMode = "HTML",
     [property: JsonPropertyName("reply_markup")] InlineKeyboardMarkup? ReplyMarkup = null);
@@ -3259,6 +4015,7 @@ sealed class QuotaResponse
 [JsonSerializable(typeof(User))]
 [JsonSerializable(typeof(Chat))]
 [JsonSerializable(typeof(SendMessage))]
+[JsonSerializable(typeof(EditMessageText))]
 [JsonSerializable(typeof(InlineKeyboardMarkup))]
 [JsonSerializable(typeof(InlineKeyboardButton))]
 [JsonSerializable(typeof(CallbackQuery))]
