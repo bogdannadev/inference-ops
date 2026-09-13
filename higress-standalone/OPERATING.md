@@ -39,12 +39,13 @@ client → Caddy (qw38-27b-gw.duckdns.org, strips X-Mse-Consumer)
            1. key-auth            AUTHN,  prio 310, FAIL_CLOSE
            2. request-validation  default, prio 950, FAIL_CLOSE
            3. ai-statistics       default, prio 900, FAIL_OPEN
-           4. ai-quota            default, prio 280, FAIL_CLOSE
+           4. ai-token-ratelimit  default, prio 600, FAIL_OPEN   (rules owned by quota-bot)
+           5. ai-quota            default, prio 280, FAIL_CLOSE
        → qwen-router.dns:8000 → r0 / r1
 ```
 
-`key-auth` sits in the AUTHN phase so it runs before everything; the other
-three share the default phase and are ordered by descending priority.
+`key-auth` sits in the AUTHN phase so it runs before everything; the others
+share the default phase and are ordered by descending priority.
 `request-validation` deliberately runs first of those three, so a request that
 will be rejected never costs a Redis round trip or a metrics increment.
 

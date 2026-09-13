@@ -108,11 +108,13 @@ recommends a tier that fits the stated use case rather than inventing a number.
 The tier table is the same one `/tiers` renders and `/tier` validates against,
 served from the bot, so advice here and enforcement there cannot drift.
 
-Tiers are **recorded, not enforced**: ai-quota deducts a flat input+output total
-and cannot vary by tier, and the rate-limit plugin is bundled but not installed.
-A tier sets the starting balance and documents intent. The tool descriptions say
-so, because a model that believes `tokens_per_minute` is enforced will give bad
-advice about it.
+Tiers are **enforced** since 2026-09-13, except `max_tokens`: the balance by
+ai-quota, `daily_limit` and `tokens_per_minute` by ai-token-ratelimit (rules
+rendered by quota-bot), and `refill` by quota-bot's refill job. `max_tokens`
+cannot be varied per key at the gateway and is named `_NOT_ENFORCED`. The tool
+descriptions spell out the window semantics — a daily limit is a 24h window from
+a key's first request, not a calendar day — because a model that assumes
+midnight resets will give bad advice about it.
 
 The `confirm` echo is not ceremony. It makes a mis-parsed or hallucinated call
 fail closed, because the model has to name the target twice and the two have to
