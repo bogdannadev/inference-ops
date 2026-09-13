@@ -996,13 +996,15 @@ sealed class Worker(
             "/start" or "/help" => new Reply(HelpText),
             "/status"     => new Reply(await StatusAsync(ct)),
             "/keys"       => await KeysAsync(ct),
-            "/balance"    => new Reply(await BalanceAsync(a1, ct)),
+            "/balance"    => await BalanceAsync(a1, ct),
             "/key"        => await KeyPickerAsync(ct),
             "/usage"      => await UsageAsync(a1 ?? "24h", ct),
             "/alerts"     => new Reply(await AlertsAsync(ct)),
             "/health"     => new Reply(await HealthAsync(ct)),
             "/top"        => await TopAsync(a1 ?? "24h", ct),
-            "/p95"        => new Reply(await LatencyAsync(a1, ct)),
+            "/p95"        => new Reply(await LatencyAsync(
+                                 a1 is not null && !ValidWindow(a1) ? a1 : a2 is not null && !ValidWindow(a2) ? a2 : null,
+                                 a1 is not null && ValidWindow(a1) ? a1 : a2 is not null && ValidWindow(a2) ? a2 : "24h", ct)),
             "/errors"     => await ErrorsAsync(a1 ?? "24h", ct),
             "/tiers"      => new Reply(TiersHelp()),
             "/langfuse"   => new Reply(LangfuseHelp()),
@@ -1010,7 +1012,9 @@ sealed class Worker(
             // No argument is the common case — an operator wants "show me
             // this consumer", not a request id they would have to go and find
             // first. Falling back to the picker beats a usage hint.
-            "/trace"      => a1 is null ? await KeyPickerAsync(ct) : new Reply(TraceHelp(a1)),
+            "/trace"      => a1 is null ? await KeyPickerAsync(ct)
+                           : (await keys.ReadConsumersAsync(ct)).ContainsKey(a1) ? KeyTraceCard(a1)
+                           : new Reply(TraceHelp(a1)),
             "/tier"       => (a1 is null || a2 is null)
                                  ? new Reply(Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service"))
                                  : await TierAsync(a1, a2, ct),
@@ -1072,7 +1076,7 @@ sealed class Worker(
         new("keys", "Who and how much", "", "every key, its balance and tier",
             "Consumers and their balances"),
         new("balance", "Who and how much", "[name]",
-            "balances, most urgent first", "Balance for one consumer or all"),
+            "left of quota, burn and refill", "Balance against quota, one consumer or all"),
         new("key", "Who and how much", "",
             "one key: numbers, settings, traces",
             "Per-key stats and traces"),
@@ -1083,9 +1087,9 @@ sealed class Worker(
             "Stack and telemetry health"),
         new("alerts", "Is it healthy", "", "what is firing right now",
             "What is firing right now"),
-        new("top", "What they used", "[1h|24h|7d]",
+        new("top", "What they used", "[1h|24h|7d|30d]",
             "busiest keys, share and errors", "Busiest consumers over a window"),
-        new("p95", "What they used", "[name]",
+        new("p95", "What they used", "[name] [1h|24h|7d|30d]",
             "latency per key, gateway and engine",
             "Latency percentiles per consumer"),
         new("prices", "What they used", "",
@@ -1225,12 +1229,17 @@ sealed class Worker(
         var genT    = PromScalarAsync("sum(sglang:gen_throughput)", ct);
         var ttftT   = PromScalarAsync(
             "histogram_quantile(0.95, sum(rate(sglang:time_to_first_token_seconds_bucket[5m])) by (le))", ct);
-        var kvT     = PromScalarAsync("max((sglang:kv_used_tokens / sglang:kv_available_tokens)) * 100", ct);
+        // token_usage is used / pool size. The old used/available ratio divided
+        // by FREE tokens and read 187% on 2026-09-13.
+        var kvT     = PromScalarAsync("max(sglang:token_usage) * 100", ct);
         // Prefix-cache hit rate. Worth a row since 2026-09-05: the router moved
         // to cache_aware and this is where that shows up or fails to. Gauge is
         // since engine start, so it reads 0 for a while after a roll — that is
         // normal and deliberately NOT warned on, or every roll would cry wolf.
-        var cacheT  = PromScalarAsync("avg(sglang:cache_hit_rate) * 100", ct);
+        // From the token counters over 1h: the sglang:cache_hit_rate gauge reads
+        // 0 on v0.5.19 regardless of traffic (91% measured the same hour).
+        var cacheT  = PromScalarAsync(
+            "sum(increase(sglang:cached_tokens_total[1h])) / clamp_min(sum(increase(sglang:prompt_tokens_total[1h])), 1) * 100", ct);
 
         await Task.WhenAll(upT, totalT, alertsT, ledgerT, queueT, capT, failT, genT, ttftT, kvT, cacheT);
 
@@ -1278,8 +1287,8 @@ sealed class Worker(
             body += "\n\n\u2705 <i>Nothing firing, every target reporting.</i>";
 
         return body + Fmt.Note(
-            "Throughput, first token and KV pool are node-wide right now. Cache hit is since each engine "
-          + "started, so it reads 0 for a while after a replica roll \u2014 normal, not a fault.");
+            "Throughput, first token and KV pool are node-wide right now (KV pool: the fuller replica). "
+          + "Cache hit is the share of prompt tokens served from the prefix cache over the last hour.");
     }
 
     private async Task<Reply> KeysAsync(CancellationToken ct)
@@ -1288,7 +1297,8 @@ sealed class Worker(
         var tiersT = ledger.TiersAsync(ct);
         var consumersT = keys.ReadConsumersAsync(ct);
         var overriddenT = ledger.OverriddenAsync(ct);
-        await Task.WhenAll(balancesT, tiersT, consumersT, overriddenT);
+        var allOvT = ledger.AllOverridesAsync(ct);
+        await Task.WhenAll(balancesT, tiersT, consumersT, overriddenT, allOvT);
         var balances = balancesT.Result; var tiers = tiersT.Result; var consumers = consumersT.Result;
         var overridden = overriddenT.Result;
 
@@ -1305,11 +1315,14 @@ sealed class Worker(
             // is a real state and should look like one. The star marks values
             // set by hand — the consumers worth a second look.
             var tier = tiers.TryGetValue(name, out var tr) ? tr : "<i>no tier</i>";
-            sb.Append($"\n<b>{Esc(name)}</b>\n<code>{bal}</code> \u00b7 {tier}{(overridden.Contains(name) ? " \u2731" : "")}");
+            var quota = Policy.Resolve(tiers.GetValueOrDefault(name),
+                allOvT.Result.TryGetValue(name, out var ov) ? ov : new Dictionary<string, string>())[0].Value;
+            var ofQuota = long.TryParse(quota, CultureInfo.InvariantCulture, out var qn) && qn > 0 ? $" of {Fmt.Num(qn)}" : "";
+            sb.Append($"\n<b>{Esc(name)}</b>\n<code>{bal}</code>{ofQuota} \u00b7 {tier}{(overridden.Contains(name) ? " \u2731" : "")}");
         }
 
         var untiered = consumers.Keys.Count(n => !tiers.ContainsKey(n));
-        var notes = new List<string> { "Balances are tokens. Credentials are never listed \u2014 /opencode &lt;name&gt; re-sends one." };
+        var notes = new List<string> { "Balance of quota, in tokens (/balance for burn, limits and refill). Credentials are never listed \u2014 /opencode &lt;name&gt; re-sends one." };
         if (consumers.Keys.Any(overridden.Contains))
             notes.Add("\u2731 has settings changed from its tier \u2014 /policy &lt;name&gt;.");
         if (untiered > 0)
@@ -1317,70 +1330,187 @@ sealed class Worker(
         return new Reply(sb.ToString() + Fmt.Note(string.Join("\n", notes)), KeyPickerKeyboard(consumers.Keys));
     }
 
-    private async Task<string> BalanceAsync(string? name, CancellationToken ct)
+    // A balance alone does not answer "is this key in trouble": 12M is plenty
+    // on a 20M trial and nearly empty on a 300M service key. So every line
+    // carries the key's effective quota (tier default or hand-set), the share
+    // of it still left, the 24h burn, the runway and the next refill.
+    private async Task<Reply> BalanceAsync(string? name, CancellationToken ct)
     {
-        if (name is not null)
-        {
-            var q = await QuotaGetAsync(name, ct);
-            // Three different causes, one 403 from ai-quota. Say so rather than
-            // asserting one of them.
-            if (q is null)
-                return $"<b>{Esc(name)}</b> has no balance recorded.\n\nEither it was never seeded, or the ledger is unreachable. "
-                     + $"Seed it with <code>/topup {Esc(name)} 1000000</code>.";
+        if (name is not null) return await BalanceOneAsync(name, ct);
 
-            // Burn and runway come from the recording rules, so the arithmetic
-            // is identical to the dashboard and the ConsumerQuotaLow alert
-            // rather than a third implementation that can disagree with them.
-            var sel = $"{{ai_consumer=\"{name}\"}}";
-            var burnT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:tokens24h{sel})", ct);
-            var daysT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_days_left{sel})", ct);
-            var binT  = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:input24h{sel})", ct);
-            var boutT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:output24h{sel})", ct);
-            await Task.WhenAll(burnT, daysT, binT, boutT);
-
-            var body = $"\U0001f4b0 <b>{Esc(name)}</b>\n<b>{Fmt.Num(q.Value)}</b> tokens left <i>({q.Value:N0})</i>";
-
-            if (burnT.Result is > 0 && daysT.Result is { } days)
-            {
-                var bi = binT.Result ?? 0; var bo = boutT.Result ?? 0;
-                body += $"\n\n\U0001f525 Spent in 24h <b>{Fmt.Num(burnT.Result.Value)}</b>"
-                      + $"\n\u2b07 {Fmt.Num(bi)} in \u00b7 \u2b06 {Fmt.Num(bo)} out" + (Fmt.Ratio(bi, bo) is { Length: > 0 } ratio ? $" \u00b7 {ratio}" : "")
-                      + $"\n\u23f3 <b>{(days < 1 ? $"{days * 24:0} hours" : $"{days:0.#} days")}</b> left at this rate";
-                if (days < 1)
-                    body += $"\n\n\u26a0\ufe0f <b>Under a day left.</b> <code>/topup {Esc(name)} 10M</code>";
-            }
-            else
-            {
-                // Distinguish "idle" from "no data": a consumer who sent
-                // nothing in 24h has no runway problem, and saying "0 days" or
-                // showing nothing would both be misread.
-                body += "\n<i>No usage in the last 24h, so there is no burn rate to project.</i>";
-            }
-            return body;
-        }
-        var all = await ledger.ListAsync(ct);
-        if (all.Count == 0) return "No balances recorded yet.";
-
-        // Balances come from Redis directly — the billing record — and the
-        // runway column from Prometheus. If Prometheus is unreachable the
+        var allT = ledger.ListAsync(ct);
+        var tiersT = ledger.TiersAsync(ct);
+        var ovT = ledger.AllOverridesAsync(ct);
+        // Balances come from Redis directly — the billing record — and burn and
+        // runway from the recording rules. If Prometheus is unreachable the
         // balances still render, because they are the half that matters.
-        var runway = await PromAsync("sum by (ai_consumer) (consumer:quota_days_left)", ct);
+        var runwayT = PromAsync("sum by (ai_consumer) (consumer:quota_days_left)", ct);
+        var burnT = PromAsync("sum by (ai_consumer) (consumer:quota_spend:tokens24h)", ct);
+        await Task.WhenAll(allT, tiersT, ovT, runwayT, burnT);
+        // A key can have tokens left and still be refused all day by its daily
+        // limit; that is the more urgent fact, so read the limiter's counters.
+        var dayCounters = await Task.WhenAll(allT.Result.Keys.Select(async k =>
+            (Name: k, C: await ledger.CounterAsync(LimiterSync.CounterKey(k, 86_400), ct))));
 
-        // Most urgent first: a consumer about to run out is the reason to open
-        // this, and alphabetical order buried it.
+        var all = allT.Result;
+        if (all.Count == 0) return new Reply("No balances recorded yet.");
+        var runway = runwayT.Result; var burn = burnT.Result;
+        var now = DateTimeOffset.UtcNow;
+
         double Days(string n) => runway.TryGetValue(n, out var d) && d < 3650 ? d : double.MaxValue;
-        var sb = new StringBuilder("\U0001f4b0 <b>Balances</b>\n");
-        foreach (var (who, bal) in all.OrderBy(x => x.Value <= 0 ? -1 : Days(x.Key)).ThenBy(x => x.Key, StringComparer.Ordinal))
+        (long? Quota, string Refill, string? Tier, long? Daily) Pol(string n)
+        {
+            var tier = tiersT.Result.GetValueOrDefault(n);
+            var r = Policy.Resolve(tier, ovT.Result.TryGetValue(n, out var o) ? o : new Dictionary<string, string>());
+            long? q = long.TryParse(r[0].Value, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : null;
+            long? daily = long.TryParse(r[2].Value, CultureInfo.InvariantCulture, out var dv) && dv > 0 ? dv : null;
+            return (q, r[1].Value ?? "manual", tier, daily);
+        }
+        var dayUse = dayCounters.ToDictionary(x => x.Name, x => x.C);
+        bool Refusing(string n) => Pol(n).Daily is { } lim && LimiterSync.InScope(n)
+            && dayUse.TryGetValue(n, out var c) && c.Used is { } u && u > lim;
+
+        var withQuota = all.Where(x => Pol(x.Key).Quota is not null).ToList();
+        var sb = new StringBuilder($"\U0001f4b0 <b>Balances</b> \u00b7 {all.Count} keys\n");
+        var totalLeft = all.Values.Where(v => v > 0).Sum();
+        sb.Append($"<b>{Fmt.Num(totalLeft)}</b> tokens left");
+        if (withQuota.Count > 0)
+            sb.Append($" \u00b7 quotas total <b>{Fmt.Num(withQuota.Sum(x => Pol(x.Key).Quota!.Value))}</b>");
+        sb.Append('\n');
+
+        // Most urgent first: a key about to run out is the reason to open this.
+        foreach (var (who, bal) in all.OrderBy(x => x.Value <= 0 ? -2 : Refusing(x.Key) ? -1 : Days(x.Key)).ThenBy(x => x.Key, StringComparer.Ordinal))
         {
             var d = Days(who);
-            var icon = bal <= 0 ? "\U0001f534" : d < 1 ? "\U0001f7e0" : d < 7 ? "\U0001f7e1" : "\U0001f7e2";
-            var left = bal <= 0 ? "empty" : d == double.MaxValue ? "idle" : d < 1 ? $"{d * 24:0}h left" : $"{d:0.#} days left";
-            sb.Append($"\n{icon} <b>{Esc(who)}</b>\n<code>{Fmt.Num(bal)}</code> \u00b7 {left}");
+            var (quota, refill, tier, daily) = Pol(who);
+            var icon = bal <= 0 || Refusing(who) ? "\U0001f534" : d < 1 ? "\U0001f7e0" : d < 7 ? "\U0001f7e1" : "\U0001f7e2";
+            sb.Append($"\n{icon} <b>{Esc(who)}</b> \u00b7 {Esc(tier ?? "no tier")}\n");
+
+            if (quota is { } q)
+            {
+                var share = Math.Max(0, (double)bal) / q;
+                sb.Append($"<code>{Fmt.Num(bal)}</code> of {Fmt.Num(q)} left \u00b7 {LeftPct(share)}\n");
+                sb.Append($"{Fmt.ShareBar(Math.Min(share, 1))}\n");
+            }
+            else
+                sb.Append($"<code>{Fmt.Num(bal)}</code> left \u00b7 <i>no quota set</i>\n");
+
+            var spent = burn.GetValueOrDefault(who);
+            var runLine = bal <= 0 ? "\u26d4 empty"
+                        : d == double.MaxValue ? "idle"
+                        : $"\U0001f525 {Fmt.Num(spent)}/24h \u00b7 \u23f3 {Runway(d, true)}";
+            var refillLine = refill == "manual" ? "\U0001f504 manual"
+                           : $"\U0001f504 {RefillJob.Next(refill, now):MMM dd}";
+            sb.Append($"{runLine} \u00b7 {refillLine}");
+            if (Refusing(who) && daily is { } dl)
+                sb.Append($"\n\u26d4 daily limit {Fmt.Num(dl)} hit \u00b7 refused for {Fmt.Duration(dayUse[who].Ttl)}");
         }
-        return sb.ToString() + Fmt.Note(
-            "Runway is the balance divided by the last 24h of spend; idle means nothing spent in 24h. "
-          + "\U0001f534 empty \u00b7 \U0001f7e0 under a day \u00b7 \U0001f7e1 under a week \u00b7 \U0001f7e2 more. "
-          + "/balance &lt;name&gt; shows one consumer's burn split by direction.");
+
+        return new Reply(sb.ToString() + Fmt.Note(
+            "<b>of Q left</b> — the balance against the key's quota (its tier default, or a value set on the key); "
+          + "the bar is the share still left. Above 100% means it was topped up past its quota.\n"
+          + "\U0001f525 tokens charged in the last 24h \u00b7 \u23f3 runway at that rate \u00b7 idle means nothing spent in 24h.\n"
+          + "\U0001f504 next automatic refill back to the quota, or manual.\n"
+          + "\u26d4 over its daily token limit: requests get 429 until that 24h window resets, whatever the balance.\n"
+          + "\U0001f534 empty or refused \u00b7 \U0001f7e0 under a day \u00b7 \U0001f7e1 under a week \u00b7 \U0001f7e2 more. "
+          + "Input and output tokens are deducted at the same rate. Tap a key for its detail, or /balance &lt;name&gt;."),
+            KeyPickerKeyboard(all.Keys));
+    }
+
+    private static string Runway(double days, bool compact) =>
+        days >= 365 ? (compact ? "1y+" : "over a year")
+      : days < 1 ? (compact ? $"{days * 24:0}h" : $"{days * 24:0} hours")
+      : compact ? $"{days:0.#}d" : $"{days:0.#} days";
+
+    private static string LeftPct(double share) =>
+        share >= 10 ? ">999%" : share > 0 && share < 0.01 ? "&lt;1%" : $"{share * 100:0}%";
+
+    private async Task<Reply> BalanceOneAsync(string name, CancellationToken ct)
+    {
+        if (!SafeName(name) || !(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
+
+        var balT = ledger.ListAsync(ct);
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        var dayT = ledger.CounterAsync(LimiterSync.CounterKey(name, 86_400), ct);
+        var minT = ledger.CounterAsync(LimiterSync.CounterKey(name, 60), ct);
+        // Burn and runway come from the recording rules, so the arithmetic is
+        // identical to the dashboard and the ConsumerQuotaLow alert.
+        var sel = $"{{ai_consumer=\"{name}\"}}";
+        var burnT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:tokens24h{sel})", ct);
+        var daysT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_days_left{sel})", ct);
+        var binT  = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:input24h{sel})", ct);
+        var boutT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:output24h{sel})", ct);
+        await Task.WhenAll(balT, tierT, ovT, dayT, minT, burnT, daysT, binT, boutT);
+
+        var tier = tierT.Result;
+        var resolved = Policy.Resolve(tier, ovT.Result);
+        static long? Pos(ResolvedSetting r) =>
+            long.TryParse(r.Value, CultureInfo.InvariantCulture, out var n) && n > 0 ? n : null;
+        var quota = Pos(resolved[0]);
+        var keyboard = new InlineKeyboardMarkup([
+            [new InlineKeyboardButton("\u2699\ufe0f Settings", $"pp:{name}"),
+             new InlineKeyboardButton("\U0001f511 Key card", $"kc:24h:{name}")]]);
+
+        var sb = new StringBuilder($"\U0001f4b0 <b>{Esc(name)}</b> \u00b7 {(tier is null ? "no tier" : "tier " + Esc(tier))}\n\n");
+        if (!balT.Result.TryGetValue(name, out var bal))
+        {
+            sb.Append("<b>No balance recorded.</b> It was never seeded, or the ledger is unreachable.\n")
+              .Append(quota is { } q0 ? $"Quota for this key: <b>{Fmt.Num(q0)}</b>. " : "")
+              .Append($"Seed it with <code>/topup {Esc(name)} {(quota ?? 1_000_000).ToString(CultureInfo.InvariantCulture)}</code>.");
+            return new Reply(sb.ToString(), keyboard);
+        }
+
+        if (quota is { } q)
+        {
+            var share = Math.Max(0, (double)bal) / q;
+            sb.Append($"<b>{Fmt.Num(bal)}</b> left of <b>{Fmt.Num(q)}</b> quota \u00b7 {LeftPct(share)}\n")
+              .Append($"{Fmt.ShareBar(Math.Min(share, 1))}\n")
+              .Append(bal <= q
+                  ? $"{Fmt.Num(q - bal)} below quota \u00b7 <code>{bal:N0}</code> of <code>{q:N0}</code>\n"
+                  : $"Topped up {Fmt.Num(bal - q)} past the quota \u00b7 <code>{bal:N0}</code>\n");
+        }
+        else
+            sb.Append($"<b>{Fmt.Num(bal)}</b> tokens left <i>({bal:N0})</i> \u00b7 no quota set\n");
+
+        if (bal <= 0)
+            sb.Append($"\n\u26d4 <b>Empty: every request is refused (403).</b> <code>/topup {Esc(name)} 10M</code>\n");
+
+        if (burnT.Result is > 0 && daysT.Result is { } days)
+        {
+            var bi = binT.Result ?? 0; var bo = boutT.Result ?? 0;
+            sb.Append($"\n\U0001f525 Spent in 24h <b>{Fmt.Num(burnT.Result.Value)}</b>\n")
+              .Append($"\u2b07 {Fmt.Num(bi)} in \u00b7 \u2b06 {Fmt.Num(bo)} out")
+              .Append(Fmt.Ratio(bi, bo) is { Length: > 0 } ratio ? $" \u00b7 {ratio}\n" : "\n")
+              .Append($"\u23f3 <b>{Runway(days, false)}</b> left at this rate\n");
+            if (days < 1 && bal > 0)
+                sb.Append($"\u26a0\ufe0f <b>Under a day left.</b> <code>/topup {Esc(name)} 10M</code>\n");
+        }
+        else
+            sb.Append("\n<i>Nothing spent in the last 24h, so there is no burn rate to project.</i>\n");
+
+        // The limiter's own counters, so "used" is what it compares against.
+        string Window(string icon, string label, (long? Used, long Ttl) c, long? limit)
+        {
+            if (limit is null || !LimiterSync.InScope(name)) return $"{icon} {label}: no limit\n";
+            if (c.Used is not { } used) return $"{icon} {label} {Fmt.Num(limit.Value)}: nothing used, no window open\n";
+            var line = $"{icon} {label} {Fmt.Num(limit.Value)}: {Fmt.Num(used)} used ({LeftPct((double)used / limit.Value)}), resets in {Fmt.Duration(c.Ttl)}";
+            return line + (used > limit ? " \u26d4 <b>refusing</b>\n" : "\n");
+        }
+        sb.Append('\n')
+          .Append(Window("\U0001f4c5", "Daily limit", dayT.Result, Pos(resolved[2])))
+          .Append(Window("\u23f1", "Per-minute limit", minT.Result, Pos(resolved[3])));
+
+        var mode = resolved[1].Value ?? "manual";
+        sb.Append(mode != "manual" && quota is { } rq
+            ? $"\U0001f504 Refill {mode} \u00b7 next <b>{RefillJob.Next(mode, DateTimeOffset.UtcNow):yyyy-MM-dd HH:mm} UTC</b> \u2192 {Fmt.Num(rq)}"
+            : "\U0001f504 Refill manual: tokens are added only by /topup");
+
+        return new Reply(sb.ToString() + Fmt.Note(
+            "The balance is one total: input and output tokens are deducted alike, and one request can overdraw it by its own size. "
+          + "Quota is the key's tier default unless a value is set on the key; a refill replaces the balance with the quota, "
+          + "unused tokens do not carry over. The daily and per-minute windows open at the key's first request."), keyboard);
     }
 
     private async Task<Reply> UsageAsync(string window, CancellationToken ct)
@@ -1936,8 +2066,11 @@ sealed class Worker(
     {
         var statsT = KeyStatsAsync(name, window, ct);
         var pricesT = priceBook.GetAsync(ct);
-        await Task.WhenAll(statsT, pricesT);
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        await Task.WhenAll(statsT, pricesT, tierT, ovT);
         var st = statsT.Result; var prices = pricesT.Result;
+        long? quota = long.TryParse(Policy.Resolve(tierT.Result, ovT.Result)[0].Value, CultureInfo.InvariantCulture, out var qv) && qv > 0 ? qv : null;
 
         static string N(double? v) => v is { } x && double.IsFinite(x) ? Fmt.Num(x) : "—";
 
@@ -1945,6 +2078,8 @@ sealed class Worker(
 
         // Money and runway first: it is what the card is opened for.
         sb.Append($"\U0001f4b0 Balance <b>{N(st.Balance)}</b>");
+        if (quota is { } q && st.Balance is { } bv && double.IsFinite(bv))
+            sb.Append($" of {Fmt.Num(q)} ({LeftPct(Math.Max(0, bv) / q)})");
         if (st.Runway is { } rw && double.IsFinite(rw))
             sb.Append(rw >= 3650 ? " · idle" : rw < 1 ? $" · ⏳ <b>{rw * 24:0}h</b> left" : $" · ⏳ {rw:0.#} days");
         sb.Append('\n');
@@ -2138,10 +2273,10 @@ sealed class Worker(
             b.Append("cut_unbilled_seconds=").Append(Num(st.UnbilledSeconds)).Append('\n');
             if (st.TokensIn is { } i && st.TokensOut is { } o)
             {
-                b.Append("cost_usd_openrouter=").Append(PriceBook.Usd(PriceBook.Cost(p.OpenRouter, i, o))).Append('\n');
-                b.Append("cost_usd_openrouter_cache_aware=").Append(PriceBook.Usd(PriceBook.Cost(p.OpenRouter, i, o, st.CacheHit))).Append('\n');
-                b.Append("cost_usd_alibaba_singapore=").Append(PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, i, o))).Append('\n');
-                b.Append("cost_usd_alibaba_beijing=").Append(PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, i, o))).Append('\n');
+                b.Append("cost_usd_openrouter=").Append(PriceBook.UsdText(PriceBook.Cost(p.OpenRouter, i, o))).Append('\n');
+                b.Append("cost_usd_openrouter_cache_aware=").Append(PriceBook.UsdText(PriceBook.Cost(p.OpenRouter, i, o, st.CacheHit))).Append('\n');
+                b.Append("cost_usd_alibaba_singapore=").Append(PriceBook.UsdText(PriceBook.Cost(p.AlibabaSg, i, o))).Append('\n');
+                b.Append("cost_usd_alibaba_beijing=").Append(PriceBook.UsdText(PriceBook.Cost(p.AlibabaBj, i, o))).Append('\n');
             }
             b.Append("gateway_p95_s=").Append(Num(st.GatewayP95, 3)).Append('\n');
             b.Append("engine_e2e_p95_s=").Append(Num(st.E2e, 3)).Append('\n');
@@ -2788,22 +2923,23 @@ sealed class Worker(
     // Gateway and engine latency, per consumer, in one card each. The two used
     // to be two tables with different row sets and orders, which made "is this
     // consumer slow at the gateway or inside the engine" a cross-reference job.
-    private async Task<string> LatencyAsync(string? name, CancellationToken ct)
+    private async Task<string> LatencyAsync(string? name, string window, CancellationToken ct)
     {
-        // No rate() window here, deliberately. rate() over an idle window is
-        // zero, and histogram_quantile of an all-zero histogram is NaN — which
-        // Prometheus omits, so the command would answer "no data" for a
-        // consumer who simply has not sent anything in the last few minutes.
-        // The cumulative buckets always have an answer, and "p95 since the
-        // counters started" is the question an operator actually means here.
+        // increase() over a window, default 24h. This used to read the raw
+        // cumulative buckets ("since the counters started"), which broke twice
+        // on 2026-09-13: a replica roll resets every engine histogram, and
+        // Vector expires a consumer's gateway series after 10 idle minutes, so
+        // /p95 showed only "unauthenticated". increase() spans restarts and
+        // expiry; a window long enough to hold requests avoids the empty-rate
+        // NaN that the cumulative read was meant to dodge.
         var gsel = name is null ? "" : $"{{consumer=\"{name}\"}}";
         // consumer!="" drops health probes and anything that reached a replica
         // without passing the gateway.
         var esel = name is null ? "{consumer!=\"\"}" : gsel;
         string G(double p) =>
-            $"histogram_quantile({p.ToString(CultureInfo.InvariantCulture)}, sum by (consumer,le) (gateway_request_duration_seconds_bucket{gsel}))";
+            $"histogram_quantile({p.ToString(CultureInfo.InvariantCulture)}, sum by (consumer,le) (increase(gateway_request_duration_seconds_bucket{gsel}[{window}])))";
         string E(string metric) =>
-            $"histogram_quantile(0.95, sum by (consumer,le) (sglang:{metric}_bucket{esel}))";
+            $"histogram_quantile(0.95, sum by (consumer,le) (increase(sglang:{metric}_bucket{esel}[{window}])))";
 
         var p50T = PromAsync(G(0.50), ct, "consumer");
         var p95T = PromAsync(G(0.95), ct, "consumer");
@@ -2823,10 +2959,10 @@ sealed class Worker(
                        .ToList();
         if (names.Count == 0)
             return name is null
-                ? "⏱ <b>Latency</b>\n\nNo latency data yet — it starts with the first request after the counters start."
-                : $"⏱ <b>Latency</b> · {Esc(name)}\n\nNo latency data for this consumer yet.";
+                ? $"⏱ <b>Latency</b> · {window}\n\nNo requests in this window."
+                : $"⏱ <b>Latency</b> · {Esc(name)} · {window}\n\nNo requests from this consumer in this window.";
 
-        var sb = new StringBuilder("⏱ <b>Latency</b>" + (name is null ? "" : $" · {Esc(name)}") + "\n");
+        var sb = new StringBuilder("⏱ <b>Latency</b>" + (name is null ? "" : $" · {Esc(name)}") + $" · {window}\n");
         foreach (var n in names)
         {
             sb.Append($"\n<b>{Esc(n)}</b>\n");
@@ -2837,8 +2973,9 @@ sealed class Worker(
         }
 
         sb.Append(Fmt.Note(
-            "\U0001f310 <b>gateway</b> — the whole request as Envoy saw it, since Vector last started.\n"
-          + "⚙️ <b>engine</b> — measured inside SGLang since the replica started: first token is queue wait "
+            $"Over the last {window}; /p95 7d or /p95 &lt;name&gt; to change.\n"
+          + "\U0001f310 <b>gateway</b> — the whole request as Envoy saw it.\n"
+          + "⚙️ <b>engine</b> — measured inside SGLang: first token is queue wait "
           + "plus prefill, per token is the gap between output tokens. No gateway, router or network in it.\n"
           + "Both are bucketed, so approximate at low request counts; exact per-request figures are in the fact table."));
         return sb.ToString();
@@ -3843,14 +3980,19 @@ sealed class PriceBook(IHttpClientFactory http, ILogger<PriceBook> log)
         return ((input - cached) * p.InPerM + cached * (p.CacheReadPerM ?? 0m) + D(tout) * p.OutPerM) / 1_000_000m;
     }
 
+    // Every reply is HTML parse_mode, where a bare '<' opens a tag: "<$0.01"
+    // made Telegram refuse the whole /usage and /top reply with "Unsupported
+    // start tag" (2026-09-13). UsdText is the plain form for the report facts.
     public static string Usd(decimal v) => v switch
     {
         0m => "$0",
-        < 0.01m => "<$0.01",
+        < 0.01m => "&lt;$0.01",
         < 100m => "$" + v.ToString("0.00", CultureInfo.InvariantCulture),
         < 10_000m => "$" + v.ToString("N0", CultureInfo.InvariantCulture),
         _ => "$" + (v / 1000m).ToString("0.#", CultureInfo.InvariantCulture) + "K",
     };
+
+    public static string UsdText(decimal v) => v is > 0m and < 0.01m ? "<$0.01" : Usd(v);
 
     public static string PerMText(PriceRef p) =>
         $"${p.InPerM:0.###} in / ${p.OutPerM:0.###} out"
@@ -4482,10 +4624,40 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
                 JsonSerializer.Serialize(payload, BotJson.Default.SendMessage), Encoding.UTF8);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             using var r = await http.CreateClient("telegram").PostAsync("sendMessage", content, ct);
-            if (!r.IsSuccessStatusCode)
-                log.LogError("sendMessage failed: HTTP {Code} {Body}",
-                    (int)r.StatusCode, await r.Content.ReadAsStringAsync(ct));
+            if (r.IsSuccessStatusCode) continue;
+            var body = await r.Content.ReadAsStringAsync(ct);
+            log.LogError("sendMessage failed: HTTP {Code} {Body}", (int)r.StatusCode, body);
+
+            // One bad character used to cost the operator the whole reply with
+            // nothing on screen. On an HTML parse refusal, resend the same chunk
+            // as plain text: uglier, but the numbers arrive and the log names
+            // the bug.
+            if (!body.Contains("can't parse entities", StringComparison.Ordinal)) continue;
+            var plain = new SendMessage(chatId, PlainText(chunks[i]), null, last ? reply.Keyboard : null);
+            using var retry = new StringContent(
+                JsonSerializer.Serialize(plain, BotJson.Default.SendMessage), Encoding.UTF8);
+            retry.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var r2 = await http.CreateClient("telegram").PostAsync("sendMessage", retry, ct);
+            if (!r2.IsSuccessStatusCode)
+                log.LogError("plain-text resend failed: HTTP {Code} {Body}",
+                    (int)r2.StatusCode, await r2.Content.ReadAsStringAsync(ct));
         }
+    }
+
+    // The HTML reply with its tags removed and entities decoded, for the
+    // parse-failure fallback above.
+    private static string PlainText(string html)
+    {
+        var sb = new StringBuilder(html.Length);
+        for (var i = 0; i < html.Length; i++)
+        {
+            var tag = html[i] == '<' && i + 1 < html.Length
+                && (char.IsAsciiLetter(html[i + 1]) || html[i + 1] == '/');
+            var end = tag ? html.IndexOf('>', i) : -1;
+            if (end > i) { i = end; continue; }
+            sb.Append(html[i]);
+        }
+        return WebUtility.HtmlDecode(sb.ToString());
     }
 
     // Replace a message's text and keyboard. Only for screens that are
@@ -4589,7 +4761,7 @@ static class Fmt
         input < 1 || output < 1 ? "" : input >= output ? $"{input / output:0}:1" : $"1:{output / input:0}";
 
     public static string Pct(double share) =>
-        share <= 0 ? "0%" : share < 0.01 ? "<1%" : $"{share * 100:0}%";
+        share <= 0 ? "0%" : share < 0.01 ? "&lt;1%" : $"{share * 100:0}%";   // HTML: see PriceBook.Usd
 
     // A share as ten cells, for a line of proportional text. ▰/▱ are the same
     // width as each other in every Telegram client font, which is all it needs.
@@ -4815,7 +4987,7 @@ sealed class Chat
 sealed record SendMessage(
     [property: JsonPropertyName("chat_id")] long ChatId,
     [property: JsonPropertyName("text")] string Text,
-    [property: JsonPropertyName("parse_mode")] string ParseMode = "HTML",
+    [property: JsonPropertyName("parse_mode")] string? ParseMode = "HTML",
     [property: JsonPropertyName("reply_markup")] InlineKeyboardMarkup? ReplyMarkup = null);
 
 sealed record EditMessageText(
