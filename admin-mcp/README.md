@@ -80,7 +80,7 @@ Read:
 
 ```
 list_consumers                     names, balances, runway
-consumer_stats <name> <window>     gateway AND engine view of one consumer
+consumer_stats <name> <window>     gateway AND engine view of one consumer, reference cost
 consumer_requests <name> ...       individual requests from the fact table
 request_detail <request_id>        one request end to end, the two-hop join
 top_consumers <window>             ranking by tokens

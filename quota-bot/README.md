@@ -60,6 +60,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 /errors [1h|24h|7d]         status mix per consumer
 /trace <request-id>         where to look one request up
 /langfuse                   what Langfuse can and cannot tell you
+/prices                     reference prices for this model: OpenRouter and Alibaba Cloud
 
 /status                     can I still operate the gateway
 /health                     is the stack healthy, and can I believe it
@@ -118,6 +119,30 @@ deliberate cuts; one consumer had 24 of 666 chat requests end that way. Vector
 counts them as `gateway_unbilled_{requests,seconds}_total` (see
 `vector/vector.yaml`, tests in `vector/vector_test.yaml`), and the key card,
 the written report and admin-mcp's `consumer_stats` show them.
+
+## Usage in money: reference prices
+
+`/key`, `/usage` and the written report price each consumer's tokens at what
+the same model costs from public providers — **reference prices for
+monitoring, never a bill**, and labelled that way everywhere:
+
+| reference | source | refreshed |
+|---|---|---|
+| OpenRouter, list | `GET /api/v1/models`, headline price for `PRICE_OPENROUTER_MODEL` (default `qwen/qwen3.8-27b`) | daily, snapshot until the first fetch, last good price on failure |
+| OpenRouter, cache-aware | the same, with the key's measured prefix-cache hit share priced at `input_cache_read` | — |
+| Alibaba Cloud Singapore / Beijing | Model Studio price page, Qwen3.8-27B | **by hand** in `PriceBook`, no API exists; dated 2026-09-12 |
+
+The provider spread is reported next to the OpenRouter price because it is wide
+(output $2.00–3.20 per M across 15 providers on 2026-09-13). `/prices` shows the
+table and a worked example; `GET /admin/prices` serves the same numbers so
+admin-mcp's `consumer_stats` prices with them rather than a second copy. The
+report's caption carries the costs computed by the bot, so the monitored number
+does not depend on the model copying it.
+
+Token counts for pricing come from ai-statistics (Envoy), not Vector's
+`gateway_tokens_total`: Vector expires idle series after ten minutes, and
+Prometheus then loses the first request of each burst (measured 986 vs 1,520
+input tokens for a sparse consumer). Cut-off requests are not in any price.
 
 ## Quota is one total-token number
 
