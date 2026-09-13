@@ -6,8 +6,11 @@ deployment as of 2026-09-13 (DFlash2 + HiCache config,
 `tuning/docs/HICACHE_DFLASH2.md`). Update it when `--context-length`, the
 gateway `max_tokens` ceiling or the tier limits change.
 
-The API key is **not** in the prompt: issue one with quota-bot `/newkey` and
-put it in `~/.hermes/.env` yourself.
+The API key is **not** in the prompt. Issue one with quota-bot `/newkey`; `/connect <name>`
+shows its endpoint, model and key. Put the key in `~/.hermes/.env` as `QWEN_GW_API_KEY`.
+
+This is the customer gateway (`qw38-27b-gw.duckdns.org`, per-key auth, quota and
+limits), not the internal `qw36-27b.bnna.dev` edge.
 
 ---
 
@@ -21,22 +24,22 @@ inventing one.
 
 ENDPOINT — add it as a named custom provider
   providers:
-    qwen-a100:
-      api: https://qw36-27b.bnna.dev/v1
-      key_env: QWEN_EDGE_API_KEY        # I will put the key in ~/.hermes/.env
+    qwen-gw:
+      api: https://qw38-27b-gw.duckdns.org/v1
+      key_env: QWEN_GW_API_KEY          # I will put the key in ~/.hermes/.env
       transport: chat_completions
-      default_model: qwen36-27b
+      default_model: qwen3.8-27b
       discover_models: false            # /v1/models here does not report the window
       request_timeout_seconds: 900
       stale_timeout_seconds: 300
       models:
-        qwen36-27b:
+        qwen3.8-27b:
           context_length: 169000
   model:
-    provider: custom:qwen-a100
-    default: qwen36-27b
-- The model id "qwen36-27b" is Qwen3.8-27B in BF16: a thinking model with
-  vision, served by SGLang behind an API gateway.
+    provider: custom:qwen-gw
+    default: qwen3.8-27b
+- The key is sent as a normal Bearer token. "qwen3.8-27b" is Qwen3.8-27B in
+  BF16: a thinking model with vision, served by SGLang behind an API gateway.
 
 CONTEXT WINDOW — set explicitly, never rely on auto-detection
 - This endpoint's /v1/models does NOT report a context length, so auto-detection
@@ -48,6 +51,8 @@ CONTEXT WINDOW — set explicitly, never rely on auto-detection
 - Any request asking for more than 70,000 output tokens (max_tokens or
   max_completion_tokens) is rejected by the gateway with HTTP 422. Never
   request more than 70000; leave room so prompt + max_tokens <= 169000.
+- A request body may be at most 1 MB of JSON. A full 169K-token text context
+  fits (~0.75 MB); inline base64 images can exceed it (HTTP 413).
 
 COMPRESSION — compress well before the hard ceiling
 Reasons, all measured on this node:
@@ -103,6 +108,7 @@ TIMEOUTS AND RETRIES
   Do not hammer it. If Retry-After is large (hours), stop and tell me.
 - HTTP 403 type "insufficient_quota": the key's token balance is exhausted.
   Do NOT retry; tell me it needs a top-up.
+- HTTP 401: the key is wrong or revoked. Do not retry; tell me.
 - HTTP 400 context-length error: compress, then retry once.
 - Keep agent.api_max_retries at 3 for 5xx and connection errors only.
 
