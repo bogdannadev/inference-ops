@@ -230,6 +230,14 @@ if docker inspect "$GW" >/dev/null 2>&1; then
     [ -n "$stats" ] || continue
     pending=0
     for p in $(cd "$RENDERED" && ls wasmplugins/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/\.yaml$//'); do
+      # A plugin disabled everywhere — defaultConfigDisable and no enabled
+      # matchRule — is never instantiated, so it never reports update_success
+      # and would read as the fail-open alarm below. ai-token-ratelimit ships
+      # that way; quota-bot enables its rule on the live object afterwards.
+      if grep -q 'defaultConfigDisable: true' "$RENDERED/wasmplugins/$p.yaml" \
+         && ! grep -qE 'configDisable: false' "$RENDERED/wasmplugins/$p.yaml"; then
+        continue
+      fi
       ok=$(printf '%s\n' "$stats" | grep -E "wasmplugin/higress-system\.${p}\.update_success: [1-9]" || true)
       [ -n "$ok" ] || pending=$((pending+1))
     done
