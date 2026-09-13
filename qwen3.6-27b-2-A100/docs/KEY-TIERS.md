@@ -17,10 +17,13 @@ counters and its next refill. The table lives in `quota-bot/bot.cs`
 | `quota` | `/newkey` seed and each refill | changing it never moves a live balance by itself |
 | `max_tokens` | **nothing, per key** | a WasmPlugin matchRule cannot select by consumer (v2.2.4 proto); one global 70000 ceiling |
 
-Rollout: `LIMITER_SCOPE` in `quota-bot/.env` limits the gateway rules to the
-named consumers. Proved on `testafter` 2026-09-13 — per-minute 429 at the
-expected request, daily 429 with `Retry-After: 86295`, and requests allowed
-while the limiter's Redis was unreachable.
+Rollout: proved on `testafter` 2026-09-13 — per-minute 429 at the expected
+request, daily 429 with `Retry-After: 86295`, and requests allowed while the
+limiter's Redis was unreachable — then applied to **every consumer** the same
+day (`LIMITER_SCOPE` removed). Four keys carry limits: `danila`, `testafter`
+(team), `vkondratpev-demo2-cursor` and `vkondratyev-demo` (service; the latter
+with a hand-set 10 M daily limit, kept deliberately although it used 32.6 M on
+2026-09-12). Setting `LIMITER_SCOPE` again narrows the rules for a future test.
 
 Companion: `docs/METRICS-PLAN.md` (build order), `docs/OBSERVABILITY.md`
 (why quota is a single total-token number),
