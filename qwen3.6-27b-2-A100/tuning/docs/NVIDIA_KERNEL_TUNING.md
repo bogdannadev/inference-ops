@@ -25,6 +25,10 @@ of §1 about `nvidia-smi -pl` headroom — there is none; see §1.
 > from per-projection measurements). The remaining lever is fewer, larger
 > GEMMs — quantization — not better-scheduled small ones.
 
+> **2026-09-13 — prefill kernel campaign opened: `PREFILL_KERNELS.md`.** Prefill
+> (§0a: ~27% of BF16 peak) is the phase this document left open. Note the
+> production chunk is now 4096 tokens and activation headroom ~2.9 GB.
+
 ---
 
 ## 0. What Phase 1 measured, and why it changes the priority
