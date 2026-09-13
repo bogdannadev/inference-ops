@@ -2170,8 +2170,9 @@ sealed class Worker(
     // everything or invent a baseline.
     private const string ReportNodeFacts =
         "Node: 2x A100 80GB PCIe, Qwen3.8-27B in BF16, tensor parallel 1 with two "
-        + "independent replicas behind a cache-aware router. EAGLE speculative decoding. "
-        + "Single-stream output ceiling ~55 tok/s; whole-node ceiling ~387 tok/s; engine "
+        + "independent replicas behind a cache-aware router. DFlash2 speculative decoding and a "
+        + "host-RAM prefix cache tier (HiCache). Single-stream output ~70 tok/s short context, "
+        + "~65 tok/s at 55K; whole-node ceiling ~480 tok/s; engine "
         + "concurrency 8 (2 replicas x 4). Decode is memory-bandwidth bound. Measured cost: "
         + "an output token costs ~68x an uncached input token and ~4800x a cached one, so "
         + "prefix cache hit rate and the input:output ratio drive cost more than volume does. "

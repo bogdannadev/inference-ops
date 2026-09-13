@@ -42,10 +42,12 @@ serving traffic:
 
 | Check | Expected |
 |---|---|
-| `max_total_num_tokens` | **169408** (EAGLE 6/5 profile, sglang 0.5.18) |
+| `max_total_num_tokens` | **182528** (DFlash2 + fp8 draft KV at mem 0.94, 2026-09-13); must stay >= 169000 |
 | decode CUDA-graph `bs` | `[1, 2, 3, 4]` |
-| `max_mamba_cache_size` | 43 slots (EAGLE 6/5 profile) |
-| boot to healthy | ~181 s |
+| `max_mamba_cache_size` | 43 slots |
+| `available_gpu_mem` | ~2.91 GB (was 8.49 on EAGLE). Watch worker logs for `OutOfMemoryError` |
+| Tree cache line | `hicache_attached=True` |
+| boot to healthy | ~270 s (HiCache pins ~52 GB host RAM at boot) |
 
 `max_total_num_tokens` was **171008** on sglang 0.5.17. The v0.5.18 upgrade
 (2026-08-24) moved it to **169408** — 1,600 tokens / ~100 MiB less KV, showing
@@ -54,7 +56,8 @@ Weights (51.047 GB) and the whole Mamba pool are byte-identical across the two
 builds, so this is a slightly larger pre-KV runtime workspace under torch 2.13
 / flashinfer 0.6.17 / cuDNN 9.14.
 
-**Watch the margin.** 169,408 still clears `--context-length 169000`, but by
+**Watch the margin.** *(2026-09-13: the DFlash2 config gives 182,528, a
+13,528-token margin; the note below is the EAGLE-era history.)* 169,408 still clears `--context-length 169000`, but by
 only **408 tokens** (it was 792). If a future change costs another ~500 tokens
 the pool drops under the context length and long requests start failing — the
 failure mode `tuning/docs/RESULTS.md` records at 137,600. There is room to buy
@@ -145,14 +148,15 @@ that the scrape config was picked up (`/api/v1/status/config`).
 
 ## Rollback / baseline
 
-The rollback baseline is: remove the speculative flags, roll one replica at a
-time:
+Rollback to the pre-2026-09-13 config (EAGLE/MTP, no HiCache) — the header of
+`docker-compose.yml` lists it; in both replica command blocks:
 
 ```bash
-# remove from BOTH replica command blocks:
---speculative-algorithm EAGLE
---speculative-num-draft-tokens 6
---speculative-num-steps 5
+# DFLASH -> --speculative-algorithm EAGLE --speculative-num-draft-tokens 6
+#          --speculative-num-steps 5 --speculative-eagle-topk 1
+# drop --speculative-draft-model-path/-revision, --speculative-draft-kv-cache-dtype
+# --mem-fraction-static 0.92, --chunked-prefill-size/--max-prefill-tokens 16384
+# drop --enable-hierarchical-cache --hicache-ratio 3
 # then
 ./deploy/roll-replica.sh r1 && ./deploy/roll-replica.sh r0
 ```
@@ -171,7 +175,7 @@ time:
   `cap_add: [SYS_NICE]`.
 - Transformers deprecation warnings (`use_fast`, `torch_dtype`) — upstream
   noise, revisit on image upgrade.
-- Mixed-chunked-prefill disabled message — expected with EAGLE.
+- Mixed-chunked-prefill disabled message — expected with speculative decoding.
 
 ## Gotchas
 

@@ -62,14 +62,14 @@ timescales and feeds back into the settings the other two obey.
 │   │     │          continuous batching                           │    │    │
 │   │     ▼                                                        │    │    │
 │   │  PREFILL ──────► radix prefix cache ──► reuse or compute     │    │    │
-│   │     │            (mamba extra_buffer)   cached tokens skip   │    │    │
+│   │     │            + HiCache host tier    cached tokens skip   │    │    │
 │   │     ▼                                   prefill entirely     │    │    │
 │   │  DECODE LOOP ◄───────────────────────────────────┐           │    │    │
-│   │     │  EAGLE draft head: 6 tokens / 5 steps      │           │    │    │
+│   │     │  DFlash2 drafter: block of 8, one pass     │           │    │    │
 │   │     │  verify in ONE forward pass ───────────────┘           │    │    │
 │   │     │  accepted ≈ N tokens for the cost of 1 pass            │    │    │
 │   │     ▼                                                        │    │    │
-│   │  KV POOL       171,008 tokens · mem-fraction-static 0.92     │    │    │
+│   │  KV POOL       182,528 tokens · mem-fraction-static 0.94     │    │    │
 │   │     │          flashinfer attention · CUDA graph bs 1-4      │    │    │
 │   │     ▼                                                        │    │    │
 │   │  STREAM ───► SSE tokens back up through router and Caddy     │    │    │
@@ -77,7 +77,7 @@ timescales and feeds back into the settings the other two obey.
 │                                                                       │    │
 │   Bandwidth-bound: ~50ms per forward pass is weight movement, not     │    │
 │   math. Only bytes-moved-per-pass changes the number — which is why   │    │
-│   EAGLE (fewer passes) won and host-side scheduling tweaks did not.   │    │
+│   DFlash2 (fewer bytes per step) won and host-side tweaks did not.    │    │
 └───────────────────────────────────────────────────────────────────────┼────┘
                                                                         │
         metrics (pull, 5-30s)          traces (push, async) ────────────┘
@@ -201,7 +201,7 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 ## Service inventory (one line each)
 
 - `qwen36-27b-r0` / `qwen36-27b-r1` — SGLang `TP=1` replicas, GPU0/GPU1,
-  EAGLE speculative decoding, Mamba radix prefix caching
+  DFlash2 speculative decoding, Mamba radix prefix caching + HiCache host tier
 - `qwen36-27b-router` — SGLang model-gateway, `cache_aware`, OpenAI API, :8000
 - `caddy` — TLS termination, edge-auth key swap, unbounded body size (only host ports)
 - `prometheus` — 9 scrape targets, 30d/20GB retention, 16 alert rules, hot reload
@@ -212,19 +212,20 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 - `qwen36-27b-otel-collector` — OTLP bridge: SGLang gRPC spans → Langfuse HTTP
 - `qwen3-emb` — TEI CPU embeddings (separate project, joins `edge` only)
 
-## Current optimization state (2026-08)
+## Current optimization state (2026-09-13)
 
 ```text
 2× TP=1 replicas            yes        no GPU P2P on this host
-EAGLE (MTP head)            6 draft tokens / 5 steps / topk 1
-mem-fraction-static         0.92       KV pool 171,008 tokens / replica
+DFlash2 drafter             block 8, fp8 draft KV   tuning/docs/HICACHE_DFLASH2.md
+mem-fraction-static         0.94       KV pool 182,528 tokens / replica
+chunked prefill             4096       DFlash2 leaves ~2.9 GB headroom
 context-length              169,000
 max-running-requests        4          decode CUDA graph bs [1,2,3,4]
 attention backend           flashinfer
-prefix caching              radix tree, mamba extra_buffer (HiCache removed)
+prefix caching              radix tree, mamba extra_buffer
 router policy               cache_aware --balance-abs-threshold 2
 only host ports             80/443     Caddy; everything else loopback-only
-HiCache                     disabled   device radix tree unaffected
+HiCache                     ratio 3    ~52 GB pinned host RAM / replica
 request tracing             OTLP -> collector -> Langfuse, level 3
 trace cost                  ~410 B/span, ~24 MB/day — measured, not assumed
 clickhouse retention        3d diagnostics / 7d audit, logs capped at ~130 MB

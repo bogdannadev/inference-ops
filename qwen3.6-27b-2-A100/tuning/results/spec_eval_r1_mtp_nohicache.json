@@ -1,0 +1,478 @@
+{
+ "label": "mtp_nohicache",
+ "started": "2026-09-13T16:01:17Z",
+ "server": {
+  "speculative_algorithm": "EAGLE",
+  "speculative_num_draft_tokens": 6,
+  "speculative_draft_model_path": null,
+  "enable_hierarchical_cache": false,
+  "hicache_ratio": 2.0,
+  "max_running_requests": 4
+ },
+ "correctness": {
+  "rounds": [
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 106,
+    "answer": "94023760",
+    "expect": 94023760
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 175,
+    "answer": "Lark, Dover, Gale, Blair, Vance",
+    "expect": "Lark, Dover, Gale, Blair, Vance"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 508,
+    "answer": "58632",
+    "expect": 58632
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 175,
+    "answer": "Frost, Brook, Reed, Ellis, Orrin",
+    "expect": "Frost, Brook, Reed, Ellis, Orrin"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 99,
+    "answer": "10308845",
+    "expect": 10308845
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 172,
+    "answer": "Frost, Dover, Quinn, Ellis, Cedar",
+    "expect": "Frost, Dover, Quinn, Ellis, Cedar"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 586,
+    "answer": "48303",
+    "expect": 48303
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 193,
+    "answer": "Alder, Hollis, Sloan, Flint, Reed",
+    "expect": "Alder, Hollis, Sloan, Flint, Reed"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 136,
+    "answer": "84461997",
+    "expect": 84461997
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 106,
+    "answer": "Crane, Ivor, Alder, Jett, Quinn",
+    "expect": "Crane, Ivor, Alder, Jett, Quinn"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 502,
+    "answer": "55487",
+    "expect": 55487
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 194,
+    "answer": "Elm, Kline, Nash, Sloan, Dover",
+    "expect": "Elm, Kline, Nash, Sloan, Dover"
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 77,
+    "answer": "70966743",
+    "expect": 70966743
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 130,
+    "answer": "Reed, Wade, Lark, Dover, Tate",
+    "expect": "Reed, Wade, Lark, Dover, Tate"
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 505,
+    "answer": "44234",
+    "expect": 44234
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 173,
+    "answer": "Alder, Zane, Sloan, Brook, Pike",
+    "expect": "Alder, Zane, Sloan, Brook, Pike"
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 73,
+    "answer": "88367457",
+    "expect": 88367457
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 126,
+    "answer": "Blair, Brook, Orrin, Wade, Sloan",
+    "expect": "Blair, Brook, Orrin, Wade, Sloan"
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 504,
+    "answer": "71827",
+    "expect": 71827
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 135,
+    "answer": "Zane, Ivor, Crane, Quinn, Ellis",
+    "expect": "Zane, Ivor, Crane, Quinn, Ellis"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 79,
+    "answer": "47717679",
+    "expect": 47717679
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 123,
+    "answer": "Tate, Vance, Reed, Ellis, Dover",
+    "expect": "Tate, Vance, Reed, Ellis, Dover"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 516,
+    "answer": "55289",
+    "expect": 55289
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 168,
+    "answer": "Zane, Drew, Wade, Gale, Cedar",
+    "expect": "Zane, Drew, Wade, Gale, Cedar"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 202,
+    "answer": "27285090",
+    "expect": 27285090
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 238,
+    "answer": "Gale, Orrin, Flint, Blair, Brook",
+    "expect": "Gale, Orrin, Flint, Blair, Brook"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 411,
+    "answer": "64128",
+    "expect": 64128
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 172,
+    "answer": "Tate, Ivor, Sloan, Ellis, Alder",
+    "expect": "Tate, Ivor, Sloan, Ellis, Alder"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 99,
+    "answer": "78327289",
+    "expect": 78327289
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 109,
+    "answer": "Elm, Cedar, Frost, Drew, Vance",
+    "expect": "Elm, Cedar, Frost, Drew, Vance"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 554,
+    "answer": "38674",
+    "expect": 38674
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 104,
+    "answer": "Upton, Tate, Orrin, Flint, Alder",
+    "expect": "Upton, Tate, Orrin, Flint, Alder"
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 81,
+    "answer": "96580074",
+    "expect": 96580074
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 109,
+    "answer": "Nash, Ivor, Brook, Flint, Dover",
+    "expect": "Nash, Ivor, Brook, Flint, Dover"
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 587,
+    "answer": "63992",
+    "expect": 63992
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 212,
+    "answer": "Wade, Jett, Upton, Elm, Blair",
+    "expect": "Wade, Jett, Upton, Elm, Blair"
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 91,
+    "answer": "28327257",
+    "expect": 28327257
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 217,
+    "answer": "Nash, Alder, Wade, Crane, Brook",
+    "expect": "Nash, Alder, Wade, Crane, Brook"
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 539,
+    "answer": "92016",
+    "expect": 92016
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 180,
+    "answer": "Vance, Quinn, Gale, Moss, Kline",
+    "expect": "Vance, Quinn, Gale, Moss, Kline"
+   }
+  ],
+  "summary": {
+   "greedy": {
+    "kv": {
+     "ok": 5
+    },
+    "order": {
+     "ok": 10
+    },
+    "arith": {
+     "ok": 5
+    }
+   },
+   "prod": {
+    "kv": {
+     "ok": 5
+    },
+    "order": {
+     "ok": 10
+    },
+    "arith": {
+     "ok": 5
+    }
+   }
+  },
+  "determinism_serial_greedy": [
+   false,
+   false
+  ]
+ },
+ "speed": [
+  {
+   "phase": "short-c1",
+   "concurrency": 1,
+   "requests": 4,
+   "decode_tok_s_median": 50.58,
+   "decode_tok_s_all": [
+    43.25,
+    49.02,
+    50.58,
+    57.06
+   ],
+   "ttft_s_median": 0.14,
+   "aggregate_tok_s": 49.2,
+   "accept_length": 2.552,
+   "errors": []
+  },
+  {
+   "phase": "short-c4",
+   "concurrency": 4,
+   "requests": 8,
+   "decode_tok_s_median": 47.55,
+   "decode_tok_s_all": [
+    44.22,
+    44.74,
+    46.83,
+    47.55,
+    47.55,
+    48.61,
+    51.64,
+    53.38
+   ],
+   "ttft_s_median": 0.183,
+   "aggregate_tok_s": 176.8,
+   "accept_length": 2.727,
+   "errors": []
+  },
+  {
+   "phase": "long-c1",
+   "concurrency": 1,
+   "requests": 4,
+   "decode_tok_s_median": 46.91,
+   "decode_tok_s_all": [
+    42.46,
+    43.15,
+    46.91,
+    52.77
+   ],
+   "ttft_s_median": 0.691,
+   "aggregate_tok_s": 44.7,
+   "accept_length": 2.604,
+   "errors": []
+  },
+  {
+   "phase": "long-c4",
+   "concurrency": 4,
+   "requests": 8,
+   "decode_tok_s_median": 39.15,
+   "decode_tok_s_all": [
+    34.88,
+    35.67,
+    36.54,
+    39.12,
+    39.15,
+    39.9,
+    41.81,
+    42.68
+   ],
+   "ttft_s_median": 2.202,
+   "aggregate_tok_s": 132.7,
+   "accept_length": 2.679,
+   "errors": []
+  }
+ ]
+}
