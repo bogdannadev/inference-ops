@@ -924,6 +924,7 @@ sealed class Worker(
             || data.StartsWith("kt:", StringComparison.Ordinal)
             || data.StartsWith("kr:", StringComparison.Ordinal)
             || data.StartsWith("kp:", StringComparison.Ordinal)
+            || data.StartsWith("kx:", StringComparison.Ordinal)
             || data == "kl:")
         {
             var reply = await KeyCallbackAsync(data, chatId.Value, ct);
@@ -1024,6 +1025,7 @@ sealed class Worker(
                                                    "/set acme daily 2M"))
                                  : await SetPolicyAsync(a1, a2, parts[3], ct),
             "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
+            "/connect"    => a1 is null ? await KeyPickerAsync(ct) : await ConnectAsync(a1, ct),
             // No name: ask for one. Name only: tier buttons, one tap creates.
             // Name and a number: the original untiered form, kept for scripts
             // and muscle memory.
@@ -1115,6 +1117,9 @@ sealed class Worker(
         new("newkey", "Grant", "[name]",
             "create a key, one tap per tier",
             "Create a key: one tap per tier"),
+        new("connect", "Grant", "&lt;name&gt;",
+            "endpoint, model and API key to paste into any client",
+            "A consumer's endpoint, model and API key"),
         new("opencode", "Grant", "&lt;name&gt;",
             "re-send a key's config",
             "Re-send a consumer's OpenCode config"),
@@ -1689,6 +1694,59 @@ sealed class Worker(
             _                    => new Reply("Nothing was waiting for that.")
         };
 
+    // Everything a client needs, for any OpenAI-compatible tool (Hermes, Cursor,
+    // the openai SDK, curl), not only OpenCode. Each value is its own <code> so
+    // one tap copies exactly that value on a phone. Sent as a NEW message on
+    // every path (command and key-card button) and never edited, like every
+    // other message carrying a credential. Audited, like /opencode.
+    private async Task<Reply> ConnectAsync(string name, CancellationToken ct)
+    {
+        if (!SafeName(name)) return new Reply("That is not a consumer name this bot recognises.");
+        var consumers = await keys.ReadConsumersAsync(ct);
+        if (!consumers.TryGetValue(name, out var credential))
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
+        var apiKey = credential.StartsWith("Bearer ", StringComparison.Ordinal) ? credential["Bearer ".Length..] : credential;
+
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        var balT = ledger.ListAsync(ct);
+        await Task.WhenAll(tierT, ovT, balT);
+        await AuditAsync($"connect name={name}", ct);
+
+        var r = Policy.Resolve(tierT.Result, ovT.Result);
+        static string Lim(ResolvedSetting x) =>
+            long.TryParse(x.Value, CultureInfo.InvariantCulture, out var n) && n > 0 ? Fmt.Num(n) : "none";
+        var refill = r[1].Value ?? "manual";
+        var bal = balT.Result.TryGetValue(name, out var b) ? Fmt.Num(b) : "not seeded";
+        var baseUrl = $"{cfg.PublicBaseUrl}/v1";
+
+        var text =
+            $"\U0001f50c <b>{Esc(name)}</b> \u00b7 connection\n\n"
+          + $"<b>Base URL</b>\n<code>{Esc(baseUrl)}</code>\n\n"
+          + $"<b>Model</b>\n<code>{Esc(cfg.ModelId)}</code>\n\n"
+          + $"<b>API key</b>\n<code>{Esc(apiKey)}</code>\n\n"
+          + "<b>Request limits</b>\n"
+          + $"Context {cfg.ContextLimit:N0} tokens, prompt + output\n"
+          + $"Output at most {cfg.OutputLimit:N0} tokens per request\n"
+          + "Body at most 1 MB of JSON\n\n"
+          + $"<b>This key</b> \u00b7 {Esc(tierT.Result ?? "no tier")}\n"
+          + $"Balance {bal} of {Lim(r[0])} quota \u00b7 refill {Esc(refill)}\n"
+          + $"Daily {Lim(r[2])} \u00b7 per minute {Lim(r[3])}"
+          + Fmt.Note(
+              "OpenAI-compatible chat completions. Clients send the key as <code>Authorization: Bearer &lt;key&gt;</code>; "
+            + "most take the base URL and key as <code>OPENAI_BASE_URL</code> / <code>OPENAI_API_KEY</code>.\n"
+            + "<code>/v1/models</code> does not report the context window, so set it by hand in the client "
+            + $"({cfg.ContextLimit:N0}).\n"
+            + "Errors: 429 daily or per-minute token limit (see Retry-After) \u00b7 403 balance exhausted \u00b7 "
+            + "400 prompt longer than the context \u00b7 422 max_tokens above the output limit \u00b7 401 wrong key.\n"
+            + "Every input and output token counts against the balance and the limits, cached prompt tokens included.\n"
+            + "\u26a0\ufe0f This message holds a live credential: forward it only to the key's owner, and delete it when done.");
+
+        return new Reply(text, new InlineKeyboardMarkup([
+            [new InlineKeyboardButton("\U0001f511 Key card", $"kc:24h:{name}"),
+             new InlineKeyboardButton("\u2699\ufe0f Settings", $"kp:{name}")]]));
+    }
+
     private async Task<string> OpenCodeAsync(string name, CancellationToken ct)
     {
         var consumers = await keys.ReadConsumersAsync(ct);
@@ -1968,6 +2026,7 @@ sealed class Worker(
             "kt:" => KeyTraceCard(rest),
             "kr:" => KeyReportStart(rest, chatId, ct),
             "kp:" => await PolicyCardAsync(rest, null, ct),
+            "kx:" => await ConnectAsync(rest, ct),
             _     => new Reply("Unknown selection. Run /key again.")
         };
     }
@@ -2142,7 +2201,8 @@ sealed class Worker(
             [new InlineKeyboardButton("⚙️ Settings", $"kp:{name}"),
              new InlineKeyboardButton("\U0001f50e Traces", $"kt:{name}"),
              new InlineKeyboardButton("\U0001f4c4 Report", $"kr:{name}")],
-            [new InlineKeyboardButton("← All keys", "kl:")]
+            [new InlineKeyboardButton("\U0001f50c Connect", $"kx:{name}"),
+             new InlineKeyboardButton("← All keys", "kl:")]
         ]);
         return new Reply(sb.ToString(), keyboard);
     }
