@@ -224,7 +224,9 @@ builder.Services.AddHostedService<EnforcementWorker>();
 //                     costs nothing here.
 builder.Services.AddHttpClient("telegram", c =>
 {
-    c.BaseAddress = new Uri($"https://api.telegram.org/bot{cfg.BotToken}/");
+    // Overridable only so a test instance can send to a local capture server
+    // and every reply can be read exactly as Telegram would receive it.
+    c.BaseAddress = new Uri($"{Opt("TELEGRAM_API_BASE", "https://api.telegram.org").TrimEnd('/')}/bot{cfg.BotToken}/");
     c.Timeout = TimeSpan.FromSeconds(20);
     c.DefaultRequestVersion = HttpVersion.Version20;
     c.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
@@ -930,6 +932,27 @@ sealed class Worker(
             return;
         }
 
+        // A key card's own window buttons: the card re-renders in place.
+        if (data.StartsWith("kw:", StringComparison.Ordinal))
+        {
+            var parts = data.Split(':', 3);
+            var reply = parts.Length == 3 && ValidWindow(parts[1]) && SafeName(parts[2])
+                ? await KeyCardAsync(parts[2], parts[1], ct)
+                : new Reply("Malformed selection. Run /key again.");
+            await AnswerCallbackAsync(cb.Id, ct);
+            await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            return;
+        }
+
+        // Window buttons under /top, /usage and /errors: re-render in place.
+        if (data.StartsWith("w:", StringComparison.Ordinal))
+        {
+            var reply = await WindowCallbackAsync(data, ct) ?? new Reply("Unknown button. Run the command again.");
+            await AnswerCallbackAsync(cb.Id, ct);
+            await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            return;
+        }
+
         // Settings screens. They EDIT the message they were tapped on, so a
         // run of changes is one screen rather than a scroll of stale copies.
         // Also not token-bound: each tap is one idempotent write of a policy
@@ -972,15 +995,15 @@ sealed class Worker(
         {
             "/start" or "/help" => new Reply(HelpText),
             "/status"     => new Reply(await StatusAsync(ct)),
-            "/keys"       => new Reply(await KeysAsync(ct)),
+            "/keys"       => await KeysAsync(ct),
             "/balance"    => new Reply(await BalanceAsync(a1, ct)),
             "/key"        => await KeyPickerAsync(ct),
-            "/usage"      => new Reply(await UsageAsync(a1 ?? "24h", ct)),
+            "/usage"      => await UsageAsync(a1 ?? "24h", ct),
             "/alerts"     => new Reply(await AlertsAsync(ct)),
             "/health"     => new Reply(await HealthAsync(ct)),
-            "/top"        => new Reply(await TopAsync(a1 ?? "24h", ct)),
+            "/top"        => await TopAsync(a1 ?? "24h", ct),
             "/p95"        => new Reply(await LatencyAsync(a1, ct)),
-            "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
+            "/errors"     => await ErrorsAsync(a1 ?? "24h", ct),
             "/tiers"      => new Reply(TiersHelp()),
             "/langfuse"   => new Reply(LangfuseHelp()),
             "/prices"     => new Reply(await PricesAsync(ct)),
@@ -1044,52 +1067,52 @@ sealed class Worker(
 
     private static readonly Cmd[] Commands =
     [
-        new("status",  "Is it healthy", "", "can I still operate the gateway",
+        new("status",  "Is it healthy", "", "can I operate the gateway",
             "Infrastructure health"),
-        new("keys", "Who and how much", "", "consumers, balances and tiers",
+        new("keys", "Who and how much", "", "every key, its balance and tier",
             "Consumers and their balances"),
         new("balance", "Who and how much", "[name]",
-            "balance, burn rate and runway", "Balance for one consumer or all"),
+            "balances, most urgent first", "Balance for one consumer or all"),
         new("key", "Who and how much", "",
-            "pick a consumer from a list — its numbers, and where its traces are",
+            "one key: numbers, settings, traces",
             "Per-key stats and traces"),
         new("usage", "What they used", "[1h|24h|7d|30d]",
-            "tokens in/out per consumer", "Tokens and requests over a window"),
+            "tokens and reference cost per key", "Tokens and requests over a window"),
         new("health", "Is it healthy", "",
-            "is the stack healthy, and can I believe it",
+            "is the stack healthy",
             "Stack and telemetry health"),
         new("alerts", "Is it healthy", "", "what is firing right now",
             "What is firing right now"),
         new("top", "What they used", "[1h|24h|7d]",
-            "busiest consumers, with errors", "Busiest consumers over a window"),
+            "busiest keys, share and errors", "Busiest consumers over a window"),
         new("p95", "What they used", "[name]",
-            "latency percentiles, per consumer (gateway + engine)",
+            "latency per key, gateway and engine",
             "Latency percentiles per consumer"),
         new("prices", "What they used", "",
-            "reference prices for this model: OpenRouter and Alibaba Cloud",
+            "OpenRouter and Alibaba price table",
             "Reference prices used for cost"),
         new("errors", "What they used", "[1h|24h|7d]",
-            "status mix per consumer", "Status mix per consumer"),
-        new("tiers", "Who and how much", "", "what each policy tier means",
+            "error answers per key", "Status mix per consumer"),
+        new("tiers", "Who and how much", "", "tier defaults and what they enforce",
             "What each policy tier means"),
         new("trace", "What they used", "&lt;request-id&gt;",
-            "where to look one request up", "Where to look one request up"),
+            "find one request, end to end", "Where to look one request up"),
         new("langfuse", "What they used", "",
-            "what Langfuse can and cannot tell you",
+            "what Langfuse is good for",
             "What Langfuse can and cannot show"),
         new("tier", "Who and how much", "&lt;name&gt; &lt;tier&gt;",
             "record a consumer's tier", "Record a consumer's policy tier"),
         new("policy", "Who and how much", "&lt;name&gt;",
-            "a consumer's settings, and which come from its tier",
+            "one key's limits, with buttons",
             "A consumer's settings and their source"),
         new("set", "Who and how much", "&lt;name&gt; &lt;setting&gt; &lt;value|default&gt;",
-            "change one setting for one consumer",
+            "change one setting by typing it",
             "Change one setting for one consumer"),
         new("newkey", "Grant", "[name]",
-            "create a key: pick a tier with one tap, adjust anything after",
+            "create a key, one tap per tier",
             "Create a key: one tap per tier"),
         new("opencode", "Grant", "&lt;name&gt;",
-            "re-send an existing consumer's config",
+            "re-send a key's config",
             "Re-send a consumer's OpenCode config"),
         new("topup", "Grant", "&lt;name&gt; &lt;tokens&gt;", "add to a balance",
             "Add tokens to a consumer"),
@@ -1114,21 +1137,26 @@ sealed class Worker(
 
     private static string BuildHelp()
     {
-        var sb = new StringBuilder("<b>Gateway access management</b>\n");
+        var icons = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Who and how much"] = "\U0001f511", ["What they used"] = "\U0001f4ca", ["Is it healthy"] = "\U0001fa7a",
+            ["Grant"] = "\u2795", ["Destructive — these ask first"] = "\u26a0\ufe0f",
+        };
+        var sb = new StringBuilder("\U0001f916 <b>Gateway access</b>\n<i>Most screens have buttons; the arguments below are optional shortcuts.</i>\n");
         foreach (var group in HelpGroups)
         {
-            sb.Append("\n<b>").Append(group).Append("</b>\n");
+            sb.Append("\n").Append(icons.GetValueOrDefault(group, "\u2022")).Append(" <b>").Append(group).Append("</b>\n");
             foreach (var c in Commands)
             {
                 if (c.Group != group) continue;
                 sb.Append('/').Append(c.Name);
-                if (c.Args.Length > 0) sb.Append(' ').Append(c.Args);
-                sb.Append(" — ").Append(c.Blurb).Append('\n');
+                if (c.Args.Length > 0) sb.Append(" <i>").Append(c.Args).Append("</i>");
+                sb.Append(" \u2014 ").Append(c.Blurb).Append('\n');
             }
         }
-        sb.Append("\nCredentials are shown once, by /newkey. /keys lists names only.\n")
-          .Append("Quota is a single TOTAL-token balance — input and output are charged\n")
-          .Append("the same. See /tiers.");
+        sb.Append(Fmt.Note(
+            "Credentials are shown once, by /newkey; /keys lists names only.\n"
+          + "The balance is one total: input and output tokens are charged the same. See /tiers."));
         return sb.ToString();
     }
 
@@ -1157,21 +1185,22 @@ sealed class Worker(
         await Task.WhenAll(gwTask, ledTask, promTask, apiTask);
         var (gw, led, prom, api) = (gwTask.Result, ledTask.Result, promTask.Result, apiTask.Result);
 
-        string[] rows =
-        [
-            $"{"gateway",-12}{gw}",
-            $"{"ledger",-12}{led}",
-            $"{"prometheus",-12}{prom}",
-            $"{"key-auth",-12}{api}",
-            $"{"limiter",-12}{limiter.Summary()}"
-        ];
-        var body = Table("<b>Infrastructure</b>", rows);
+        // One line per dependency, verdict first. Every one of these values is
+        // either "ok"-shaped or starts with FAILED/HTTP, which is what picks the icon.
+        static string Line(string label, string value) =>
+            (value.StartsWith("FAILED", StringComparison.Ordinal) || value.StartsWith("HTTP", StringComparison.Ordinal)
+                ? "\u274c" : "\u2705") + $" <b>{label}</b> \u2014 {Esc(value)}";
+        var lim = limiter.Summary();
+        var body = "\U0001fa7a <b>Can I operate the gateway?</b>\n\n"
+                 + string.Join("\n",
+                       Line("Gateway", gw), Line("Ledger", led), Line("Prometheus", prom), Line("Key-auth", api),
+                       (lim.StartsWith("FAILED", StringComparison.Ordinal) ? "\u274c" : "\u2705") + $" <b>Limiter</b> \u2014 {Esc(lim)}");
 
         // A failed ledger is not a degraded feature, it is an outage on the
         // billable routes: ai-quota has no fail-open, so every chat request 403s.
         if (led.StartsWith("FAILED", StringComparison.Ordinal))
-            body += "\n\u26a0\ufe0f <b>Ledger unreachable</b> \u2014 ai-quota has no fail-open, so billable routes are returning 403 right now.";
-        return body;
+            body += "\n\n\u26a0\ufe0f <b>Ledger unreachable</b> \u2014 ai-quota has no fail-open, so billable routes are returning 403 right now.";
+        return body + Fmt.Note("For whether the stack is <i>healthy</i> \u2014 targets, alerts, traces, throughput \u2014 use /health.");
     }
 
     // Deliberately NOT the same thing as /status.
@@ -1212,19 +1241,22 @@ sealed class Worker(
         var alerts = alertsT.Result; var ledger = ledgerT.Result;
         var queue = queueT.Result; var cap = capT.Result;
 
-        string[] rows =
+        static string Ok(bool good) => good ? "\u2705" : "\u26a0\ufe0f";
+        var targetsOk = up is not null && total is not null && up >= total;
+        string[] lines =
         [
-            $"{"targets",-12}{N(up)}/{N(total)} up",
-            $"{"alerts",-12}{N(alerts)} firing",
-            $"{"ledger",-12}{(ledger is null ? "\u2014" : ledger > 0 ? "UP" : "DOWN")}",
-            $"{"spans",-12}queue {N(queue)}/{N(cap)}, {N(failT.Result, "N2")} failed/s",
-            $"{"throughput",-12}{N(genT.Result)} tok/s",
-            $"{"TTFT p95",-12}{N(ttftT.Result, "N2")} s",
-            $"{"KV pool",-12}{N(kvT.Result, "N1")} %",
-            $"{"cache hit",-12}{N(cacheT.Result, "N1")} % (since engine start)"
+            $"{Ok(targetsOk)} Targets <b>{N(up)}/{N(total)}</b> up",
+            $"{Ok(alerts is null or 0)} Alerts <b>{N(alerts)}</b> firing",
+            $"{Ok(ledger is > 0)} Ledger <b>{(ledger is null ? "\u2014" : ledger > 0 ? "up" : "DOWN")}</b>",
+            $"{Ok(failT.Result is null or 0 && !(queue is not null && cap is > 0 && queue >= cap))} Traces queue <b>{N(queue)}/{N(cap)}</b>, {N(failT.Result, "N2")} failed/s",
+            "",
+            $"\U0001f4c8 Throughput <b>{N(genT.Result)}</b> tok/s",
+            $"\u23f1 First token p95 <b>{Fmt.Secs(ttftT.Result)}</b>",
+            $"\U0001f9e0 KV pool <b>{N(kvT.Result, "N1")}%</b>",
+            $"\u267b\ufe0f Cache hit <b>{N(cacheT.Result, "N1")}%</b>"
         ];
 
-        var body = Table("<b>Stack health</b>", rows);
+        var body = "\U0001fa7a <b>Is the stack healthy?</b>\n\n" + string.Join("\n", lines);
 
         // Lead with the things that are silently wrong. Each of these has been
         // true on this node while every other signal looked fine.
@@ -1241,14 +1273,16 @@ sealed class Worker(
             warn.Add($"{N(alerts)} alert(s) firing — see /alerts.");
 
         if (warn.Count > 0)
-            body += "\n" + string.Join("\n", warn.Select(w => "\u26a0\ufe0f " + w));
+            body += "\n\n" + string.Join("\n", warn.Select(w => "\u26a0\ufe0f " + w));
         else
-            body += "\n\u2705 <i>Nothing firing, every target reporting.</i>";
+            body += "\n\n\u2705 <i>Nothing firing, every target reporting.</i>";
 
-        return body;
+        return body + Fmt.Note(
+            "Throughput, first token and KV pool are node-wide right now. Cache hit is since each engine "
+          + "started, so it reads 0 for a while after a replica roll \u2014 normal, not a fault.");
     }
 
-    private async Task<string> KeysAsync(CancellationToken ct)
+    private async Task<Reply> KeysAsync(CancellationToken ct)
     {
         var balancesT = ledger.ListAsync(ct);
         var tiersT = ledger.TiersAsync(ct);
@@ -1259,31 +1293,28 @@ sealed class Worker(
         var overridden = overriddenT.Result;
 
         if (consumers.Count == 0)
-            return "No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.";
+            return new Reply("No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.");
 
-        var header = $"{"consumer",-16}{"balance",14}  tier";
-        var rows = consumers.Keys.OrderBy(k => k, StringComparer.Ordinal).Select(name =>
+        var sb = new StringBuilder($"\U0001f511 <b>Consumers</b> \u00b7 {consumers.Count}\n");
+        foreach (var name in consumers.Keys.OrderBy(k => k, StringComparer.Ordinal))
         {
             var bal = balances.TryGetValue(name, out var b)
-                ? b.ToString("N0", CultureInfo.InvariantCulture)
+                ? (b <= 0 ? $"\U0001f534 {Fmt.Num(b)}" : Fmt.Num(b))
                 : "not seeded";
-            // "-" rather than a guessed default: an unassigned consumer is a
-            // real state and should look like one.
-            var tier = tiers.GetValueOrDefault(name, "\u2014");
-            // A star rather than a column: most consumers follow their tier,
-            // and the ones that do not are the ones worth a second look.
-            if (overridden.Contains(name)) tier += "*";
-            return $"{name,-16}{bal,14}  {tier}";
-        });
+            // "no tier" rather than a guessed default: an unassigned consumer
+            // is a real state and should look like one. The star marks values
+            // set by hand — the consumers worth a second look.
+            var tier = tiers.TryGetValue(name, out var tr) ? tr : "<i>no tier</i>";
+            sb.Append($"\n<b>{Esc(name)}</b>\n<code>{bal}</code> \u00b7 {tier}{(overridden.Contains(name) ? " \u2731" : "")}");
+        }
 
         var untiered = consumers.Keys.Count(n => !tiers.ContainsKey(n));
-        var body = Table($"<b>Consumers</b> ({consumers.Count})", new[] { header }.Concat(rows))
-                 + "\nCredentials are not shown. Use /opencode &lt;name&gt;.";
+        var notes = new List<string> { "Balances are tokens. Credentials are never listed \u2014 /opencode &lt;name&gt; re-sends one." };
         if (consumers.Keys.Any(overridden.Contains))
-            body += "\n<i>* has settings changed from its tier \u2014 /policy &lt;name&gt;.</i>";
+            notes.Add("\u2731 has settings changed from its tier \u2014 /policy &lt;name&gt;.");
         if (untiered > 0)
-            body += $"\n<i>{untiered} without a tier \u2014 set with /tier &lt;name&gt; &lt;tier&gt;.</i>";
-        return body;
+            notes.Add($"{untiered} without a tier \u2014 /newkey sets one at creation, /tier &lt;name&gt; &lt;tier&gt; afterwards.");
+        return new Reply(sb.ToString() + Fmt.Note(string.Join("\n", notes)), KeyPickerKeyboard(consumers.Keys));
     }
 
     private async Task<string> BalanceAsync(string? name, CancellationToken ct)
@@ -1307,22 +1338,16 @@ sealed class Worker(
             var boutT = PromScalarAsync($"sum by (ai_consumer) (consumer:quota_spend:output24h{sel})", ct);
             await Task.WhenAll(burnT, daysT, binT, boutT);
 
-            var body = $"<b>{Esc(name)}</b>\n<code>{q.Value:N0}</code> tokens remaining";
+            var body = $"\U0001f4b0 <b>{Esc(name)}</b>\n<b>{Fmt.Num(q.Value)}</b> tokens left <i>({q.Value:N0})</i>";
 
             if (burnT.Result is > 0 && daysT.Result is { } days)
             {
                 var bi = binT.Result ?? 0; var bo = boutT.Result ?? 0;
-                string[] rows =
-                [
-                    $"{"burn 24h",-12}{burnT.Result:N0} tok/day",
-                    $"{"  input",-12}{bi,12:N0}",
-                    $"{"  output",-12}{bo,12:N0}",
-                    $"{"  i:o",-12}{(bo > 0 ? bi / bo : 0),12:N1}",
-                    $"{"days left",-12}{days:N1}"
-                ];
-                body += "\n" + Table("", rows);
+                body += $"\n\n\U0001f525 Spent in 24h <b>{Fmt.Num(burnT.Result.Value)}</b>"
+                      + $"\n\u2b07 {Fmt.Num(bi)} in \u00b7 \u2b06 {Fmt.Num(bo)} out" + (Fmt.Ratio(bi, bo) is { Length: > 0 } ratio ? $" \u00b7 {ratio}" : "")
+                      + $"\n\u23f3 <b>{(days < 1 ? $"{days * 24:0} hours" : $"{days:0.#} days")}</b> left at this rate";
                 if (days < 1)
-                    body += "\n\u26a0\ufe0f <b>Under a day left</b> at this rate. <code>/topup " + Esc(name) + " ...</code>";
+                    body += $"\n\n\u26a0\ufe0f <b>Under a day left.</b> <code>/topup {Esc(name)} 10M</code>";
             }
             else
             {
@@ -1341,18 +1366,27 @@ sealed class Worker(
         // balances still render, because they are the half that matters.
         var runway = await PromAsync("sum by (ai_consumer) (consumer:quota_days_left)", ct);
 
-        var balanceRows = all.OrderBy(x => x.Key, StringComparer.Ordinal)
-                             .Select(x => $"{x.Key,-16}{x.Value,14:N0}"
-                                        + (runway.TryGetValue(x.Key, out var d) && d < 3650
-                                            ? $"{d,10:N1} d" : "         \u2014"));
-        return Table("<b>Balances</b>", balanceRows)
-             + "\n<i>Runway at the last 24h burn rate. \u2014 means idle.</i>";
+        // Most urgent first: a consumer about to run out is the reason to open
+        // this, and alphabetical order buried it.
+        double Days(string n) => runway.TryGetValue(n, out var d) && d < 3650 ? d : double.MaxValue;
+        var sb = new StringBuilder("\U0001f4b0 <b>Balances</b>\n");
+        foreach (var (who, bal) in all.OrderBy(x => x.Value <= 0 ? -1 : Days(x.Key)).ThenBy(x => x.Key, StringComparer.Ordinal))
+        {
+            var d = Days(who);
+            var icon = bal <= 0 ? "\U0001f534" : d < 1 ? "\U0001f7e0" : d < 7 ? "\U0001f7e1" : "\U0001f7e2";
+            var left = bal <= 0 ? "empty" : d == double.MaxValue ? "idle" : d < 1 ? $"{d * 24:0}h left" : $"{d:0.#} days left";
+            sb.Append($"\n{icon} <b>{Esc(who)}</b>\n<code>{Fmt.Num(bal)}</code> \u00b7 {left}");
+        }
+        return sb.ToString() + Fmt.Note(
+            "Runway is the balance divided by the last 24h of spend; idle means nothing spent in 24h. "
+          + "\U0001f534 empty \u00b7 \U0001f7e0 under a day \u00b7 \U0001f7e1 under a week \u00b7 \U0001f7e2 more. "
+          + "/balance &lt;name&gt; shows one consumer's burn split by direction.");
     }
 
-    private async Task<string> UsageAsync(string window, CancellationToken ct)
+    private async Task<Reply> UsageAsync(string window, CancellationToken ct)
     {
-        if (window is not ("24h" or "7d" or "1h" or "30d"))
-            return $"Unknown window <code>{Esc(window)}</code>.\n\nUse one of <code>1h</code>, <code>24h</code>, <code>7d</code>, <code>30d</code>.";
+        if (!ValidWindow(window)) return new Reply(BadWindow(window));
+        var keyboard = WindowButtons("usage", window, "1h", "24h", "7d", "30d");
 
         // Split by direction. The ledger charges input and output identically —
         // ai-quota deducts input+output 1:1 and has no weighting option — but a
@@ -1370,54 +1404,55 @@ sealed class Worker(
 
         var inp = inT.Result; var outp = outT.Result; var reqs = reqsT.Result;
         var hits = hitT.Result; var prices = pricesT.Result;
-        if (inp.Count == 0 && outp.Count == 0) return $"No usage in the last {window}.";
 
-        var names = inp.Keys.Union(outp.Keys).Union(reqs.Keys).ToList();
-        var header = $"{"consumer",-14}{"in",9}{"out",8}{"i:o",6}{"req",6}";
-        var rows = names
-            .OrderByDescending(n => inp.GetValueOrDefault(n) + outp.GetValueOrDefault(n))
-            .Select(n =>
-            {
-                var i = inp.GetValueOrDefault(n);
-                var o = outp.GetValueOrDefault(n);
-                return $"{n,-14}{i,9:N0}{o,8:N0}{(o > 0 ? i / o : 0),6:N1}{reqs.GetValueOrDefault(n),6:N0}";
-            });
+        double Tok(string n) => inp.GetValueOrDefault(n) + outp.GetValueOrDefault(n);
+        var all = inp.Keys.Union(outp.Keys).ToList();
+        var names = all.Where(n => Tok(n) >= 0.5).OrderByDescending(Tok).ToList();
+        if (names.Count == 0)
+            return new Reply($"\U0001f4ca <b>Usage</b> · {window}\n\nNo tokens charged in this window.", keyboard);
 
-        // Reference cost per consumer. Short money so four columns fit a phone.
-        static string M(decimal v) => v switch
-        {
-            0m => "0",
-            < 10m => v.ToString("0.00", CultureInfo.InvariantCulture),
-            < 1000m => v.ToString("0", CultureInfo.InvariantCulture),
-            _ => (v / 1000m).ToString("0.#", CultureInfo.InvariantCulture) + "K",
-        };
+        var totalIn = names.Sum(n => inp.GetValueOrDefault(n));
+        var totalOut = names.Sum(n => outp.GetValueOrDefault(n));
         decimal orT = 0, orcT = 0, sgT = 0, bjT = 0;
-        var costHeader = $"{"consumer",-14}{"OR",7}{"OR-c",7}{"SG",7}{"BJ",7}";
-        var costRows = names
-            .OrderByDescending(n => inp.GetValueOrDefault(n) + outp.GetValueOrDefault(n))
-            .Select(n =>
-            {
-                var i = inp.GetValueOrDefault(n); var o = outp.GetValueOrDefault(n);
-                double? h = hits.TryGetValue(n, out var hv) ? hv : null;
-                var list = PriceBook.Cost(prices.OpenRouter, i, o);
-                var cached = PriceBook.Cost(prices.OpenRouter, i, o, h);
-                var sg = PriceBook.Cost(prices.AlibabaSg, i, o);
-                var bj = PriceBook.Cost(prices.AlibabaBj, i, o);
-                orT += list; orcT += cached; sgT += sg; bjT += bj;
-                return $"{n,-14}{M(list),7}{M(cached),7}{M(sg),7}{M(bj),7}";
-            }).ToList();
 
-        var totalIn = inp.Values.Sum(); var totalOut = outp.Values.Sum();
-        return Table($"<b>Usage</b> \u2014 last {window}", new[] { header }.Concat(rows))
-             + $"\n<b>{totalIn + totalOut:N0}</b> tokens charged \u2014 {totalIn:N0} in, {totalOut:N0} out."
-             + "\n\n" + Table("<b>At reference prices</b>, USD", new[] { costHeader }.Concat(costRows))
-             + $"\nTotal: OpenRouter <b>{PriceBook.Usd(orT)}</b> (cache-aware {PriceBook.Usd(orcT)}), "
-             + $"Alibaba Singapore <b>{PriceBook.Usd(sgT)}</b>, Beijing <b>{PriceBook.Usd(bjT)}</b>."
-             + "\n<i>OR = OpenRouter list, OR-c = with this key's cache hits priced as cached, SG/BJ = Alibaba Cloud.</i>"
-             + "\n" + PriceFootnote(prices)
-             + "\n<i>Quota is a single TOTAL-token balance: input and output are deducted at the same "
-             + "rate. i:o shows how much of a bill is context re-sent rather than tokens generated.</i>"
-             + "\n<i>Counters reset when the gateway restarts. Balances are the billing record.</i>";
+        var sb = new StringBuilder($"\U0001f4ca <b>Usage</b> · {window}\n");
+        sb.Append($"<b>{Fmt.Num(totalIn + totalOut)}</b> tokens · ⬇ {Fmt.Num(totalIn)} in · ⬆ {Fmt.Num(totalOut)} out\n");
+
+        foreach (var n in names)
+        {
+            var i = inp.GetValueOrDefault(n); var o = outp.GetValueOrDefault(n);
+            double? h = hits.TryGetValue(n, out var hv) && double.IsFinite(hv) ? hv : null;
+            var list = PriceBook.Cost(prices.OpenRouter, i, o);
+            var cached = PriceBook.Cost(prices.OpenRouter, i, o, h);
+            var sg = PriceBook.Cost(prices.AlibabaSg, i, o);
+            var bj = PriceBook.Cost(prices.AlibabaBj, i, o);
+            orT += list; orcT += cached; sgT += sg; bjT += bj;
+
+            sb.Append($"\n<b>{Esc(n)}</b>\n");
+            sb.Append($"⬇ {Fmt.Num(i)} · ⬆ {Fmt.Num(o)} · {Fmt.Num(reqs.GetValueOrDefault(n))} req")
+              .Append(h is { } hh ? $" · ♻️ {hh * 100:0}%" : "").Append('\n');
+            sb.Append($"\U0001f4b5 OR {PriceBook.Usd(list)} · SG {PriceBook.Usd(sg)} · BJ {PriceBook.Usd(bj)}\n");
+        }
+
+        var idle = all.Count - names.Count;
+        sb.Append("\n<b>At reference prices</b>\n")
+          .Append($"OpenRouter <b>{PriceBook.Usd(orT)}</b> · with cache {PriceBook.Usd(orcT)}\n")
+          .Append($"Alibaba SG <b>{PriceBook.Usd(sgT)}</b> · BJ <b>{PriceBook.Usd(bjT)}</b>");
+        if (idle > 0) sb.Append($"\n<i>{idle} key(s) with no tokens in this window not shown.</i>");
+
+        sb.Append(Fmt.Note(
+            "⬇ input · ⬆ output · ♻️ share of input served from prefix cache.\n"
+          + "The balance is one total: input and output are deducted at the same rate.\n\n"
+          + "<b>Reference prices</b> — what the same tokens cost for this model elsewhere, not a bill.\n"
+          + $"OR: {Esc(prices.OpenRouter.Basis)}, {Esc(PriceBook.PerMText(prices.OpenRouter))}"
+          + (prices.Providers > 0 && prices.OutMin is { } lo && prices.OutMax is { } hi
+                ? $"; output ${lo:0.##}–{hi:0.##} across {prices.Providers} providers" : "")
+          + ". \"with cache\" prices each key's measured cache share at the cached rate.\n"
+          + $"SG/BJ: Alibaba Cloud Singapore {Esc(PriceBook.PerMText(prices.AlibabaSg))}, "
+          + $"Beijing {Esc(PriceBook.PerMText(prices.AlibabaBj))}, as of 2026-09-12.\n"
+          + "Cut-off requests are charged nothing and are not in these numbers. "
+          + "Counters reset when the gateway restarts; balances are the billing record."));
+        return new Reply(sb.ToString(), keyboard);
     }
 
     // ---- key lifecycle ----------------------------------------------------
@@ -1438,21 +1473,20 @@ sealed class Worker(
         if ((await keys.ReadConsumersAsync(ct)).ContainsKey(name)) return new Reply(AlreadyExists(name));
 
         var rows = new List<InlineKeyboardButton[]>();
-        var text = new StringBuilder($"<b>Create {Esc(name)}</b> \u2014 tap a tier. The key is created at once "
-                                   + "with that tier's defaults; every value can be changed afterwards.\n");
+        var text = new StringBuilder($"\u2795 <b>Create {Esc(name)}</b>\nTap a tier \u2014 the key is created at once, and every value can be changed after.\n");
         foreach (var t in Policy.All.Where(t => t.Name != "admin"))
         {
             var tier = t.Name;
             var token = Tokenize(userId, TimeSpan.FromMinutes(10), c => NewKeyAsync(name, tier, null, c));
             rows.Add([new InlineKeyboardButton(
                 $"{tier} \u00b7 {Policy.Compact(t.Quota)} \u00b7 {Policy.RefillName(t.Refill)}", "ok:" + token)]);
-            text.Append($"\n<b>{tier}</b> \u2014 {Esc(t.For)}: {Policy.Compact(t.Quota)} tokens, "
-                      + $"{Policy.RefillName(t.Refill)} refill, {(t.Daily == 0 ? "no" : Policy.Compact(t.Daily))} per day");
+            text.Append($"\n<b>{tier}</b> \u2014 {Esc(t.For)}\n{Policy.Compact(t.Quota)} {Policy.RefillName(t.Refill)} \u00b7 "
+                      + $"{(t.Daily == 0 ? "\u221e" : Policy.Compact(t.Daily))}/day \u00b7 {(t.Tpm == 0 ? "\u221e" : Policy.Compact(t.Tpm))}/min\n");
         }
         var untiered = Tokenize(userId, TimeSpan.FromMinutes(10), c => NewKeyAsync(name, null, "1000000", c));
         rows.Add([new InlineKeyboardButton("no tier \u00b7 1M", "ok:" + untiered),
                   new InlineKeyboardButton("Cancel", "no:" + untiered)]);
-        text.Append("\n\n<i>Balance, daily and per-minute limits and refill are enforced; max_tokens is recorded. See /tiers.</i>");
+        text.Append(Fmt.Note("Balance, daily and per-minute limits and refill are enforced; max_tokens is recorded. Details: /tiers."));
         return new Reply(text.ToString(), new InlineKeyboardMarkup(rows.ToArray()));
     }
 
@@ -1695,8 +1729,8 @@ sealed class Worker(
             && requestId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
         if (!looksLikeId)
             return $"<code>{Esc(Head(requestId))}</code> does not look like a request id.\n\n"
-                 + "They are the x-request-id Envoy mints per request — a UUID, and the same value "
-                 + "appears on the gateway span and in the fact table.";
+                 + "It is the x-request-id Envoy mints per request — a UUID, the same value on the "
+                 + "gateway span and in the fact table.";
 
         var id = Esc(requestId);
         // The join is TWO HOPS and was verified end-to-end on 2026-09-05
@@ -1704,22 +1738,25 @@ sealed class Worker(
         // mints its own 32-hex rid and ignores caller-supplied ones — so the
         // second hop goes through the ROUTER's span, which does record the
         // gateway id and whose trace the engine spans share.
-        return $"<b>Request</b> <code>{id}</code>\n\n"
-             + "<b>1. What happened</b> — the fact table, ClickHouse on the host:\n"
-             + $"<pre>SELECT * FROM gateway.requests FINAL\nWHERE request_id = '{id}';</pre>\n"
-             + "Consumer, tokens, status and latency. This is the billing-grade record.\n\n"
-             + "<b>2. Inside the engine</b> — you need the trace id, not this id:\n"
-             + $"<pre>SELECT trace_id FROM events_core\nWHERE service_name = 'smg'\n  AND metadata_values[indexOf(\n        metadata_names,'attributes.request_id')] = '{id}'\nLIMIT 1;</pre>\n"
-             + $"Paste that trace id into {Esc(cfg.LangfuseUrl)} for the engine waterfall — "
-             + "prefill_waiting, prefill_forward, decode_forward, and a <code>Req</code> span "
-             + "with the token counts and TTFT.\n\n"
-             + "<i>Why two hops: the router does not honour the gateway's inbound traceparent, so "
-             + "it starts a fresh trace. It does copy this request id onto its own span, and the "
-             + "engine spans share the router's trace — so id gets you to the router, and the "
-             + "router's trace gets you to the engine. Searching Langfuse for this id directly "
-             + "finds only the gateway span.</i>";
+        //
+        // The SQL is laid out for a phone: short lines, and the id on a line of
+        // its own, because a 36-character UUID cannot share a line with
+        // anything and still fit.
+        return $"\U0001f50e <b>Request</b>\n<code>{id}</code>\n\n"
+             + "<b>1 · What happened</b> — ClickHouse on the host\n"
+             + "<pre>SELECT *\nFROM gateway.requests FINAL\nWHERE request_id =\n  '" + id + "';</pre>\n"
+             + "Consumer, tokens, status, latency — the billing-grade record.\n\n"
+             + "<b>2 · Inside the engine</b> — find its trace id\n"
+             + "<pre>SELECT trace_id\nFROM events_core\nWHERE service_name = 'smg'\n  AND metadata_values[\n    indexOf(metadata_names,\n    'attributes.request_id')]\n  = '" + id + "'\nLIMIT 1;</pre>\n"
+             + $"Open that trace id in {Esc(cfg.LangfuseUrl)} for the engine waterfall."
+             + Fmt.Note(
+                 "<b>Why two hops</b>: the router does not honour the gateway's traceparent and starts a fresh "
+               + "trace. It does copy this request id onto its own span, and the engine spans share the "
+               + "router's trace — so the id gets you to the router, and the router's trace to the engine. "
+               + "Searching Langfuse for the id directly finds only the gateway span.\n\n"
+               + "The waterfall shows prefill_waiting, prefill_forward, decode_forward and a <code>Req</code> "
+               + "span with token counts and TTFT.");
     }
-
 
     // ---- /key: pick a consumer, then read it --------------------------------
     //
@@ -1751,18 +1788,26 @@ sealed class Worker(
         if (names.Length == 0)
             return new Reply("No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.");
 
-        var rows = new List<InlineKeyboardButton[]>();
-        for (var i = 0; i < names.Length; i += 2)
-        {
-            rows.Add(i + 1 < names.Length
-                ? [Pick(names[i]), Pick(names[i + 1])]
-                : [Pick(names[i])]);
-        }
         return new Reply(
-            $"<b>Which consumer?</b>  ({names.Length})\n\n"
-          + "<i>Numbers come from Prometheus. Balances are the ledger, which is "
-          + "what bills.</i>",
-            new InlineKeyboardMarkup(rows.ToArray()));
+            $"\U0001f511 <b>Which consumer?</b> \u00b7 {names.Length}\n\nTap one for its numbers, settings, traces and report.",
+            KeyPickerKeyboard(names));
+    }
+
+    // A name button per consumer. Two per row only while both names are short:
+    // Telegram truncates a label to half the width, and "vkondratpev-demo2-c…"
+    // is not a name anyone can tap with confidence.
+    private static InlineKeyboardMarkup KeyPickerKeyboard(IEnumerable<string> consumers)
+    {
+        var names = consumers.Where(SafeName).OrderBy(k => k, StringComparer.Ordinal).ToArray();
+        var rows = new List<InlineKeyboardButton[]>();
+        for (var i = 0; i < names.Length;)
+        {
+            if (i + 1 < names.Length && names[i].Length <= 14 && names[i + 1].Length <= 14)
+            { rows.Add([Pick(names[i]), Pick(names[i + 1])]); i += 2; }
+            else
+            { rows.Add([Pick(names[i])]); i++; }
+        }
+        return new InlineKeyboardMarkup(rows.ToArray());
 
         static InlineKeyboardButton Pick(string n) => new(n, "kc:24h:" + n);
     }
@@ -1864,52 +1909,27 @@ sealed class Worker(
         return dash >= 0 && dash + 1 < host.Length ? host[(dash + 1)..] : host;
     }
 
-    // The four reference costs for one token count, as table rows.
-    private static IEnumerable<string> CostRows(Prices p, double? tin, double? tout, double? hit)
-    {
-        if (tin is null || tout is null) yield break;
-        yield return $"{"cost at",-14}{"(reference)",14}";
-        yield return $"{"OpenRouter",-14}{PriceBook.Usd(PriceBook.Cost(p.OpenRouter, tin.Value, tout.Value)),14}";
-        if (p.OpenRouter.CacheReadPerM is not null && hit is not null && double.IsFinite(hit.Value))
-            yield return $"{"  cache-aware",-14}{PriceBook.Usd(PriceBook.Cost(p.OpenRouter, tin.Value, tout.Value, hit)),14}";
-        yield return $"{"Alibaba SG",-14}{PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, tin.Value, tout.Value)),14}";
-        yield return $"{"Alibaba BJ",-14}{PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, tin.Value, tout.Value)),14}";
-    }
-
-    private static string PriceFootnote(Prices p) =>
-        $"<i>Reference prices for the same model, not a bill: {Esc(p.OpenRouter.Basis)}, "
-      + $"{Esc(PriceBook.PerMText(p.OpenRouter))}"
-      + (p.Providers > 0 && p.OutMin is { } lo && p.OutMax is { } hi
-            ? $" (output ${lo:0.##}–{hi:0.##} across {p.Providers} providers)" : "")
-      + $"; Alibaba Cloud {Esc(PriceBook.PerMText(p.AlibabaSg))} Singapore, {Esc(PriceBook.PerMText(p.AlibabaBj))} Beijing, "
-      + "as of 2026-09-12. Cache-aware applies this key's measured prefix-cache hit share. "
-      + "Cut-off requests are not in it. /prices for the table.</i>";
-
     private async Task<string> PricesAsync(CancellationToken ct)
     {
         var p = await priceBook.GetAsync(ct);
-        string[] rows =
-        [
-            $"{"USD per M",-11}{"input",7}{"cached",7}{"output",7}",
-            Row(p.OpenRouter), Row(p.AlibabaSg), Row(p.AlibabaBj),
-        ];
         static string Row(PriceRef r) =>
-            $"{r.Label,-11}{r.InPerM,7:0.###}{(r.CacheReadPerM is { } c ? c.ToString("0.###", CultureInfo.InvariantCulture) : "—"),7}{r.OutPerM,7:0.###}";
+            $"{r.Label,-11}{r.InPerM,6:0.###}{(r.CacheReadPerM is { } c ? c.ToString("0.###", CultureInfo.InvariantCulture) : "—"),7}{r.OutPerM,7:0.###}";
+        string[] rows = [$"{"$ per 1M",-11}{"in",6}{"cached",7}{"out",7}", Row(p.OpenRouter), Row(p.AlibabaSg), Row(p.AlibabaBj)];
 
         // A worked example makes the spread concrete: one typical agent day is
         // input-heavy, and that is where the references disagree most.
         const double exIn = 30_000_000, exOut = 800_000, exHit = 0.9;
-        return Table("<b>Reference prices</b> — same model, public providers", rows)
-             + $"\n<b>OpenRouter</b>: {Esc(p.OpenRouter.Basis)}"
-             + (p.Providers > 0 && p.OutMin is { } lo && p.OutMax is { } hi
-                   ? $". Output ranges ${lo:0.##}–{hi:0.##} per M across {p.Providers} providers; the list price above is OpenRouter's headline." : ".")
-             + $"\n<b>Alibaba Cloud</b>: {Esc(p.AlibabaSg.Basis)}; {Esc(p.AlibabaBj.Basis)}. No API publishes these, "
-             + "so they are updated by hand in bot.cs."
-             + $"\n\nExample, 30M in / 0.8M out / 90% cached: OpenRouter {PriceBook.Usd(PriceBook.Cost(p.OpenRouter, exIn, exOut))}"
-             + $" (cache-aware {PriceBook.Usd(PriceBook.Cost(p.OpenRouter, exIn, exOut, exHit))}), "
-             + $"Alibaba SG {PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, exIn, exOut))}, BJ {PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, exIn, exOut))}."
-             + "\n\n<i>What the same tokens would cost bought elsewhere — a yardstick for monitoring, not a bill. "
-             + "Shown in /key, /usage and the written report.</i>";
+        return Table("\U0001f4b5 <b>Reference prices</b> · Qwen3.8-27B", rows)
+             + "\n<b>One agent day</b> — 30M in, 0.8M out, 90% cached:\n"
+             + $"OpenRouter <b>{PriceBook.Usd(PriceBook.Cost(p.OpenRouter, exIn, exOut))}</b> · with cache {PriceBook.Usd(PriceBook.Cost(p.OpenRouter, exIn, exOut, exHit))}\n"
+             + $"Alibaba SG <b>{PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, exIn, exOut))}</b> · BJ <b>{PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, exIn, exOut))}</b>"
+             + Fmt.Note(
+                 "What the same tokens would cost bought elsewhere — a yardstick, not a bill. Used by /key, /top, /usage and the report.\n\n"
+               + $"<b>OpenRouter</b> — {Esc(p.OpenRouter.Basis)}; the headline price for the model"
+               + (p.Providers > 0 && p.OutMin is { } lo && p.OutMax is { } hi
+                     ? $". Output ranges ${lo:0.##}–{hi:0.##} per M across {p.Providers} providers." : ".")
+               + "\n<b>Alibaba Cloud</b> — Model Studio price page, Singapore (SG) and Beijing (BJ), as of 2026-09-12. "
+               + "No API publishes these, so they are updated by hand in bot.cs.");
     }
 
     private async Task<Reply> KeyCardAsync(string name, string window, CancellationToken ct)
@@ -1919,66 +1939,77 @@ sealed class Worker(
         await Task.WhenAll(statsT, pricesT);
         var st = statsT.Result; var prices = pricesT.Result;
 
-        var rows = new List<string>
-        {
-            $"{"balance",-14}{Num(st.Balance),14}",
-            $"{"runway",-14}{Num(st.Runway, 1),14} d",
-            "",
-            $"{"requests",-14}{Num(st.Requests),14}",
-            $"{"not 2xx",-14}{Num(st.NotOk),14}",
-            $"{"tokens in",-14}{Num(st.TokensIn),14}",
-            $"{"tokens out",-14}{Num(st.TokensOut),14}",
-            $"{"cut, unbilled",-14}{Num(st.Unbilled),14}",
-            "",
-            $"{"p95 gateway",-14}{Num(st.GatewayP95, 2),14} s",
-            $"{"p95 e2e",-14}{Num(st.E2e, 2),14} s",
-            $"{"p95 ttft",-14}{Num(st.Ttft, 2),14} s",
-            $"{"p95 itl",-14}{Num(st.Itl, 3),14} s",
-            $"{"cache hit",-14}{Num(st.CacheHit is null ? null : st.CacheHit * 100, 1),14} %"
-        };
+        static string N(double? v) => v is { } x && double.IsFinite(x) ? Fmt.Num(x) : "—";
 
+        var sb = new StringBuilder($"\U0001f511 <b>{Esc(name)}</b> · {window}\n\n");
+
+        // Money and runway first: it is what the card is opened for.
+        sb.Append($"\U0001f4b0 Balance <b>{N(st.Balance)}</b>");
+        if (st.Runway is { } rw && double.IsFinite(rw))
+            sb.Append(rw >= 3650 ? " · idle" : rw < 1 ? $" · ⏳ <b>{rw * 24:0}h</b> left" : $" · ⏳ {rw:0.#} days");
+        sb.Append('\n');
+
+        sb.Append($"\U0001f4e8 <b>{N(st.Requests)}</b> requests");
+        if (st.NotOk is >= 0.5) sb.Append($" · ⚠️ {N(st.NotOk)} not 2xx");
+        if (st.Unbilled is >= 0.5) sb.Append($" · ✂️ {N(st.Unbilled)} cut");
+        sb.Append('\n');
+        sb.Append($"⬇ {N(st.TokensIn)} in · ⬆ {N(st.TokensOut)} out");
+        if (st.TokensIn is { } ti && st.TokensOut is { } to && Fmt.Ratio(ti, to) is { Length: > 0 } ratio) sb.Append($" · {ratio}");
+        sb.Append("\n\n");
+
+        sb.Append($"\U0001f310 Gateway p95 <b>{Fmt.Secs(st.GatewayP95)}</b>\n");
+        sb.Append($"⚙️ Engine p95 <b>{Fmt.Secs(st.E2e)}</b> · first token {Fmt.Secs(st.Ttft)} · per token {Fmt.Secs(st.Itl)}\n");
+        if (st.CacheHit is { } hit && double.IsFinite(hit)) sb.Append($"♻️ Cache hit <b>{hit * 100:0}%</b>\n");
         var total = st.ByReplica.Values.Sum();
         if (total > 0)
+            sb.Append("\U0001f5a5 ").Append(string.Join(" · ",
+                st.ByReplica.OrderBy(x => x.Key, StringComparer.Ordinal)
+                  .Select(x => $"{ShortInstance(x.Key)} {x.Value / total * 100:0}%"))).Append('\n');
+
+        if (st.TokensIn is { } cin && st.TokensOut is { } cout)
         {
-            rows.Add("");
-            foreach (var (inst, v) in st.ByReplica.OrderBy(x => x.Key, StringComparer.Ordinal))
-                rows.Add($"{ShortInstance(inst),-14}{v / total * 100,13:N0} %");
+            sb.Append("\n\U0001f4b5 <b>At reference prices</b>\n")
+              .Append($"OpenRouter <b>{PriceBook.Usd(PriceBook.Cost(prices.OpenRouter, cin, cout))}</b>")
+              .Append(prices.OpenRouter.CacheReadPerM is not null && st.CacheHit is { } h2 && double.IsFinite(h2)
+                  ? $" · with cache {PriceBook.Usd(PriceBook.Cost(prices.OpenRouter, cin, cout, h2))}" : "")
+              .Append($"\nAlibaba SG <b>{PriceBook.Usd(PriceBook.Cost(prices.AlibabaSg, cin, cout))}</b>")
+              .Append($" · BJ <b>{PriceBook.Usd(PriceBook.Cost(prices.AlibabaBj, cin, cout))}</b>\n");
         }
 
-        var costRows = CostRows(prices, st.TokensIn, st.TokensOut, st.CacheHit).ToList();
-        if (costRows.Count > 0) { rows.Add(""); rows.AddRange(costRows); }
+        if (st.Unbilled is >= 0.5)
+            sb.Append($"\n✂️ <b>{N(st.Unbilled)} request(s) cut off, charged nothing</b> — "
+                    + $"{N(st.UnbilledSeconds)}s of engine time unbilled.\n");
 
-        var body = Table($"<b>{Esc(name)}</b> — last {window}", rows);
-
-        // Say which half of the stack each block came from. The two latencies
+        var notes = new StringBuilder();
+        // Which half of the stack each line came from. The two latencies
         // differ by the gateway filter chain, the router and two network hops,
         // and an operator comparing them needs to know that is expected.
-        body += "\n<i>Balance and runway: the ledger. tokens: gateway ai-statistics. "
-              + "requests, p95 gateway, cut-offs: the access log. ttft, itl, e2e, cache "
-              + "and the replica split: the engine itself.</i>";
-        if (costRows.Count > 0) body += "\n" + PriceFootnote(prices);
-
-        if (st.Unbilled is >= 0.5)
-            body += $"\n\n⚠️ <b>{Num(st.Unbilled)} request(s) were cut off and charged nothing</b> "
-                  + "— client disconnect, stream timeout or upstream error before the final usage "
-                  + $"frame. They ran {Num(st.UnbilledSeconds)} s in total; the engine may have "
-                  + "generated for up to that long.";
-
+        notes.Append("<b>Where each number comes from</b>\n"
+                   + "Balance, runway: the ledger. Tokens: gateway ai-statistics. Requests, gateway p95, "
+                   + "cut-offs: the access log. Engine p95, first token, per token, cache hit and the "
+                   + "replica split: SGLang itself.\n"
+                   + "✂️ cut = client disconnect, stream timeout or upstream error before the final "
+                   + "usage frame; the engine may have worked on it.\n\n");
+        notes.Append($"<b>Reference prices</b> — not a bill. OpenRouter {Esc(PriceBook.PerMText(prices.OpenRouter))} "
+                   + $"({Esc(prices.OpenRouter.Basis)}); Alibaba Cloud Singapore {Esc(PriceBook.PerMText(prices.AlibabaSg))}, "
+                   + $"Beijing {Esc(PriceBook.PerMText(prices.AlibabaBj))}, as of 2026-09-12. "
+                   + "\"with cache\" prices this key's cache hits at the cached rate.");
         if (st.Ttft is null && st.Requests > 0)
-            body += "\n\n<i>No engine-side numbers in this window. That is normal "
-                  + "shortly after a replica roll — the labels start empty — and "
-                  + "expected for traffic that did not go through the gateway.</i>";
+            notes.Append("\n\nNo engine numbers in this window: normal just after a replica roll, and for "
+                       + "traffic that did not go through the gateway.");
+        sb.Append(Fmt.Note(notes.ToString()));
 
+        string W(string w) => w == window ? $"• {w}" : w;
         var keyboard = new InlineKeyboardMarkup([
-            [new InlineKeyboardButton(window == "1h"  ? "• 1h"  : "1h",  $"kc:1h:{name}"),
-             new InlineKeyboardButton(window == "24h" ? "• 24h" : "24h", $"kc:24h:{name}"),
-             new InlineKeyboardButton(window == "7d"  ? "• 7d"  : "7d",  $"kc:7d:{name}")],
-            [new InlineKeyboardButton("Settings", $"kp:{name}"),
-             new InlineKeyboardButton("Traces", $"kt:{name}"),
-             new InlineKeyboardButton("Report ↓", $"kr:{name}")],
+            [new InlineKeyboardButton(W("1h"), $"kw:1h:{name}"),
+             new InlineKeyboardButton(W("24h"), $"kw:24h:{name}"),
+             new InlineKeyboardButton(W("7d"), $"kw:7d:{name}")],
+            [new InlineKeyboardButton("⚙️ Settings", $"kp:{name}"),
+             new InlineKeyboardButton("\U0001f50e Traces", $"kt:{name}"),
+             new InlineKeyboardButton("\U0001f4c4 Report", $"kr:{name}")],
             [new InlineKeyboardButton("← All keys", "kl:")]
         ]);
-        return new Reply(body, keyboard);
+        return new Reply(sb.ToString(), keyboard);
     }
 
     // Tracing BY KEY rather than by request. Langfuse already groups by
@@ -1988,17 +2019,16 @@ sealed class Worker(
     private Reply KeyTraceCard(string name)
     {
         var text =
-            $"<b>{Esc(name)}</b> — where its requests are\n\n"
-          + "<b>Langfuse</b> groups them under this consumer already: every gateway "
-          + "span carries the authenticated name as the Langfuse user id. That view "
-          + "gives you each request with its tokens and latency.\n\n"
-          + "<b>To open one request end to end</b>, take a request id from there or "
-          + "from the fact table and run /trace on it — the engine's own spans "
-          + "sit in a different trace, and that command prints the two-hop join.\n\n"
-          + "<b>The billing-grade list</b>, ClickHouse on the host:\n"
-          + $"<pre>SELECT ts, request_id, status, total_tokens, duration_ms\nFROM gateway.requests FINAL\nWHERE consumer = '{Esc(name)}'\nORDER BY ts DESC LIMIT 20;</pre>\n"
-          + "<i>This bot cannot run that itself: it is on the edge network and both "
-          + "stores are backend-only, deliberately.</i>";
+            $"\U0001f50e <b>{Esc(name)}</b> · where its requests are\n\n"
+          + "<b>Langfuse</b> already groups them under this consumer, with tokens and latency per request.\n\n"
+          + "<b>Latest 20, billing-grade</b> — ClickHouse on the host:\n"
+          + $"<pre>SELECT ts, request_id,\n  status, total_tokens,\n  duration_ms\nFROM gateway.requests FINAL\nWHERE consumer =\n  '{Esc(name)}'\nORDER BY ts DESC\nLIMIT 20;</pre>\n"
+          + "Take a request id from either and run /trace on it for the engine's side.";
+
+        var notes = "Every gateway span carries the authenticated name as the Langfuse user id, so nothing needs "
+                  + "registering. The engine's own spans sit in a different trace; /trace prints the two-hop join.\n\n"
+                  + "This bot cannot run the query itself: it is on the edge network and both stores are "
+                  + "backend-only, deliberately. admin-mcp can.";
 
         var buttons = new List<InlineKeyboardButton[]>();
         if (cfg.LangfuseProjectId.Length > 0)
@@ -2007,13 +2037,12 @@ sealed class Worker(
                 null,
                 $"{cfg.LangfuseUrl}/project/{cfg.LangfuseProjectId}/users/{Uri.EscapeDataString(name)}")]);
         else
-            text += $"\n\n<i>Set LANGFUSE_PROJECT_ID to get a button here. The path is "
-                  + $"{Esc(cfg.LangfuseUrl)}/project/&lt;project&gt;/users/{Esc(name)}</i>";
+            notes += $"\n\nSet LANGFUSE_PROJECT_ID to get a button here. The path is "
+                   + $"{Esc(cfg.LangfuseUrl)}/project/&lt;project&gt;/users/{Esc(name)}";
 
-        buttons.Add([new InlineKeyboardButton("← Back", $"kc:24h:{name}")]);
-        return new Reply(text, new InlineKeyboardMarkup(buttons.ToArray()));
+        buttons.Add([new InlineKeyboardButton("← Key card", $"kc:24h:{name}")]);
+        return new Reply(text + Fmt.Note(notes), new InlineKeyboardMarkup(buttons.ToArray()));
     }
-
 
     // ---- the written report -------------------------------------------------
     //
@@ -2268,96 +2297,62 @@ sealed class Worker(
     // attributes.decode_ct, read as usage — now filtered at the collector).
     // The point of this command is that people were reading numbers off
     // Langfuse and believing them.
+    // No hard line breaks inside paragraphs: Telegram wraps text to the screen,
+    // and a newline every 70 characters turns into ragged half-lines on a phone.
     private static string LangfuseHelp() =>
-        """
-        <b>What Langfuse shows you</b>
-
-        <b>Use it for one thing</b>
-        Opening a single request and seeing the engine's phase breakdown —
-        prefill_waiting, prefill_forward, decode_forward, tokenize, and a
-        <code>Req</code> span with token counts and TTFT. That waterfall is the
-        only place the inside of one request is visible.
-
-        Get there with /trace &lt;request-id&gt;. It takes two hops and the
-        command prints both.
-
-        <b>Filtering by consumer works</b>
-        Every gateway span carries the consumer as Langfuse's user id, set by
-        the ai-statistics plugin from the authenticated key. A new key shows up
-        on its first request — nothing to register. Filter it in the Users page
-        or with <code>?userId=&lt;name&gt;</code> on the observations API.
-
-        In Grafana the same filter is the <b>Consumer</b> picker on the
-        Usage &amp; Quota and AI Gateway dashboards. That list is read from the
-        ledger, so a key appears there before it has sent anything.
-
-        <b>Do NOT use it for</b>
-        • <b>Billing or usage totals.</b> No model pricing is configured, so
-          cost is meaningless, and token sums are derived from spans rather
-          than the ledger. Use /usage, /top and /balance.
-        • <b>Sessions.</b> That page is genuinely empty — nothing sets a
-          session id on the span, so multi-turn chats do not group.
-        • <b>Following one user INTO the engine.</b> The consumer is on the
-          gateway span; the engine's phase breakdown sits in a different trace,
-          because the router starts its own. /trace crosses that gap.
-        • <b>Node health.</b> That is Grafana and /health.
-
-        <b>If a Langfuse doc page 404s the API</b>
-        This runs 4.5.0 in <code>events_only</code> mode. The v3 endpoints are
-        gone by design and return a message saying so. Use
-        <code>/api/public/v2/observations</code> and
-        <code>/api/public/v2/metrics</code>.
-
-        <b>Why 4.5.0 and not the latest</b>
-        4.30.0 exists and the upgrade is cheap — two metadata-only ClickHouse
-        migrations and seven Prisma ones, none touching data we hold. We stay
-        because none of it addresses what was confusing: the 25 releases are
-        evaluator and experiment work, and <code>events_only</code> is v4's
-        intended end state, not a bug to upgrade out of. Reassessed 2026-09-05.
-
-        <b>One number used to lie</b>
-        Until 2026-09-05 its token aggregate read ~101M per day against a real
-        345k, because it counted per-decode-iteration spans as usage. Those are
-        dropped at the collector now, which also removed 77% of span volume.
-        Numbers before that date in Langfuse are not trustworthy.
-
-        Full map of which store answers what: <code>docs/METRICS-ECOSYSTEM.md</code>
-        """;
+        "\U0001f9ed <b>What Langfuse is for</b>\n\n"
+      + "✅ <b>One request, inside the engine.</b> The phase waterfall — prefill_waiting, prefill_forward, "
+      + "decode_forward, and a <code>Req</code> span with token counts and TTFT. Get there with /trace &lt;request-id&gt;.\n\n"
+      + "✅ <b>Filtering by consumer.</b> Every gateway span carries the consumer as Langfuse's user id; a new key "
+      + "appears on its first request. Users page, or <code>?userId=&lt;name&gt;</code> on the observations API.\n\n"
+      + "❌ <b>Not for</b> billing or usage totals (/usage, /top, /balance), sessions (nothing sets one), "
+      + "or node health (/health, Grafana)."
+      + Fmt.Note(
+          "<b>Following one user into the engine</b> takes /trace: the consumer is on the gateway span, but the "
+        + "engine's spans sit in a different trace because the router starts its own.\n\n"
+        + "<b>Grafana</b> has the same consumer filter — the Consumer picker on Usage &amp; Quota and AI Gateway, "
+        + "read from the ledger, so a key is selectable before it sends anything.\n\n"
+        + "<b>If a Langfuse doc page's API 404s</b>: this runs 4.5.0 in events_only mode, where the v3 endpoints are gone "
+        + "by design. Use <code>/api/public/v2/observations</code> and <code>/api/public/v2/metrics</code>.\n\n"
+        + "<b>Why 4.5.0</b>: 4.30.0 is a cheap upgrade, but its 25 releases are evaluator and experiment work, and "
+        + "events_only is v4's intended end state. Reassessed 2026-09-05.\n\n"
+        + "<b>One number used to lie</b>: until 2026-09-05 its token aggregate read ~101M a day against a real 345k, "
+        + "because decode-iteration spans counted as usage. They are dropped at the collector now; earlier Langfuse "
+        + "numbers are not trustworthy.\n\n"
+        + "Which store answers what: <code>docs/METRICS-ECOSYSTEM.md</code>");
 
     // Rendered from Policy.All, the same table /tier validates against and
     // /policy resolves from, so the description and the thing being applied
     // cannot drift apart.
     private string TiersHelp()
     {
-        var header = $"{"tier",-8}{"quota",6}{"refill",8}{"daily",6}{"tpm",6}{"max",7}";
+        var header = $"{"",-8}{"quota",6}{"refill",8}{"/day",5}{"/min",5}";
         var rows = Policy.All.Where(t => t.Name != "admin").Select(t =>
-            $"{t.Name,-8}{Policy.Compact(t.Quota),6}{Policy.RefillName(t.Refill),8}"
-          + $"{(t.Daily == 0 ? "\u221e" : Policy.Compact(t.Daily)),6}"
-          + $"{(t.Tpm == 0 ? "\u221e" : Policy.Compact(t.Tpm)),6}"
-          + $"{(t.MaxTokens == 0 ? "gw" : t.MaxTokens.ToString(CultureInfo.InvariantCulture)),7}");
+            $"{t.Name,-8}{Policy.Compact(t.Quota),6}{(t.Refill == RefillMode.Manual ? "manual" : "month"),8}"
+          + $"{(t.Daily == 0 ? "∞" : Policy.Compact(t.Daily)),5}"
+          + $"{(t.Tpm == 0 ? "∞" : Policy.Compact(t.Tpm)),5}");
 
-        var body = Table("<b>Policy tiers</b> \u2014 defaults", new[] { header }.Concat(rows));
+        var sb = new StringBuilder(Table("\U0001f3f7 <b>Tiers</b> · defaults, tokens", new[] { header }.Concat(rows)));
+        sb.Append('\n');
         foreach (var t in Policy.All)
-            body += $"\n<b>{t.Name}</b> \u2014 {Esc(t.For)}";
+            sb.Append($"\n<b>{t.Name}</b> — {Esc(t.For)}");
+        sb.Append("\n\nEvery value is a default: change one for one key with its <b>Settings</b> buttons (/key) or "
+                + "<code>/set</code>; <code>default</code> puts it back.");
 
-        body += "\n\n<b>What each setting means</b>";
+        var notes = new StringBuilder("<b>What each setting means</b>\n");
         foreach (var f in Policy.Fields)
-            body += $"\n<code>{f.Key}</code> \u2014 {Esc(f.Meaning)}";
-
-        return body
-          + "\n\n<b>Every value is a default.</b> A consumer follows its tier until one value is "
-          + "set on it with <code>/set &lt;name&gt; &lt;setting&gt; &lt;value&gt;</code>; that value then "
-          + "stays when the tier changes, and <code>default</code> puts it back. /policy shows which is which."
-          + "\n\n<b>Enforced:</b> the balance on every request; daily and tpm at the gateway (a 429 "
-          + "with the reset time); refill at 00:00 UTC. A window opens at a key's first request, and one "
-          + "request can overshoot a limit by its own size. <b>Not enforceable:</b> max_tokens per key — "
-          + $"the gateway holds one {cfg.OutputLimit:N0} ceiling for everyone."
-          + "\n\n<i>Refill replaces the balance: unused tokens do not carry over. Turning refill on never "
-          + "resets a balance at once; the first reset is at the next boundary.</i>"
-          + "\n\n<b>Quota is one number.</b> Input and output are deducted at the same rate, "
-          + "though on this node an output token costs roughly 68\u00d7 an uncached input token "
-          + "and ~4800\u00d7 a cached one \u2014 /usage and /top show the i:o ratio."
-          + "\n\n<i>Setting a tier or a quota never changes a balance by itself.</i>";
+            notes.Append($"<b>{f.Key}</b> — {Esc(f.Meaning)}\n");
+        notes.Append("\n<b>max_tokens defaults</b> (recorded, not enforceable per key): ")
+             .Append(string.Join(", ", Policy.All.Where(t => t.Name != "admin").Select(t => $"{t.Name} {t.MaxTokens:N0}")))
+             .Append($". The gateway holds one {cfg.OutputLimit:N0} ceiling for everyone.\n\n")
+             .Append("<b>Enforced</b>: balance on every request; /day and /min at the gateway (429 with the reset time); "
+                   + "refill at 00:00 UTC. A window opens at a key's first request, and one request can overshoot a "
+                   + "limit by its own size.\n\n")
+             .Append("<b>Refill replaces the balance</b>: unused tokens do not carry over. Turning refill on never resets "
+                   + "at once; the first reset is the next boundary. Setting a tier or quota never moves a balance by itself.\n\n")
+             .Append("<b>Quota is one number</b>: input and output are deducted alike, though an output token costs this "
+                   + "node ~68× an uncached input token — /usage shows the split.");
+        return sb.ToString() + Fmt.Note(notes.ToString());
     }
 
     private async Task<Reply> TierAsync(string name, string tier, CancellationToken ct)
@@ -2418,7 +2413,7 @@ sealed class Worker(
             rows.Add($"{r.Field.Label,-11}{(r.Value is null ? "\u2014" : Policy.Show(r.Field, r.Value, cfg.OutputLimit)),14}  {r.Source}");
 
         var body = (notice is null ? "" : notice + "\n\n")
-                 + Table($"<b>{Esc(name)}</b> \u2014 tier <b>{Esc(tier ?? "unassigned")}</b>", rows);
+                 + Table($"\u2699\ufe0f <b>{Esc(name)}</b> \u00b7 tier <b>{Esc(tier ?? "unassigned")}</b>", rows);
 
         var bal = balT.Result.TryGetValue(name, out var b) ? b.ToString("N0", CultureInfo.InvariantCulture) : "not seeded";
         body += $"\nBalance <code>{bal}</code>";
@@ -2446,8 +2441,10 @@ sealed class Worker(
             body += "\nRefill: manual";
 
         body += "\n\n" + limiter.StatusLine(name)
-              + "\n<i>max_tokens is recorded only: the gateway cannot vary it per key.</i>"
-              + "\n\n<i>Tap a value to change it. \u2731 marks one set on this key rather than taken from its tier.</i>";
+              + "\n<i>Tap a value to change it.</i>"
+              + Fmt.Note("\u2731 marks a value set on this key; the rest follow its tier and move when the tier does.\n"
+                       + "The 24h and 60s windows open at the key's first request, and one request can overshoot a limit by its own size.\n"
+                       + "max_tokens is recorded only: the gateway cannot vary it per key.");
 
         // One button per setting, showing its value, so the screen is both the
         // readout and the control. Labels are short: Telegram truncates a
@@ -2652,119 +2649,102 @@ sealed class Worker(
     private static string BadWindow(string w) =>
         $"Unknown window <code>{Esc(w)}</code>.\n\nUse one of <code>1h</code>, <code>24h</code>, <code>7d</code>, <code>30d</code>.";
 
-    private async Task<string> TopAsync(string window, CancellationToken ct)
+    // One row of window buttons under a report. The current window is marked
+    // and tapping another EDITS the message, so flipping 1h -> 24h -> 7d is one
+    // screen, not three.
+    private static InlineKeyboardMarkup WindowButtons(string cmd, string current, params string[] windows) =>
+        new([windows.Select(w => new InlineKeyboardButton(w == current ? $"• {w}" : w, $"w:{cmd}:{w}")).ToArray()]);
+
+    private async Task<Reply?> WindowCallbackAsync(string data, CancellationToken ct)
     {
-        if (!ValidWindow(window)) return BadWindow(window);
-
-        // Split by direction. A single total hides the thing that matters: the
-        // ledger charges input and output identically, and a consumer at 40:1
-        // is paying almost entirely for context it re-sent, most of which the
-        // radix cache served for free.
-        var tokensT = PromAsync($"sum by (consumer) (increase(gateway_tokens_total[{window}]))", ct, "consumer");
-        var inT     = PromAsync($"sum by (consumer) (increase(gateway_tokens_total{{direction=\"input\"}}[{window}]))", ct, "consumer");
-        var outT    = PromAsync($"sum by (consumer) (increase(gateway_tokens_total{{direction=\"output\"}}[{window}]))", ct, "consumer");
-        var reqsT   = PromAsync($"sum by (consumer) (increase(gateway_requests_total[{window}]))", ct, "consumer");
-        var errsT   = PromAsync(
-            $"sum by (consumer) (increase(gateway_requests_total{{status_class=~\"4xx|5xx\"}}[{window}]))", ct, "consumer");
-        await Task.WhenAll(tokensT, reqsT, errsT, inT, outT);
-
-        var tokens = tokensT.Result; var reqs = reqsT.Result; var errs = errsT.Result;
-        if (reqs.Count == 0) return $"No gateway traffic in the last {window}.";
-
-        var header = $"{"consumer",-14}{"in",9}{"out",8}{"i:o",6}{"req",6}";
-        var rows = reqs.OrderByDescending(x => tokens.GetValueOrDefault(x.Key)).Select(x =>
+        var parts = data.Split(':');
+        if (parts.Length != 3 || !ValidWindow(parts[2])) return null;
+        return parts[1] switch
         {
-            var inp = inT.Result.GetValueOrDefault(x.Key);
-            var outp = outT.Result.GetValueOrDefault(x.Key);
-            var ratio = outp > 0 ? inp / outp : 0;
-            var err = errs.GetValueOrDefault(x.Key);
-            return $"{x.Key,-14}{inp,9:N0}{outp,8:N0}{ratio,6:N1}{x.Value,6:N0}"
-                 + (err > 0 ? $"  {err:N0} err" : "");
-        });
-
-        return Table($"<b>Top consumers</b> \u2014 last {window}", new[] { header }.Concat(rows))
-             + "\n<i>i:o is input per output token. The ledger charges both the same, but input is "
-             + "prefilled and mostly cache-served \u2014 a high ratio means the bill is context re-sent, "
-             + "not work done.</i>";
+            "top" => await TopAsync(parts[2], ct),
+            "usage" => await UsageAsync(parts[2], ct),
+            "errors" => await ErrorsAsync(parts[2], ct),
+            _ => null
+        };
     }
 
-    private async Task<string> LatencyAsync(string? name, CancellationToken ct)
+    // Who is using the node, most first. A card per consumer — name on its own
+    // line — because a table column cannot hold both "testafter" and
+    // "vkondratpev-demo2-cursor" and still fit a phone.
+    private async Task<Reply> TopAsync(string window, CancellationToken ct)
     {
-        // No rate() window here, deliberately. rate() over an idle window is
-        // zero, and histogram_quantile of an all-zero histogram is NaN — which
-        // Prometheus omits, so the command would answer "no data" for a
-        // consumer who simply has not sent anything in the last few minutes.
-        // The cumulative buckets always have an answer, and "p95 since Vector
-        // started" is the question an operator actually means here.
-        var sel = name is null ? "" : $"{{consumer=\"{name}\"}}";
-        var q = (double p) =>
-            $"histogram_quantile({p.ToString(CultureInfo.InvariantCulture)}, " +
-            $"sum by (consumer,le) (gateway_request_duration_seconds_bucket{sel}))";
+        if (!ValidWindow(window)) return new Reply(BadWindow(window));
 
-        var p50T = PromAsync(q(0.50), ct, "consumer");
-        var p95T = PromAsync(q(0.95), ct, "consumer");
-        var p99T = PromAsync(q(0.99), ct, "consumer");
-        await Task.WhenAll(p50T, p95T, p99T);
+        // Tokens from ai-statistics (see KeyStatsAsync for why not Vector's
+        // counters); requests and error classes from the access log, which is
+        // the only place a status code is counted per consumer.
+        var inT   = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_input_token[{window}]))", ct);
+        var outT  = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_output_token[{window}]))", ct);
+        var reqsT = PromAsync($"sum by (consumer) (increase(gateway_requests_total[{window}]))", ct, "consumer");
+        var errsT = PromAsync($"sum by (consumer) (increase(gateway_requests_total{{status_class=~\"4xx|5xx\"}}[{window}]))", ct, "consumer");
+        var cutT  = PromAsync($"sum by (consumer) (increase(gateway_unbilled_requests_total[{window}]))", ct, "consumer");
+        var pricesT = priceBook.GetAsync(ct);
+        await Task.WhenAll(inT, outT, reqsT, errsT, cutT, pricesT);
 
-        var p95 = p95T.Result;
-        if (p95.Count == 0)
-            return name is null
-                ? "No latency data yet. The access-log pipeline records it from the first request after Vector starts."
-                : $"No latency data for <b>{Esc(name)}</b>.";
+        var inp = inT.Result; var outp = outT.Result; var reqs = reqsT.Result;
+        var errs = errsT.Result; var cuts = cutT.Result; var prices = pricesT.Result;
+        var keyboard = WindowButtons("top", window, "1h", "24h", "7d", "30d");
 
-        var rows = p95.OrderByDescending(x => x.Value).Select(x =>
-            $"{x.Key,-16}{p50T.Result.GetValueOrDefault(x.Key),8:N3}{x.Value,9:N3}{p99T.Result.GetValueOrDefault(x.Key),9:N3}");
+        double Tok(string n) => inp.GetValueOrDefault(n) + outp.GetValueOrDefault(n);
+        var names = inp.Keys.Union(outp.Keys).Union(reqs.Keys)
+                       .Where(n => n != "unauthenticated" && (Tok(n) >= 0.5 || reqs.GetValueOrDefault(n) >= 0.5))
+                       .OrderByDescending(Tok).ThenByDescending(n => reqs.GetValueOrDefault(n))
+                       .ToList();
+        if (names.Count == 0)
+            return new Reply($"\U0001f3c6 <b>Top consumers</b> · {window}\n\nNo gateway traffic in this window.", keyboard);
 
-        var header = $"{"consumer",-16}{"p50",8}{"p95",9}{"p99",9}";
-        var body = Table("<b>Latency</b>", new[] { header }.Concat(rows))
-             + "\n<i>Seconds, whole request as Envoy saw it. Cumulative since Vector started.</i>"
-             + "\n<i>Bucketed, so approximate at low request counts \u2014 the exact figure is in the "
-             + "fact table.</i>";
+        var total = names.Sum(Tok);
+        var sb = new StringBuilder($"\U0001f3c6 <b>Top consumers</b> · {window}\n");
+        sb.Append($"<b>{Fmt.Num(total)}</b> tokens · <b>{Fmt.Num(names.Sum(n => reqs.GetValueOrDefault(n)))}</b> requests\n");
 
-        return body + await EngineLatencyAsync(sel, ct);
+        var rank = 0;
+        foreach (var n in names)
+        {
+            rank++;
+            var i = inp.GetValueOrDefault(n); var o = outp.GetValueOrDefault(n);
+            var share = total > 0 ? Tok(n) / total : 0;
+            var e = errs.GetValueOrDefault(n); var c = cuts.GetValueOrDefault(n);
+            var cost = PriceBook.Cost(prices.OpenRouter, i, o);
+
+            sb.Append($"\n<b>{rank}. {Esc(n)}</b>\n");
+            sb.Append($"{Fmt.ShareBar(share)} {Fmt.Pct(share)} · {Fmt.Num(Tok(n))} tok\n");
+            sb.Append($"⬇ {Fmt.Num(i)} in · ⬆ {Fmt.Num(o)} out")
+              .Append(Fmt.Ratio(i, o) is { Length: > 0 } ratio ? $" · {ratio}" : "").Append('\n');
+            sb.Append($"{Fmt.Num(reqs.GetValueOrDefault(n))} req · ≈ {PriceBook.Usd(cost)}");
+            if (e >= 0.5) sb.Append($" · ⚠️ {Fmt.Num(e)} err");
+            if (c >= 0.5) sb.Append($" · ✂️ {Fmt.Num(c)} cut");
+            sb.Append('\n');
+        }
+
+        if (errs.GetValueOrDefault("unauthenticated") is var ua and >= 0.5)
+            sb.Append($"\n\U0001f6ab {Fmt.Num(ua)} rejected with no valid key (401)\n");
+
+        sb.Append(Fmt.Note(
+            "<b>How to read it</b>\n"
+          + "▰ bar and % — share of all tokens in the window.\n"
+          + "⬇ in / ⬆ out, then input per output token. Both are charged the same, but input is "
+          + "prefilled and mostly served from cache: a high ratio means the bill is context re-sent, not "
+          + "work generated.\n"
+          + $"≈ $ — OpenRouter list price for the same tokens ({Esc(PriceBook.PerMText(prices.OpenRouter))}); "
+          + "a reference, not a bill. /usage shows all four references.\n"
+          + "err — 4xx/5xx answers. cut — requests ended before their usage frame, charged nothing."));
+        return new Reply(sb.ToString(), keyboard);
     }
 
-    // The engine's own view of the same consumers, which the gateway cannot
-    // produce. TTFT differs from the gateway figure by the gateway filter
-    // chain, the router and two network hops; inter-token latency has no
-    // gateway equivalent at all, because Envoy sees a stream open and a stream
-    // close and nothing in between.
-    //
-    // Empty until BOTH replicas run with --tokenizer-metrics-allowed-custom-labels
-    // and Higress injects x-custom-labels. Silent when empty rather than
-    // apologetic: /p95 is a gateway command first, and a missing engine block
-    // is the normal state during a rollout.
-    private async Task<string> EngineLatencyAsync(string sel, CancellationToken ct)
+    // Status classes per consumer, worst first. Only non-zero classes are
+    // printed: "0 5xx" on every line is noise that hides the one that matters.
+    private async Task<Reply> ErrorsAsync(string window, CancellationToken ct)
     {
-        // consumer!="" drops the health probes and anything that reached a
-        // replica without passing the gateway.
-        var s = sel.Length == 0 ? "{consumer!=\"\"}" : sel;
-        var q = (string metric) =>
-            $"histogram_quantile(0.95, sum by (consumer,le) (sglang:{metric}_bucket{s}))";
-
-        var ttftT = PromAsync(q("time_to_first_token_seconds"), ct, "consumer");
-        var itlT = PromAsync(q("inter_token_latency_seconds"), ct, "consumer");
-        var e2eT = PromAsync(q("e2e_request_latency_seconds"), ct, "consumer");
-        await Task.WhenAll(ttftT, itlT, e2eT);
-
-        if (ttftT.Result.Count == 0) return "";
-
-        var rows = ttftT.Result.OrderByDescending(x => x.Value).Select(x =>
-            $"{x.Key,-16}{x.Value,8:N3}{itlT.Result.GetValueOrDefault(x.Key),9:N3}{e2eT.Result.GetValueOrDefault(x.Key),9:N2}");
-
-        var header = $"{"consumer",-16}{"ttft",8}{"itl",9}{"e2e",9}";
-        return "\n\n" + Table("<b>Engine-side p95</b>", new[] { header }.Concat(rows))
-             + "\n<i>Seconds, measured inside SGLang: queue wait plus prefill for ttft, "
-             + "gap between output tokens for itl. Excludes gateway, router and network.</i>";
-    }
-
-    private async Task<string> ErrorsAsync(string window, CancellationToken ct)
-    {
-        if (!ValidWindow(window)) return BadWindow(window);
+        if (!ValidWindow(window)) return new Reply(BadWindow(window));
+        var keyboard = WindowButtons("errors", window, "1h", "24h", "7d", "30d");
 
         var series = await PromSeriesAsync(
             $"sum by (consumer,status_class) (increase(gateway_requests_total[{window}]))", ct);
-        if (series.Count == 0) return $"No gateway traffic in the last {window}.";
 
         var by = new Dictionary<string, Dictionary<string, double>>(StringComparer.Ordinal);
         foreach (var (labels, value) in series)
@@ -2774,14 +2754,93 @@ sealed class Worker(
             if (!by.TryGetValue(c, out var m)) by[c] = m = new(StringComparer.Ordinal);
             m[cls] = m.GetValueOrDefault(cls) + value;
         }
+        by = by.Where(x => x.Value.Values.Sum() >= 0.5).ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+        if (by.Count == 0)
+            return new Reply($"\U0001f6a6 <b>Status mix</b> · {window}\n\nNo gateway traffic in this window.", keyboard);
 
-        var rows = by.OrderByDescending(x => x.Value.GetValueOrDefault("4xx") + x.Value.GetValueOrDefault("5xx"))
-                     .Select(x =>
-                        $"{x.Key,-16}{x.Value.GetValueOrDefault("2xx"),7:N0}{x.Value.GetValueOrDefault("4xx"),7:N0}{x.Value.GetValueOrDefault("5xx"),7:N0}");
+        double Bad(Dictionary<string, double> m) => m.GetValueOrDefault("4xx") + m.GetValueOrDefault("5xx");
+        var totalBad = by.Values.Sum(Bad);
+        var sb = new StringBuilder($"\U0001f6a6 <b>Status mix</b> · {window}\n");
+        sb.Append(totalBad >= 0.5
+            ? $"⚠️ <b>{Fmt.Num(totalBad)}</b> error answers of {Fmt.Num(by.Values.Sum(m => m.Values.Sum()))}\n"
+            : $"✅ No errors in {Fmt.Num(by.Values.Sum(m => m.Values.Sum()))} requests\n");
 
-        var header = $"{"consumer",-16}{"2xx",7}{"4xx",7}{"5xx",7}";
-        return Table($"<b>Status mix</b> \u2014 last {window}", new[] { header }.Concat(rows))
-             + "\n<i>`unauthenticated` is the 401 path: a wrong or missing key, which has no consumer to name.</i>";
+        foreach (var (name, m) in by.OrderByDescending(x => Bad(x.Value)).ThenByDescending(x => x.Value.Values.Sum()))
+        {
+            var parts = new List<string>();
+            if (m.GetValueOrDefault("2xx") is var ok and >= 0.5) parts.Add($"✅ {Fmt.Num(ok)}");
+            if (m.GetValueOrDefault("4xx") is var c4 and >= 0.5) parts.Add($"\U0001f7e0 {Fmt.Num(c4)} 4xx");
+            if (m.GetValueOrDefault("5xx") is var c5 and >= 0.5) parts.Add($"\U0001f534 {Fmt.Num(c5)} 5xx");
+            // "other" is status 0: the client closed the connection before any
+            // response was sent — usually an agent abandoning a slow request.
+            if (m.GetValueOrDefault("other") + m.GetValueOrDefault("3xx") is var ot and >= 0.5) parts.Add($"✂️ {Fmt.Num(ot)} closed early");
+            sb.Append($"\n<b>{Esc(name)}</b>\n{string.Join(" · ", parts)}\n");
+        }
+
+        sb.Append(Fmt.Note(
+            "<b>unauthenticated</b> is the 401 path: a wrong or missing key, so there is no consumer to name. "
+          + "4xx from a known key is usually 403 (balance at zero), 422 (max_tokens over the gateway ceiling) "
+          + "or 429 (a daily or per-minute limit). The exact code per request is in the fact table — /trace."));
+        return new Reply(sb.ToString(), keyboard);
+    }
+
+    // Gateway and engine latency, per consumer, in one card each. The two used
+    // to be two tables with different row sets and orders, which made "is this
+    // consumer slow at the gateway or inside the engine" a cross-reference job.
+    private async Task<string> LatencyAsync(string? name, CancellationToken ct)
+    {
+        // No rate() window here, deliberately. rate() over an idle window is
+        // zero, and histogram_quantile of an all-zero histogram is NaN — which
+        // Prometheus omits, so the command would answer "no data" for a
+        // consumer who simply has not sent anything in the last few minutes.
+        // The cumulative buckets always have an answer, and "p95 since the
+        // counters started" is the question an operator actually means here.
+        var gsel = name is null ? "" : $"{{consumer=\"{name}\"}}";
+        // consumer!="" drops health probes and anything that reached a replica
+        // without passing the gateway.
+        var esel = name is null ? "{consumer!=\"\"}" : gsel;
+        string G(double p) =>
+            $"histogram_quantile({p.ToString(CultureInfo.InvariantCulture)}, sum by (consumer,le) (gateway_request_duration_seconds_bucket{gsel}))";
+        string E(string metric) =>
+            $"histogram_quantile(0.95, sum by (consumer,le) (sglang:{metric}_bucket{esel}))";
+
+        var p50T = PromAsync(G(0.50), ct, "consumer");
+        var p95T = PromAsync(G(0.95), ct, "consumer");
+        var p99T = PromAsync(G(0.99), ct, "consumer");
+        var ttftT = PromAsync(E("time_to_first_token_seconds"), ct, "consumer");
+        var itlT = PromAsync(E("inter_token_latency_seconds"), ct, "consumer");
+        var e2eT = PromAsync(E("e2e_request_latency_seconds"), ct, "consumer");
+        var consumersT = keys.ReadConsumersAsync(ct);
+        await Task.WhenAll(p50T, p95T, p99T, ttftT, itlT, e2eT, consumersT);
+
+        // Current keys only (plus the 401 bucket): a histogram outlives a
+        // revoked consumer and every synthetic probe that ever sent a label.
+        var current = consumersT.Result;
+        var names = p95T.Result.Keys.Union(e2eT.Result.Keys)
+                       .Where(n => current.ContainsKey(n) || n == "unauthenticated")
+                       .OrderByDescending(n => e2eT.Result.GetValueOrDefault(n, p95T.Result.GetValueOrDefault(n)))
+                       .ToList();
+        if (names.Count == 0)
+            return name is null
+                ? "⏱ <b>Latency</b>\n\nNo latency data yet — it starts with the first request after the counters start."
+                : $"⏱ <b>Latency</b> · {Esc(name)}\n\nNo latency data for this consumer yet.";
+
+        var sb = new StringBuilder("⏱ <b>Latency</b>" + (name is null ? "" : $" · {Esc(name)}") + "\n");
+        foreach (var n in names)
+        {
+            sb.Append($"\n<b>{Esc(n)}</b>\n");
+            if (p95T.Result.TryGetValue(n, out var gw95))
+                sb.Append($"\U0001f310 gateway p95 <b>{Fmt.Secs(gw95)}</b> · p50 {Fmt.Secs(p50T.Result.GetValueOrDefault(n))} · p99 {Fmt.Secs(p99T.Result.GetValueOrDefault(n))}\n");
+            if (e2eT.Result.TryGetValue(n, out var e2e))
+                sb.Append($"⚙️ engine p95 <b>{Fmt.Secs(e2e)}</b> · first token {Fmt.Secs(ttftT.Result.GetValueOrDefault(n))} · per token {Fmt.Secs(itlT.Result.GetValueOrDefault(n))}\n");
+        }
+
+        sb.Append(Fmt.Note(
+            "\U0001f310 <b>gateway</b> — the whole request as Envoy saw it, since Vector last started.\n"
+          + "⚙️ <b>engine</b> — measured inside SGLang since the replica started: first token is queue wait "
+          + "plus prefill, per token is the gap between output tokens. No gateway, router or network in it.\n"
+          + "Both are bucketed, so approximate at low request counts; exact per-request figures are in the fact table."));
+        return sb.ToString();
     }
 
     // Reads Alertmanager, not Prometheus, and the difference matters: Prometheus
@@ -2813,7 +2872,7 @@ sealed class Worker(
 
             var node = JsonNode.Parse(await r.Content.ReadAsStringAsync(ct));
             if (node is not JsonArray arr || arr.Count == 0)
-                return "<b>Alerts</b>\n\nNothing firing. \u2705";
+                return "\U0001f6a8 <b>Alerts</b>\n\n\u2705 Nothing firing.";
 
             var items = new List<(string Sev, string Name, string Who, string Age, bool Suppressed)>();
             foreach (var a in arr)
@@ -2821,8 +2880,13 @@ sealed class Worker(
                 var labels = a?["labels"];
                 var sev = labels?["severity"]?.GetValue<string>() ?? "unknown";
                 var name = labels?["alertname"]?.GetValue<string>() ?? "-";
-                var who = labels?["instance"]?.GetValue<string>()
-                          ?? labels?["job"]?.GetValue<string>() ?? "-";
+                // Per-consumer rules (ConsumerQuotaLow, ...) carry the consumer and
+                // no instance; showing "-" for them was the most useless line on
+                // the screen.
+                var who = labels?["ai_consumer"]?.GetValue<string>()
+                          ?? labels?["consumer"]?.GetValue<string>()
+                          ?? labels?["instance"]?.GetValue<string>()
+                          ?? labels?["job"]?.GetValue<string>() ?? "";
                 var age = DateTimeOffset.TryParse(
                               a?["startsAt"]?.GetValue<string>(), CultureInfo.InvariantCulture,
                               DateTimeStyles.AdjustToUniversal, out var st)
@@ -2833,7 +2897,7 @@ sealed class Worker(
             }
 
             var sb = new StringBuilder();
-            sb.Append("<b>Alerts</b> \u00b7 ").Append(items.Count)
+            sb.Append("\U0001f6a8 <b>Alerts</b> \u00b7 ").Append(items.Count)
               .Append(items.Count == 1 ? " firing\n" : " firing\n");
 
             // Severity histogram. A count alone does not show shape; five
@@ -2853,6 +2917,7 @@ sealed class Worker(
                     sb.Append(Fmt.Glyph(c.Sev)).Append(' ')
                       .Append(c.Sev.PadRight(8)).Append(c.N.ToString(CultureInfo.InvariantCulture).PadLeft(3))
                       .Append("  ").Append(Fmt.Bar(c.N, max, 12)).Append('\n');
+                sb.Length--;                       // no blank line before </pre>
                 sb.Append("</pre>");
             }
 
@@ -3388,7 +3453,7 @@ sealed class LimiterSync(IHttpClientFactory http, KeyStore keys, Ledger ledger, 
 
     public string Summary() =>
         _lastError is { } e ? $"FAILED ({e})"
-        : _lastOk is { } t ? $"{_limited} key(s) limited, {Fmt.Duration((long)(DateTimeOffset.UtcNow - t).TotalSeconds)} ago"
+        : _lastOk is { } t ? $"{(_limited == 0 ? "no keys" : _limited == 1 ? "1 key" : $"{_limited} keys")} limited \u00b7 synced {Fmt.Duration((long)(DateTimeOffset.UtcNow - t).TotalSeconds)} ago"
         : "not synced yet";
 
     public async Task SyncAsync(CancellationToken ct)
@@ -4407,7 +4472,7 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
         // Telegram caps a message at 4096 characters. Chunk on line boundaries so
         // a long /keys listing does not lose its last consumer to a hard cut.
         // The keyboard rides on the final chunk, where the question is.
-        var chunks = Chunk(reply.Text, 3500).ToList();
+        var chunks = Chunk(Tidy(reply.Text), 3500).ToList();
         for (var i = 0; i < chunks.Count; i++)
         {
             var last = i == chunks.Count - 1;
@@ -4432,7 +4497,7 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
     {
         if (messageId > 0 && reply.Text.Length <= 3500)
         {
-            var payload = new EditMessageText(chatId, messageId, reply.Text, "HTML", reply.Keyboard);
+            var payload = new EditMessageText(chatId, messageId, Tidy(reply.Text), "HTML", reply.Keyboard);
             using var content = new StringContent(
                 JsonSerializer.Serialize(payload, BotJson.Default.EditMessageText), Encoding.UTF8);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -4443,6 +4508,15 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
             log.LogWarning("editMessageText failed, sending instead: HTTP {Code} {Body}", (int)r.StatusCode, body);
         }
         await SendAsync(chatId, reply, ct);
+    }
+
+    // At most one blank line anywhere, and none at the ends. Screens are built
+    // from parts that each end in a newline, and the joins showed up as double
+    // gaps before the collapsed notes — measured in the reply capture.
+    private static string Tidy(string s)
+    {
+        while (s.Contains("\n\n\n", StringComparison.Ordinal)) s = s.Replace("\n\n\n", "\n\n");
+        return s.Trim('\n');
     }
 
     private static IEnumerable<string> Chunk(string s, int max)
@@ -4463,6 +4537,72 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
 // ---------------------------------------------------------------------------
 static class Fmt
 {
+    // ---- Telegram layout rules ---------------------------------------------
+    //
+    // Measured by capturing every reply through a fake Bot API (2026-09-13):
+    // 14 of 29 replies had <pre> lines wider than a phone shows, and every
+    // table with a name column broke on a 24-character consumer name, running
+    // the numbers together ("vkondratyev-demo40,606,3021,254,824"). So:
+    //
+    //   - a consumer NAME never sits in a padded column. It gets its own bold
+    //     line and its numbers go underneath, which holds for any name length;
+    //   - numbers are compact (40.6M, 18.3K) — three significant digits is all
+    //     a phone screen can compare at a glance;
+    //   - a <pre> table is only for fixed-width label/value pairs, at most
+    //     PhoneCols characters wide;
+    //   - the "why" goes last, in an expandable blockquote, so the numbers are
+    //     the first screen and the explanation is one tap away instead of a
+    //     wall of italics under every answer.
+    public const int PhoneCols = 32;
+
+    public static string Num(double v)
+    {
+        if (!double.IsFinite(v)) return "\u2014";
+        var a = Math.Abs(v);
+        string S(double x, string unit) =>
+            (x >= 100 ? x.ToString("0", CultureInfo.InvariantCulture)
+             : x >= 10 ? x.ToString("0.#", CultureInfo.InvariantCulture)
+             : x.ToString("0.##", CultureInfo.InvariantCulture)) + unit;
+        return a switch
+        {
+            >= 1e9 => S(v / 1e9, "B"),
+            >= 1e6 => S(v / 1e6, "M"),
+            >= 1e3 => S(v / 1e3, "K"),
+            _ => Math.Round(v).ToString("0", CultureInfo.InvariantCulture),
+        };
+    }
+
+    // 47ms, 4.1s, 181s.
+    public static string Secs(double? s) => s switch
+    {
+        null => "\u2014",
+        { } v when !double.IsFinite(v) => "\u2014",
+        < 1 => $"{s.Value * 1000:0}ms",
+        < 10 => $"{s.Value:0.0}s",
+        _ => $"{s.Value:0}s",
+    };
+
+    // Input:output as the larger side over 1 — "32:1" for context-heavy
+    // traffic, "1:4" for generative — so it never reads "0:1".
+    public static string Ratio(double input, double output) =>
+        input < 1 || output < 1 ? "" : input >= output ? $"{input / output:0}:1" : $"1:{output / input:0}";
+
+    public static string Pct(double share) =>
+        share <= 0 ? "0%" : share < 0.01 ? "<1%" : $"{share * 100:0}%";
+
+    // A share as ten cells, for a line of proportional text. ▰/▱ are the same
+    // width as each other in every Telegram client font, which is all it needs.
+    public static string ShareBar(double share, int cells = 10)
+    {
+        var n = (int)Math.Round(Math.Clamp(share, 0, 1) * cells);
+        if (share > 0 && n == 0) n = 1;
+        return new string('\u25b0', n) + new string('\u25b1', cells - n);
+    }
+
+    // The explanation, collapsed. Telegram shows the first lines and a tap
+    // opens the rest; the HTML inside may use b/i/code.
+    public static string Note(string html) => $"\n\n<blockquote expandable>{html}</blockquote>";
+
     // 5h 12m, 42s. For "resets in" lines, where precision below a minute
     // only matters when there is less than a minute left.
     public static string Duration(long seconds) => seconds switch
@@ -4564,18 +4704,18 @@ sealed class AlertWorker(
         // Per-instance detail in a monospace block, so the columns line up when
         // one rule fires for several targets at once.
         var rows = list.Select(a => (
-            Who: Get(a.Labels, "instance") ?? Get(a.Labels, "job") ?? "-",
+            Who: Get(a.Labels, "ai_consumer") ?? Get(a.Labels, "consumer") ?? Get(a.Labels, "instance") ?? Get(a.Labels, "job") ?? "-",
             Age: a.StartsAt is { } st
                  ? Fmt.Age((firing ? DateTimeOffset.UtcNow : a.EndsAt ?? DateTimeOffset.UtcNow) - st)
                  : "-")).ToList();
 
+        // One line per target. A padded <pre> column broke on long instance
+        // names (host:port) exactly as the consumer tables did.
         if (rows.Count > 0)
         {
-            var w = rows.Max(r => r.Who.Length);
-            sb.Append("\n<pre>");
+            sb.Append('\n');
             foreach (var r in rows)
-                sb.Append(Fmt.Esc(r.Who.PadRight(w))).Append("  ").Append(Fmt.Esc(r.Age)).Append('\n');
-            sb.Append("</pre>");
+                sb.Append("\u2022 <code>").Append(Fmt.Esc(r.Who)).Append("</code> \u00b7 ").Append(Fmt.Esc(r.Age)).Append('\n');
         }
 
         // The rule's own words, deduplicated. A per-GPU rule otherwise repeats
