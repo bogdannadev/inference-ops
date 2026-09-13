@@ -263,6 +263,22 @@ gateway.example.org {
 				header Content-Type "application/json; charset=utf-8"
 				respond `{"error":{"message":"max_tokens exceeds the per-request limit of 70000 for this gateway.","type":"invalid_request_error","param":"max_tokens","code":"max_tokens_too_large"}}` 422
 			}
+
+			# ai-token-ratelimit's refusal (per-key daily / per-minute token
+			# limits, rules owned by quota-bot). Matched on its reset header, NOT
+			# on 429 alone: the router's admission control also answers 429, and
+			# its body should reach the client unchanged. Retry-After carries
+			# the seconds until the window closes, so SDK retry logic waits the
+			# right amount — for a daily window that can be hours.
+			@ratelimited {
+				status 429
+				header X-Tokenratelimit-Reset *
+			}
+			handle_response @ratelimited {
+				header Content-Type "application/json; charset=utf-8"
+				header Retry-After {rp.header.X-Tokenratelimit-Reset}
+				respond `{"error":{"message":"Token rate limit reached for this API key (its daily or per-minute token limit). Retry after {rp.header.X-Tokenratelimit-Reset} seconds.","type":"rate_limit_exceeded","param":null,"code":"rate_limit_exceeded"}}` 429
+			}
 		}
 	}
 

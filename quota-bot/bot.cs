@@ -200,6 +200,8 @@ builder.Services.AddHostedService<AlertWorker>();
 builder.Services.AddSingleton<Ledger>();
 builder.Services.AddSingleton<KeyStore>();
 builder.Services.AddHostedService<Worker>();
+builder.Services.AddSingleton<LimiterSync>();
+builder.Services.AddHostedService<EnforcementWorker>();
 
 // api.telegram.org is ~100ms away, and opening a connection to it costs ~200ms
 // more (TCP 100ms + TLS 106ms, measured from this host on 2026-09-03). Every
@@ -406,28 +408,27 @@ if (cfg.AdminApiSecret.Length >= 32)
     {
         if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
         var arr = new JsonArray();
-        // Enforcement is STRUCTURAL here, not a note in prose. Only `quota` is
-        // applied, and only as the starting balance of a new key; everything
-        // else a tier carries is recorded until the gateway rate limiter and the
-        // refill job exist. A field that is read as a promise and enforced by
-        // nothing ends up quoted to a customer, so every unenforced field says
-        // so in its own name, not only in the note.
+        // Enforcement is STRUCTURAL here, not a note in prose. A field that is
+        // read as a promise and enforced by nothing ends up quoted to a
+        // customer, so the one unenforced field says so in its own name, not
+        // only in the note.
         foreach (var t in Policy.All)
             arr.Add((JsonNode)new JsonObject
             {
                 ["tier"] = t.Name,
                 ["for"] = t.For,
                 ["quota"] = t.Quota,
-                ["refill_NOT_RUNNING"] = Policy.RefillName(t.Refill),
-                ["daily_limit_NOT_ENFORCED"] = t.Daily,
-                ["tokens_per_minute_NOT_ENFORCED"] = t.Tpm,
+                ["refill"] = Policy.RefillName(t.Refill),
+                ["daily_limit"] = t.Daily,
+                ["tokens_per_minute"] = t.Tpm,
                 ["max_tokens_NOT_ENFORCED"] = t.MaxTokens,
-                ["enforced"] = new JsonArray { (JsonNode)"quota" },
-                ["note"] = "Only `quota` is applied, as the starting balance of a new key. "
-                         + "0 means no limit for daily_limit and tokens_per_minute, and the "
-                         + $"gateway's global {cfg.OutputLimit} ceiling for max_tokens. Every value "
-                         + "can be overridden per consumer (POST /admin/policy). "
-                         + "Do not quote the unenforced numbers to a consumer as limits.",
+                ["enforced"] = new JsonArray { (JsonNode)"quota", (JsonNode)"refill", (JsonNode)"daily_limit", (JsonNode)"tokens_per_minute" },
+                ["note"] = "0 means no limit for daily_limit and tokens_per_minute, and the "
+                         + $"gateway's global {cfg.OutputLimit} ceiling for max_tokens. daily_limit is a 24h "
+                         + "window starting at the key's first request, not a calendar day; one request can "
+                         + "overshoot a limit by its own size. refill resets the balance to quota at 00:00 UTC "
+                         + "(daily, Monday, or the 1st). max_tokens cannot be enforced per key. Every value "
+                         + "can be overridden per consumer (POST /admin/policy).",
             });
         return Results.Text(arr.ToJsonString(), "application/json");
     });
@@ -537,7 +538,8 @@ if (cfg.AdminApiSecret.Length >= 32)
             ["tier"] = tier ?? "unassigned",
             ["settings"] = settings,
             ["note"] = "source is 'tier' when the value follows the tier and 'set' when it was "
-                     + "set on this consumer. Only the balance is enforced today.",
+                     + "set on this consumer. Everything but max_tokens is enforced; "
+                     + (LimiterSync.InScope(name) ? "" : "this consumer is OUTSIDE the limiter's rollout scope, so daily and tpm are not applied to it yet."),
         };
     }
 
@@ -749,6 +751,7 @@ sealed class Worker(
     IHttpClientFactory http,
     Telegram tg,
     PriceBook priceBook,
+    LimiterSync limiter,
     ILogger<Worker> log) : BackgroundService
 {
     // Telegram redelivers on failure, and it can redeliver an update we already
@@ -1159,7 +1162,8 @@ sealed class Worker(
             $"{"gateway",-12}{gw}",
             $"{"ledger",-12}{led}",
             $"{"prometheus",-12}{prom}",
-            $"{"key-auth",-12}{api}"
+            $"{"key-auth",-12}{api}",
+            $"{"limiter",-12}{limiter.Summary()}"
         ];
         var body = Table("<b>Infrastructure</b>", rows);
 
@@ -1448,7 +1452,7 @@ sealed class Worker(
         var untiered = Tokenize(userId, TimeSpan.FromMinutes(10), c => NewKeyAsync(name, null, "1000000", c));
         rows.Add([new InlineKeyboardButton("no tier \u00b7 1M", "ok:" + untiered),
                   new InlineKeyboardButton("Cancel", "no:" + untiered)]);
-        text.Append("\n\n<i>Only the balance is enforced today; the rest is recorded. See /tiers.</i>");
+        text.Append("\n\n<i>Balance, daily and per-minute limits and refill are enforced; max_tokens is recorded. See /tiers.</i>");
         return new Reply(text.ToString(), new InlineKeyboardMarkup(rows.ToArray()));
     }
 
@@ -1658,15 +1662,8 @@ sealed class Worker(
         return q?.Quota;
     }
 
-    private async Task QuotaSetAsync(string name, long value, CancellationToken ct)
-    {
-        var body = new FormUrlEncodedContent([
-            new KeyValuePair<string, string>("consumer", name),
-            new KeyValuePair<string, string>("quota", value.ToString(CultureInfo.InvariantCulture))
-        ]);
-        using var r = await http.CreateClient("gateway").PostAsync("v1/chat/completions/quota/refresh", body, ct);
-        r.EnsureSuccessStatusCode();
-    }
+    private Task QuotaSetAsync(string name, long value, CancellationToken ct) =>
+        QuotaApi.SetAsync(http, name, value, ct);
 
     // ---- Stage B reads: everything below is answered by the access log -------
     //
@@ -2351,13 +2348,16 @@ sealed class Worker(
           + "\n\n<b>Every value is a default.</b> A consumer follows its tier until one value is "
           + "set on it with <code>/set &lt;name&gt; &lt;setting&gt; &lt;value&gt;</code>; that value then "
           + "stays when the tier changes, and <code>default</code> puts it back. /policy shows which is which."
-          + "\n\n<b>Only the balance is enforced today.</b> quota seeds a new key's balance. The refill "
-          + "job and the gateway rate limiter (daily, tpm) are not running yet, and max_tokens is one "
-          + $"global {cfg.OutputLimit:N0} ceiling for everyone."
+          + "\n\n<b>Enforced:</b> the balance on every request; daily and tpm at the gateway (a 429 "
+          + "with the reset time); refill at 00:00 UTC. A window opens at a key's first request, and one "
+          + "request can overshoot a limit by its own size. <b>Not enforceable:</b> max_tokens per key — "
+          + $"the gateway holds one {cfg.OutputLimit:N0} ceiling for everyone."
+          + "\n\n<i>Refill replaces the balance: unused tokens do not carry over. Turning refill on never "
+          + "resets a balance at once; the first reset is at the next boundary.</i>"
           + "\n\n<b>Quota is one number.</b> Input and output are deducted at the same rate, "
           + "though on this node an output token costs roughly 68\u00d7 an uncached input token "
           + "and ~4800\u00d7 a cached one \u2014 /usage and /top show the i:o ratio."
-          + "\n\n<i>Setting a tier or a quota never changes a balance.</i>";
+          + "\n\n<i>Setting a tier or a quota never changes a balance by itself.</i>";
     }
 
     private async Task<Reply> TierAsync(string name, string tier, CancellationToken ct)
@@ -2399,16 +2399,16 @@ sealed class Worker(
         if (!SafeName(name) || !(await keys.ReadConsumersAsync(ct)).ContainsKey(name))
             return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
 
-        // Today in UTC, as ai-statistics counts it: input+output, the same total
-        // a token-per-day limit counts. Clamped to a minute so the window is
-        // valid just after midnight.
-        var sinceMidnight = Math.Max(60, (int)(DateTimeOffset.UtcNow - DateTimeOffset.UtcNow.Date).TotalSeconds);
+        // The limiter's OWN counters, read from the Redis keys it writes — so
+        // "used" here is exactly what it will compare against the limit, window
+        // start and all, rather than a Prometheus approximation of a calendar day.
         var tierT = ledger.TierAsync(name, ct);
         var ovT = ledger.OverridesAsync(name, ct);
         var balT = ledger.ListAsync(ct);
-        var todayT = PromScalarAsync(
-            $"sum(increase(route_upstream_model_consumer_metric_total_token{{ai_consumer=\"{name}\"}}[{sinceMidnight}s]))", ct);
-        await Task.WhenAll(tierT, ovT, balT, todayT);
+        var dayT = ledger.CounterAsync(LimiterSync.CounterKey(name, 86_400), ct);
+        var minT = ledger.CounterAsync(LimiterSync.CounterKey(name, 60), ct);
+        var markT = ledger.RefillMarkerAsync(name, ct);
+        await Task.WhenAll(tierT, ovT, balT, dayT, minT, markT);
 
         var tier = tierT.Result;
         var resolved = Policy.Resolve(tier, ovT.Result);
@@ -2422,20 +2422,31 @@ sealed class Worker(
 
         var bal = balT.Result.TryGetValue(name, out var b) ? b.ToString("N0", CultureInfo.InvariantCulture) : "not seeded";
         body += $"\nBalance <code>{bal}</code>";
-        if (todayT.Result is { } today)
-        {
-            body += $" \u00b7 today (UTC) <code>{today:N0}</code> tokens";
-            // Not enforced yet, so this is a forecast, not an event: it says what
-            // switching the limiter on would do to this consumer today.
-            var daily = resolved.First(r => r.Field.Key == "daily").Value;
-            if (daily is not null && long.TryParse(daily, CultureInfo.InvariantCulture, out var d) && d > 0 && today > d)
-                body += $"\n\u26a0\ufe0f Over its daily limit of <code>{d:N0}</code> \u2014 once limits are "
-                      + "enforced this consumer would be refused for the rest of the day.";
-        }
 
-        body += "\n\n<b>Enforced now:</b> the balance only. "
-              + "<b>Recorded:</b> refill, daily, tpm, max_tokens \u2014 the refill job and the gateway "
-              + "limiter come next. quota seeds a new key and never moves a live balance."
+        static long? Limit(ResolvedSetting r) =>
+            long.TryParse(r.Value, CultureInfo.InvariantCulture, out var n) && n > 0 ? n : null;
+        string Window(string label, (long? Used, long Ttl) c, long? limit)
+        {
+            if (limit is null) return $"\n{label}: no limit";
+            if (c.Used is not { } used) return $"\n{label}: <code>0</code> of <code>{limit:N0}</code> \u2014 no window open";
+            var line = $"\n{label}: <code>{used:N0}</code> of <code>{limit:N0}</code>, resets in {Fmt.Duration(c.Ttl)}";
+            return used > limit ? line + " \u26d4 <b>refusing requests</b>" : line;
+        }
+        var inScope = LimiterSync.InScope(name);
+        body += Window("24h window", dayT.Result, inScope ? Limit(resolved[2]) : null)
+              + Window("60s window", minT.Result, inScope ? Limit(resolved[3]) : null);
+
+        // Refill: when, and to what. The marker says whether the job has seen
+        // this consumer yet \u2014 the first pass only arms it, never refills.
+        var mode = resolved[1].Value ?? "manual";
+        if (mode != "manual" && Limit(resolved[0]) is { } q)
+            body += $"\nNext refill <b>{RefillJob.Next(mode, DateTimeOffset.UtcNow):yyyy-MM-dd HH:mm} UTC</b> sets the balance to <code>{q:N0}</code>"
+                  + (markT.Result is null ? " <i>(armed on the job's next pass)</i>" : "");
+        else
+            body += "\nRefill: manual";
+
+        body += "\n\n" + limiter.StatusLine(name)
+              + "\n<i>max_tokens is recorded only: the gateway cannot vary it per key.</i>"
               + "\n\n<i>Tap a value to change it. \u2731 marks one set on this key rather than taken from its tier.</i>";
 
         // One button per setting, showing its value, so the screen is both the
@@ -2518,10 +2529,10 @@ sealed class Worker(
 
     private static readonly Dictionary<string, string[]> Presets = new(StringComparer.Ordinal)
     {
-        ["quota"]      = ["1000000", "5000000", "10000000", "20000000", "50000000", "100000000"],
+        ["quota"]      = ["1000000", "10000000", "50000000", "100000000", "300000000", "500000000"],
         ["refill"]     = ["manual", "daily", "weekly", "monthly"],
-        ["daily"]      = ["100000", "500000", "1000000", "2000000", "5000000", "10000000", "20000000", "50000000", "0"],
-        ["tpm"]        = ["10000", "30000", "60000", "120000", "250000", "0"],
+        ["daily"]      = ["500000", "1000000", "5000000", "10000000", "20000000", "30000000", "50000000", "100000000", "0"],
+        ["tpm"]        = ["200000", "300000", "600000", "1000000", "2000000", "0"],
         ["max_tokens"] = ["4096", "8192", "16384", "32768", "0"],
     };
 
@@ -3110,19 +3121,23 @@ sealed class Worker(
 // a tier default moves every consumer still following it, and a value set by
 // hand survives both that and a change of tier.
 //
-// ENFORCEMENT IS PER SETTING, and each one carries its own status. As of
-// 2026-09-13 only the balance is enforced (ai-quota); quota seeds a new key.
-// refill waits on the refill job, daily and tpm on ai-token-ratelimit, and
-// max_tokens is one global ceiling in request-validation. A number read as a
-// limit and enforced by nothing gets quoted to a customer, which is why every
-// surface that shows these says which is which.
+// ENFORCEMENT IS PER SETTING, and each one carries its own status:
+//   balance     ai-quota, on every request
+//   daily, tpm  ai-token-ratelimit, rules rendered by LimiterSync
+//   refill      RefillJob, at the UTC period boundary
+//   quota       seeds a new key, and is what a refill sets the balance to
+//   max_tokens  NOT enforceable per key: a WasmPlugin matchRule selects by
+//               route, domain or service, never consumer (checked in the v2.2.4
+//               proto), so request-validation holds one global ceiling. Kept as
+//               a recorded value, deliberately (2026-09-13).
 //
-// Sizing, from docs/KEY-TIERS.md: an output token costs ~68x an uncached input
-// token here, the node sustains ~387 output tok/s, and concurrency is 8. The
-// daily limit is a tenth of the tier's quota, so one bad day cannot spend a
-// month. Note real agent traffic runs far above the team numbers (one consumer
-// used 32.6M tokens on 2026-09-12); /policy flags a consumer over its daily
-// limit so that is visible before anything enforces it.
+// Sizing, measured from gateway.requests on 2026-09-13 rather than guessed. An
+// agent request is 74k tokens at the median and 134k at p95 (max 169k); an
+// active minute is 122k median, 418k p95, 1.04M max; one consumer used 32.6M in
+// a day. The limiter refuses only once a counter is already over, so a
+// per-minute limit below one maximum-size request means one request a minute —
+// hence nothing under 200k. Quotas are sized to a month of that traffic. The
+// first draft (10M a month, 60k a minute) would have throttled every agent.
 // ===========================================================================
 enum RefillMode { Manual, Daily, Weekly, Monthly }
 
@@ -3139,11 +3154,11 @@ static class Policy
     // MENU ORDER. Rendered in this order by /tiers and /admin/tiers.
     public static readonly TierDef[] All =
     [
-        new("trial",   "evaluation, unvetted third parties",     100_000, RefillMode.Manual,      50_000,   3_000,  2_048),
-        new("team",    "internal humans via OpenCode",        10_000_000, RefillMode.Monthly, 1_000_000,  60_000, 32_768),
-        new("service", "production integrations",             50_000_000, RefillMode.Monthly, 5_000_000, 120_000, 16_384),
-        new("batch",   "offline, latency-tolerant",          100_000_000, RefillMode.Monthly, 10_000_000, 30_000, 70_000),
-        new("admin",   "management only, plus the bot's own reports", 0, RefillMode.Manual,           0,       0,      0),
+        new("trial",   "evaluation, unvetted third parties",   1_000_000, RefillMode.Manual,     500_000,   200_000,  2_048),
+        new("team",    "internal humans via OpenCode",       100_000_000, RefillMode.Monthly, 20_000_000,   600_000, 32_768),
+        new("service", "production integrations",           300_000_000, RefillMode.Monthly, 30_000_000, 1_000_000, 16_384),
+        new("batch",   "offline, latency-tolerant",          500_000_000, RefillMode.Monthly, 50_000_000,   300_000, 70_000),
+        new("admin",   "management only, plus the bot's own reports", 0, RefillMode.Manual,            0,         0,      0),
     ];
 
     public static readonly Dictionary<string, TierDef> Tiers =
@@ -3151,16 +3166,16 @@ static class Policy
 
     public static readonly PolicyField[] Fields =
     [
-        new("quota", "quota", "tokens a refill grants; also a new key's starting balance",
-            false, "seeds a new key; never moves a live balance"),
-        new("refill", "refill", "manual, or an automatic reset of the balance to quota: daily, weekly or monthly",
-            false, "recorded; the refill job is not running yet"),
-        new("daily", "daily", "input+output tokens per UTC day; 0 = no limit",
-            false, "recorded; needs the gateway rate limiter"),
-        new("tpm", "tokens/min", "input+output tokens per minute; 0 = no limit",
-            false, "recorded; needs the gateway rate limiter"),
+        new("quota", "quota", "tokens a refill sets the balance to; also a new key's starting balance",
+            true, "seeds a new key and is applied by each automatic refill; changing it never moves a live balance by itself"),
+        new("refill", "refill", "manual, or an automatic reset of the balance to quota at 00:00 UTC each day, each Monday, or on the 1st",
+            true, "enforced by the refill job; unused tokens do not carry over"),
+        new("daily", "daily", "input+output tokens per 24h window, which starts at the key's first request after the last one expired; 0 = no limit",
+            true, "enforced at the gateway (ai-token-ratelimit); one request can overshoot by its own size"),
+        new("tpm", "tokens/min", "input+output tokens per 60s window from the first request in it; 0 = no limit",
+            true, "enforced at the gateway (ai-token-ratelimit); below ~170k it means one large request a minute"),
         new("max_tokens", "max_tokens", "largest max_tokens one request may ask for; 0 = the gateway ceiling",
-            false, "recorded; the gateway enforces one global ceiling"),
+            false, "recorded only; the gateway cannot vary it per key and enforces one global ceiling"),
     ];
 
     public static PolicyField? Field(string raw) => raw.ToLowerInvariant() switch
@@ -3290,6 +3305,339 @@ static class Policy
 
     private static string Trim(decimal d) =>
         Math.Round(d, 1).ToString("0.#", CultureInfo.InvariantCulture);
+}
+
+// ===========================================================================
+// QuotaApi — ai-quota's admin endpoint, shared by commands and the refill job.
+// FORM-ENCODED: ai-quota answers 403 to JSON, which reads like an auth failure.
+// ===========================================================================
+static class QuotaApi
+{
+    public static async Task SetAsync(IHttpClientFactory http, string name, long value, CancellationToken ct)
+    {
+        using var body = new FormUrlEncodedContent([
+            new KeyValuePair<string, string>("consumer", name),
+            new KeyValuePair<string, string>("quota", value.ToString(CultureInfo.InvariantCulture))
+        ]);
+        using var r = await http.CreateClient("gateway").PostAsync("v1/chat/completions/quota/refresh", body, ct);
+        r.EnsureSuccessStatusCode();
+    }
+}
+
+// ===========================================================================
+// LimiterSync — renders per-consumer daily/tpm limits into ai-token-ratelimit.
+//
+// The bot is the ONLY writer of the rules. ../higress-standalone ships the
+// object as a disabled shell (config/wasmplugins/ai-token-ratelimit.yaml, which
+// documents the plugin's semantics as read from source), and apply.sh reinstalls
+// that shell on every run. So this syncs on every policy or key change and also
+// once a minute, which is what puts the rules back after an apply.
+//
+// It compares a FINGERPRINT of the rules rather than JSON text, and PUTs only
+// on a real difference: the apiserver is free to reorder keys, and a text diff
+// would rewrite the object — and reconfigure the plugin in every gateway worker
+// — once a minute for nothing.
+//
+// LIMITER_SCOPE (comma-separated names) restricts the rules to those consumers.
+// It exists for rollout: prove the limiter on a test key before it touches a
+// real one. Unset means every consumer.
+// ===========================================================================
+sealed class LimiterSync(IHttpClientFactory http, KeyStore keys, Ledger ledger, ILogger<LimiterSync> log)
+{
+    private const string Base = "apis/extensions.higress.io/v1alpha1/namespaces/higress-system/wasmplugins/";
+    public const string RuleName = "consumer-limits";
+
+    private static readonly HashSet<string>? Scope =
+        Environment.GetEnvironmentVariable("LIMITER_SCOPE") is { Length: > 0 } s
+            ? s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.Ordinal)
+            : null;
+
+    public static bool InScope(string name) => Scope is null || Scope.Contains(name);
+
+    // The limiter's own Redis key for a consumer's window (see main.go,
+    // AiTokenRateLimitFormat). The {…} is a cluster hash tag, kept verbatim.
+    public static string CounterKey(string name, long window) =>
+        $"higress-token-ratelimit:{{{RuleName}}}:limit_by_consumer:{window}:x-mse-consumer:{name}";
+
+    // Static so Ledger and KeyStore can signal a change without a dependency
+    // cycle. A kick while one is already pending coalesces into it.
+    private static readonly SemaphoreSlim KickSignal = new(0, 1);
+    public static void Kick()
+    {
+        try { if (KickSignal.CurrentCount == 0) KickSignal.Release(); }
+        catch (SemaphoreFullException) { }
+    }
+    public static Task<bool> WaitKickAsync(TimeSpan timeout, CancellationToken ct) => KickSignal.WaitAsync(timeout, ct);
+
+    private readonly SemaphoreSlim _lock = new(1, 1);
+    private DateTimeOffset? _lastOk;
+    private string? _lastError;
+    private int _limited;
+
+    public string StatusLine(string name)
+    {
+        if (!InScope(name))
+            return "⚠️ <b>Not in the limiter's rollout scope</b> — daily and tpm are not applied to this key yet.";
+        if (_lastError is { } e)
+            return $"⚠️ <b>Limiter sync failing:</b> {Fmt.Esc(e)}. Limits last applied "
+                 + (_lastOk is { } ok ? $"{Fmt.Duration((long)(DateTimeOffset.UtcNow - ok).TotalSeconds)} ago." : "never.");
+        return _lastOk is { } t
+            ? $"<i>Gateway limits in force for {_limited} key(s), checked {Fmt.Duration((long)(DateTimeOffset.UtcNow - t).TotalSeconds)} ago.</i>"
+            : "<i>Gateway limits not synced yet since the bot started.</i>";
+    }
+
+    public string Summary() =>
+        _lastError is { } e ? $"FAILED ({e})"
+        : _lastOk is { } t ? $"{_limited} key(s) limited, {Fmt.Duration((long)(DateTimeOffset.UtcNow - t).TotalSeconds)} ago"
+        : "not synced yet";
+
+    public async Task SyncAsync(CancellationToken ct)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var consumersT = keys.ReadConsumersAsync(ct);
+            var tiersT = ledger.TiersAsync(ct);
+            var overridesT = ledger.AllOverridesAsync(ct);
+            await Task.WhenAll(consumersT, tiersT, overridesT);
+
+            var daily = new SortedDictionary<string, long>(StringComparer.Ordinal);
+            var minute = new SortedDictionary<string, long>(StringComparer.Ordinal);
+            foreach (var name in consumersT.Result.Keys)
+            {
+                // A name outside the alphabet cannot be a limit key safely, and
+                // /newkey cannot produce one; skip rather than render it.
+                if (!Worker.IsValidName(name) || !InScope(name)) continue;
+                var r = Policy.Resolve(tiersT.Result.GetValueOrDefault(name),
+                                       overridesT.Result.GetValueOrDefault(name) ?? new Dictionary<string, string>());
+                if (long.TryParse(r[2].Value, CultureInfo.InvariantCulture, out var d) && d > 0) daily[name] = d;
+                if (long.TryParse(r[3].Value, CultureInfo.InvariantCulture, out var m) && m > 0) minute[name] = m;
+            }
+
+            var client = http.CreateClient("apiserver");
+
+            // Redis settings copied from the live ai-quota object, so the
+            // limiter counts in the same ledger Redis without a second copy of
+            // its address to keep in step.
+            JsonNode redis = new JsonObject { ["service_name"] = "quota-redis.dns", ["service_port"] = 6379, ["timeout"] = 1000 };
+            using (var q = await client.GetAsync(Base + "ai-quota", ct))
+                if (q.IsSuccessStatusCode
+                    && JsonNode.Parse(await q.Content.ReadAsStringAsync(ct))?["spec"]?["matchRules"]?[0]?["config"]?["redis"] is JsonObject live)
+                    redis = live.DeepClone();
+
+            using var get = await client.GetAsync(Base + "ai-token-ratelimit", ct);
+            if (get.StatusCode == HttpStatusCode.NotFound)
+                throw new InvalidOperationException("ai-token-ratelimit is not installed — run higress-standalone/apply.sh");
+            get.EnsureSuccessStatusCode();
+            var obj = JsonNode.Parse(await get.Content.ReadAsStringAsync(ct))!.AsObject();
+            if (obj["spec"]?["matchRules"] is not JsonArray rules || rules.Count == 0)
+                throw new InvalidOperationException("ai-token-ratelimit has no matchRules");
+
+            var enabled = daily.Count > 0 || minute.Count > 0;
+            var config = Render(daily, minute, redis);
+            var want = Fingerprint(config, !enabled);
+
+            var changed = false;
+            foreach (var rule in rules)
+            {
+                if (rule is not JsonObject ro) continue;
+                var disabled = ro["configDisable"]?.GetValueKind() == JsonValueKind.True;
+                if (Fingerprint(ro["config"], disabled) == want) continue;
+                ro["config"] = config.DeepClone();
+                ro["configDisable"] = !enabled;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                using var body = new StringContent(obj.ToJsonString(), Encoding.UTF8);
+                body.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                using var put = await client.PutAsync(Base + "ai-token-ratelimit", body, ct);
+                if (!put.IsSuccessStatusCode)
+                {
+                    var err = await put.Content.ReadAsStringAsync(ct);
+                    throw new InvalidOperationException($"PUT HTTP {(int)put.StatusCode}: {(err.Length > 200 ? err[..200] : err)}");
+                }
+                log.LogInformation("limiter rules pushed: {Daily} daily, {Minute} per-minute, enabled={Enabled}, scope={Scope}",
+                    daily.Count, minute.Count, enabled, Scope is null ? "all" : string.Join(",", Scope));
+            }
+
+            _limited = daily.Keys.Union(minute.Keys).Count();
+            _lastOk = DateTimeOffset.UtcNow;
+            _lastError = null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_lastError != ex.Message) log.LogError(ex, "limiter sync failed");
+            _lastError = ex.Message;
+        }
+        finally { _lock.Release(); }
+    }
+
+    private static JsonObject Render(SortedDictionary<string, long> daily, SortedDictionary<string, long> minute, JsonNode redis)
+    {
+        static JsonObject Item(SortedDictionary<string, long> limits, string window)
+        {
+            var keysArr = new JsonArray();
+            foreach (var (name, n) in limits)
+                keysArr.Add((JsonNode)new JsonObject { ["key"] = name, [window] = n });
+            return new JsonObject { ["limit_by_consumer"] = "", ["limit_keys"] = keysArr };
+        }
+
+        // Two rule_items, because within one item the first matching key wins
+        // and a consumer would get only its daily limit. Daily first, so a
+        // refusal reports the daily window when both are exceeded.
+        var items = new JsonArray();
+        if (daily.Count > 0) items.Add((JsonNode)Item(daily, "token_per_day"));
+        if (minute.Count > 0) items.Add((JsonNode)Item(minute, "token_per_minute"));
+        // The plugin rejects empty rule_items even on a disabled rule, so the
+        // disabled form keeps a placeholder no consumer name can match.
+        if (items.Count == 0)
+            items.Add((JsonNode)Item(new SortedDictionary<string, long>(StringComparer.Ordinal) { ["."] = 1 }, "token_per_day"));
+
+        return new JsonObject
+        {
+            ["rule_name"] = RuleName,
+            ["rule_items"] = items,
+            ["rejected_code"] = 429,
+            ["rejected_msg"] = "Token rate limit reached for this API key",
+            ["redis"] = redis.DeepClone(),
+        };
+    }
+
+    // Order-insensitive identity of a rule config: what the plugin would do,
+    // not how the JSON happens to be laid out.
+    private static readonly string[] Windows = ["token_per_day", "token_per_minute", "token_per_hour", "token_per_second"];
+
+    private static string Fingerprint(JsonNode? config, bool disabled)
+    {
+        var parts = new List<string> { "disabled=" + disabled };
+        if (config is not JsonObject c) return string.Join('|', parts);
+        parts.Add("rule=" + c["rule_name"]);
+        parts.Add("code=" + c["rejected_code"]);
+        parts.Add("msg=" + c["rejected_msg"]);
+        parts.Add("redis=" + c["redis"]?["service_name"] + ":" + c["redis"]?["service_port"]);
+        if (c["rule_items"] is JsonArray items)
+            foreach (var item in items)
+                if (item?["limit_keys"] is JsonArray lk)
+                    foreach (var k in lk)
+                        foreach (var w in Windows)
+                            if (k?[w] is { } v) parts.Add($"{w}:{k["key"]}={v}");
+        parts.Sort(StringComparer.Ordinal);
+        return string.Join('|', parts);
+    }
+}
+
+// ===========================================================================
+// RefillJob — resets a balance to its quota at each period boundary (UTC).
+//
+// Idempotent through a marker per consumer, "<mode>:<period>", written AFTER a
+// successful reset: a restart, a second pass in the same minute, or a crash
+// between reset and marker at worst repeats a SET to the same value.
+//
+// Arming, not refilling, on first sight. A consumer with no marker — every
+// consumer the day this shipped, or one whose refill was just switched on —
+// gets the current period recorded and keeps its balance. The first reset is at
+// the NEXT boundary. The same holds when the mode changes (monthly -> weekly):
+// the marker's mode no longer matches, so it re-arms instead of resetting at
+// once. Nobody's balance moves because a setting was touched.
+//
+// Refill REPLACES the balance: unused tokens do not carry over, and an overdraft
+// is cleared. Every reset is audited and announced to the alert chats.
+// ===========================================================================
+static class RefillJob
+{
+    public static string Period(string mode, DateTimeOffset now) => mode switch
+    {
+        "daily" => $"daily:{now:yyyy-MM-dd}",
+        "weekly" => $"weekly:{ISOWeek.GetYear(now.UtcDateTime)}-W{ISOWeek.GetWeekOfYear(now.UtcDateTime):00}",
+        "monthly" => $"monthly:{now:yyyy-MM}",
+        _ => ""
+    };
+
+    public static DateTimeOffset Next(string mode, DateTimeOffset now)
+    {
+        now = now.ToUniversalTime();
+        var day = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        switch (mode)
+        {
+            case "daily": return day.AddDays(1);
+            case "weekly":
+                // ISO weeks start on Monday; on a Monday the next one is a week away.
+                var ahead = ((int)DayOfWeek.Monday - (int)day.DayOfWeek + 7) % 7;
+                return day.AddDays(ahead == 0 ? 7 : ahead);
+            case "monthly": return new DateTimeOffset(now.Year, now.Month, 1, 0, 0, 0, TimeSpan.Zero).AddMonths(1);
+            default: return DateTimeOffset.MaxValue;
+        }
+    }
+}
+
+sealed class EnforcementWorker(
+    BotConfig cfg, LimiterSync limiter, KeyStore keys, Ledger ledger,
+    IHttpClientFactory http, Telegram tg, ILogger<EnforcementWorker> log) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        // Let the process settle and the first Telegram traffic through first.
+        try { await Task.Delay(TimeSpan.FromSeconds(5), ct); } catch (OperationCanceledException) { return; }
+        while (!ct.IsCancellationRequested)
+        {
+            await limiter.SyncAsync(ct);
+            try { await RefillAsync(ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "refill pass failed"); }
+            try { await LimiterSync.WaitKickAsync(TimeSpan.FromSeconds(60), ct); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    private async Task RefillAsync(CancellationToken ct)
+    {
+        var consumersT = keys.ReadConsumersAsync(ct);
+        var tiersT = ledger.TiersAsync(ct);
+        var overridesT = ledger.AllOverridesAsync(ct);
+        await Task.WhenAll(consumersT, tiersT, overridesT);
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var name in consumersT.Result.Keys)
+        {
+            if (!Worker.IsValidName(name)) continue;
+            var r = Policy.Resolve(tiersT.Result.GetValueOrDefault(name),
+                                   overridesT.Result.GetValueOrDefault(name) ?? new Dictionary<string, string>());
+            var mode = r[1].Value ?? "manual";
+            if (mode == "manual" || !long.TryParse(r[0].Value, CultureInfo.InvariantCulture, out var quota) || quota <= 0)
+                continue;
+
+            var period = RefillJob.Period(mode, now);
+            var marker = await ledger.RefillMarkerAsync(name, ct);
+            if (marker == period) continue;
+
+            if (marker is null || !marker.StartsWith(mode + ":", StringComparison.Ordinal))
+            {
+                await ledger.SetRefillMarkerAsync(name, period, ct);
+                await Audit($"refill-armed name={name} mode={mode} period={period} next={RefillJob.Next(mode, now):O}", ct);
+                log.LogInformation("refill armed for {Name}: {Mode}, first reset {Next:O}", name, mode, RefillJob.Next(mode, now));
+                continue;
+            }
+
+            var before = (await ledger.ListAsync(ct)).TryGetValue(name, out var b) ? b : (long?)null;
+            await QuotaApi.SetAsync(http, name, quota, ct);
+            await ledger.SetRefillMarkerAsync(name, period, ct);
+            await Audit($"refill name={name} mode={mode} period={period} from={before?.ToString(CultureInfo.InvariantCulture) ?? "none"} to={quota}", ct);
+            log.LogWarning("refilled {Name} to {Quota} ({Mode} {Period}), was {Before}", name, quota, mode, period, before);
+
+            var text = $"\U0001f504 <b>{Fmt.Esc(name)}</b> refilled to <code>{quota:N0}</code> tokens "
+                     + $"(was {before?.ToString("N0", CultureInfo.InvariantCulture) ?? "unset"}) — {mode} refill.";
+            foreach (var chat in cfg.AlertChatIds)
+                try { await tg.SendAsync(chat, new Reply(text), ct); }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { log.LogWarning(ex, "refill notice not delivered"); }
+        }
+    }
+
+    private async Task Audit(string line, CancellationToken ct)
+    {
+        try { await File.AppendAllTextAsync(cfg.AuditPath, $"{DateTimeOffset.UtcNow:O} {line}\n", ct); }
+        catch (IOException ex) { log.LogError(ex, "audit write failed: {Line}", line); }
+    }
 }
 
 // ===========================================================================
@@ -3525,6 +3873,7 @@ sealed class KeyStore(BotConfig cfg, IHttpClientFactory http, ILogger<KeyStore> 
         {
             await File.AppendAllTextAsync(cfg.ConsumersPath, $"{name}          {credential}\n", ct);
             await PushAsync(ct);
+            LimiterSync.Kick();
         }
         finally { _lock.Release(); }
     }
@@ -3546,6 +3895,7 @@ sealed class KeyStore(BotConfig cfg, IHttpClientFactory http, ILogger<KeyStore> 
             if (kept.Length == lines.Length) return false;
             await File.WriteAllLinesAsync(cfg.ConsumersPath, kept, ct);
             await PushAsync(ct);
+            LimiterSync.Kick();
             return true;
         }
         finally { _lock.Release(); }
@@ -3652,6 +4002,7 @@ sealed class Ledger(BotConfig cfg)
     {
         using var c = await ConnectAsync(ct);
         await c.CommandAsync(ct, "SET", TierPrefix + name, tier);
+        LimiterSync.Kick();
     }
 
     public async Task<string?> TierAsync(string name, CancellationToken ct)
@@ -3690,12 +4041,56 @@ sealed class Ledger(BotConfig cfg)
     {
         using var c = await ConnectAsync(ct);
         await c.CommandAsync(ct, "HSET", PolicyPrefix + name, field, value);
+        LimiterSync.Kick();
     }
 
     public async Task ClearOverrideAsync(string name, string field, CancellationToken ct)
     {
         using var c = await ConnectAsync(ct);
         await c.CommandAsync(ct, "HDEL", PolicyPrefix + name, field);
+        LimiterSync.Kick();
+    }
+
+    // Every consumer's overrides at once, for LimiterSync and the refill job.
+    public async Task<Dictionary<string, Dictionary<string, string>>> AllOverridesAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        using var c = await ConnectAsync(ct);
+        foreach (var key in await ScanAsync(c, PolicyPrefix + "*", ct))
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (await c.CommandAsync(ct, "HGETALL", key) is object?[] flat)
+                for (var i = 0; i + 1 < flat.Length; i += 2)
+                    if (flat[i] is string k && flat[i + 1] is string v) map[k] = v;
+            result[key[PolicyPrefix.Length..]] = map;
+        }
+        return result;
+    }
+
+    // The refill job's marker: "<mode>:<period>" of the last period it handled
+    // for this consumer. Makes refills idempotent across restarts and minutes.
+    private const string RefillPrefix = "chat_refill:";
+
+    public async Task<string?> RefillMarkerAsync(string name, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        return await c.CommandAsync(ct, "GET", RefillPrefix + name) as string;
+    }
+
+    public async Task SetRefillMarkerAsync(string name, string marker, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        await c.CommandAsync(ct, "SET", RefillPrefix + name, marker);
+    }
+
+    // One ai-token-ratelimit counter: tokens counted so far and seconds until
+    // its window closes. Used is null when no window is open.
+    public async Task<(long? Used, long Ttl)> CounterAsync(string key, CancellationToken ct)
+    {
+        using var c = await ConnectAsync(ct);
+        var v = await c.CommandAsync(ct, "GET", key) as string;
+        var ttl = await c.CommandAsync(ct, "TTL", key) is long l ? l : -2;
+        return (long.TryParse(v, CultureInfo.InvariantCulture, out var n) ? n : null, ttl);
     }
 
     private static async Task<List<string>> ScanAsync(RespConnection c, string pattern, CancellationToken ct)
@@ -3749,7 +4144,8 @@ sealed class Ledger(BotConfig cfg)
         using var c = await ConnectAsync(ct);
         // Every key. Otherwise a consumer re-created under the same name
         // silently inherits the revoked one's tier and hand-set limits.
-        await c.CommandAsync(ct, "DEL", Prefix + name, TierPrefix + name, PolicyPrefix + name);
+        await c.CommandAsync(ct, "DEL", Prefix + name, TierPrefix + name, PolicyPrefix + name, RefillPrefix + name);
+        LimiterSync.Kick();
     }
 
     private async Task<RespConnection> ConnectAsync(CancellationToken ct)
@@ -4067,6 +4463,16 @@ sealed class Telegram(IHttpClientFactory http, ILogger<Telegram> log)
 // ---------------------------------------------------------------------------
 static class Fmt
 {
+    // 5h 12m, 42s. For "resets in" lines, where precision below a minute
+    // only matters when there is less than a minute left.
+    public static string Duration(long seconds) => seconds switch
+    {
+        < 0 => "\u2014",
+        < 60 => $"{seconds}s",
+        < 3600 => $"{seconds / 60}m {seconds % 60}s",
+        _ => $"{seconds / 3600}h {seconds % 3600 / 60}m",
+    };
+
     // HTML parse_mode needs exactly three characters escaped. Consumer names,
     // upstream error strings and alert annotations all reach the wire, and one
     // stray '<' makes Telegram reject the entire message with a 400.

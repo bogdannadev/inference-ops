@@ -104,11 +104,35 @@ edited, so the key cannot be scrolled or edited away. Balance buttons are money,
 so each is a single-use token bound to the operator: a double tap on +10M adds
 10M once, and *Set to quota* still asks first.
 
-**Only the balance is enforced.** `quota` seeds a new key and never moves a live
-balance; `refill`, `daily` and `tpm` wait on the refill job and
-ai-token-ratelimit, and `max_tokens` is one global ceiling. Every surface says
-so per setting. `/policy` also shows today's UTC usage against the daily limit,
-so what enforcement would do to a consumer is visible before it is switched on.
+**Enforced since 2026-09-13**, except per-key `max_tokens`:
+
+| Setting | Enforced by |
+|---|---|
+| balance | ai-quota |
+| `daily`, `tpm` | ai-token-ratelimit — rules written by `LimiterSync` |
+| `refill` | `RefillJob`, at 00:00 UTC (daily / Monday / 1st) |
+| `quota` | the `/newkey` seed and each refill |
+| `max_tokens` | nothing: gateway plugins cannot match a consumer |
+
+**LimiterSync** is the only writer of the ai-token-ratelimit rules. The committed
+object in `../higress-standalone/config/wasmplugins/` is a disabled shell, which
+`apply.sh` reinstalls; the bot syncs on every policy/key change and every
+minute, comparing a fingerprint and PUTting only on a real difference.
+`LIMITER_SCOPE` (names, comma-separated) restricts the rules during a rollout;
+`/status` shows the last sync, `/policy` the consumer's live window counters
+read from the limiter's own Redis keys.
+
+**RefillJob** keeps a marker `chat_refill:<name>` = `<mode>:<period>`. First sight
+of a consumer, or a changed mode, only ARMS the marker — nobody's balance moves
+because a setting was touched; the first reset is the next boundary. A reset
+SETs the balance to quota (no carry-over), is audited, and is announced to the
+alert chats.
+
+Verified on `testafter` 2026-09-13: per-minute refusal at exactly the request
+that found the counter over (144 of 150 allowed, 169 refused), daily refusal
+with `Retry-After: 86295`, Caddy's OpenAI-shaped 429 (matched on the limiter's
+reset header, so router 429s pass untouched), and requests ALLOWED while the
+limiter's Redis was pointed at a host that does not exist.
 
 ## Requests cut off are charged nothing
 

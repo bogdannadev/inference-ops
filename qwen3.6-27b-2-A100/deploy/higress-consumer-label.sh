@@ -65,6 +65,11 @@
 # The certificate never leaves the console container. The same edit can be made
 # by hand: console -> Routes -> ai-chat -> Request header update.
 #
+# SINCE 2026-09-13 the line is also committed in
+# ../../higress-standalone/config/ingresses/{ai-chat,ai-completions}.yaml, so
+# apply.sh renders it instead of deleting it. Before that, every apply.sh run
+# silently removed it. This script remains for --revert and for checking a store.
+#
 # ROLLBACK: --revert, or delete the line in the console. No restart either way;
 # the controller pushes a new route config within a second or two.
 

@@ -758,9 +758,11 @@ sealed class KeyTools
         + "and its DEFAULT quota, refill, daily limit, tokens per minute and max_tokens. "
         + "CALL THIS BEFORE create_key and recommend a tier that matches the stated use "
         + "case rather than inventing numbers. Every value is a default that can be "
-        + "changed per consumer with set_policy. Only quota is applied, as a new key's "
-        + "starting balance; fields suffixed _NOT_ENFORCED / _NOT_RUNNING are recorded "
-        + "and enforced by nothing yet, so never quote them to a consumer as limits.")]
+        + "changed per consumer with set_policy. Enforced: quota (starting balance, and what "
+        + "each refill resets to), refill (00:00 UTC daily/Monday/1st), daily_limit and "
+        + "tokens_per_minute (gateway 429). daily_limit is a 24h window from the key's first "
+        + "request, not a calendar day. max_tokens_NOT_ENFORCED cannot be applied per key — "
+        + "never quote it to a consumer as a limit.")]
     public static async Task<string> ListTiers(
         Backends b, IHttpClientFactory http, CancellationToken ct)
     {
@@ -878,8 +880,8 @@ sealed class KeyTools
     [Description("One consumer's effective settings — quota, refill, daily, tpm, max_tokens — "
         + "each with its value and its source: 'tier' when it follows the consumer's tier, "
         + "'set' when it was set on this consumer by hand, 'none' when the consumer has no "
-        + "tier and nothing set. Each also says whether it is enforced; today only the "
-        + "balance is.")]
+        + "tier and nothing set. Each also says whether it is enforced: everything except "
+        + "max_tokens is.")]
     public static async Task<string> GetPolicy(
         Backends b, IHttpClientFactory http,
         [Description("Consumer name.")] string name,
@@ -902,10 +904,11 @@ sealed class KeyTools
         + "with value 'default'. Settings: quota (tokens a refill grants), refill (manual, "
         + "daily, weekly, monthly), daily (tokens per UTC day, 0 = no limit), tpm (tokens "
         + "per minute, 0 = no limit), max_tokens (0 = gateway ceiling). Amounts accept "
-        + "2000000, 2M or 500k. This NEVER changes a balance — use set_balance or "
-        + "topup_balance for that — and apart from the balance nothing here is enforced "
-        + "yet. Returns the consumer's whole effective policy. Requires confirm to equal "
-        + "the name exactly.")]
+        + "2000000, 2M or 500k. daily and tpm take effect at the gateway within seconds; "
+        + "refill resets the balance to quota at the next UTC boundary (switching it on "
+        + "never resets immediately). This never changes a balance directly — use "
+        + "set_balance or topup_balance for that. Returns the consumer's whole effective "
+        + "policy. Requires confirm to equal the name exactly.")]
     public static async Task<string> SetPolicy(
         Backends b, IHttpClientFactory http,
         [Description("Consumer name.")] string name,

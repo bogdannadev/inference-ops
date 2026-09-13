@@ -1,0 +1,78 @@
+# Per-consumer token limits: tokens per rolling day and per minute.
+#
+# THE RULES ARE NOT AUTHORED HERE. quota-bot owns them: it renders each
+# consumer's effective `daily` and `tpm` (tier default or per-key override, see
+# quota-bot/README.md) into spec.matchRules[].config and PUTs the live object
+# through the apiserver, then re-checks every minute. This file is the empty
+# shell apply.sh installs, with the rule DISABLED — so an apply.sh run switches
+# limits off until the bot's next sync (under a minute) puts them back. That
+# window is the price of a single writer for the rules; the alternative, apply.sh
+# reading Redis, would make two.
+#
+# SEMANTICS, read from the plugin source at v2.2.4 (plugin 2.0.1), not the docs:
+#
+#   - A window is FIXED and starts at the consumer's first counted request: the
+#     Redis counter gets EXPIRE <window> on its first INCRBY. token_per_day is
+#     therefore "86,400 s from the first request", not calendar days. Chosen
+#     deliberately over patching the plugin (2026-09-13).
+#   - Counts input+output, the same total ai-quota deducts, read from the final
+#     usage frame — so a request cut off before it is not counted here either.
+#   - The request is refused only if the counter is ALREADY over the limit
+#     (`current > threshold`), and tokens are added after the response. One
+#     request can overshoot by its own size, up to ~169k tokens. That is why the
+#     tier per-minute limits start at 200k: below one maximum-size request, a
+#     per-minute limit means one request per minute.
+#   - Within one rule_item the FIRST matching limit_key wins, so daily and
+#     per-minute are two rule_items, each listing consumers by exact name. At
+#     most 10 rule_items; limit_keys per item are unbounded.
+#   - A consumer with no limit_key is not limited at all. "Unlimited" is absence.
+#   - Redis unreachable -> the request is ALLOWED (Eval error returns
+#     ActionContinue). Opposite of ai-quota, which fails closed.
+#   - Refusal: rejected_code with header X-TokenRateLimit-Reset: <seconds>.
+#     Caddy turns it into an OpenAI-shaped 429 and a Retry-After, matching on
+#     that header because the router's admission control also answers 429.
+#
+# Redis keys: higress-token-ratelimit:{consumer-limits}:limit_by_consumer:<window>:x-mse-consumer:<name>
+# quota-bot reads them to show a consumer's usage in its current window.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-token-ratelimit
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  url: ${WASM_PLUGIN_BASE}/plugins/ai-token-ratelimit/2.0.1/plugin.wasm
+
+  # A limiter that fails to load must not stop traffic: limits protect the
+  # node, they do not bill anyone. ai-quota is the fail-closed one.
+  failStrategy: FAIL_OPEN
+
+  phase: UNSPECIFIED_PHASE
+  # After request-validation (950) and ai-statistics (900), before ai-quota
+  # (280): a request refused here never costs the ledger a round trip.
+  # key-auth runs earlier still, in AUTHN, so x-mse-consumer is always set.
+  priority: 600
+
+  defaultConfigDisable: true
+
+  matchRules:
+    - ingress:
+        - ai-chat
+        - ai-completions
+      # Disabled until quota-bot renders real rules. The config must still
+      # parse — the plugin rejects an empty rule_items — so it names a consumer
+      # that cannot exist ('.' is outside the name alphabet).
+      configDisable: true
+      config:
+        rule_name: consumer-limits
+        rule_items:
+          - limit_by_consumer: ""
+            limit_keys:
+              - key: "."
+                token_per_day: 1
+        rejected_code: 429
+        rejected_msg: "Token rate limit reached for this API key"
+        redis:
+          service_name: quota-redis.dns
+          service_port: 6379
+          timeout: 1000

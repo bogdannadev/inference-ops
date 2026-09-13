@@ -15,8 +15,14 @@ metadata:
   namespace: higress-system
   annotations:
     higress.io/destination: "qwen-router.dns:8000"
+    # The second line tells SGLang who is calling, for per-consumer engine
+    # metrics; the header name has to ride the router's x-request-id- forward
+    # prefix. Reasoning in ../qwen3.6-27b-2-A100/deploy/higress-consumer-label.sh.
+    # It was applied live on 2026-09-05 and only committed here on 2026-09-13 —
+    # until then every apply.sh run would have silently deleted it.
     higress.io/request-header-control-update: |
       Authorization Bearer ${SGLANG_API_KEY}
+      x-request-id-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
     higress.io/ignore-path-case: "false"
 spec:
   ingressClassName: higress
