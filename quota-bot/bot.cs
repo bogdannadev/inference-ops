@@ -264,6 +264,14 @@ builder.Services.AddHttpClient("prometheus", c =>
     c.BaseAddress = new Uri(cfg.PrometheusUrl + "/");
     c.Timeout = TimeSpan.FromSeconds(15);
 });
+// Public price API, read once a day by PriceBook. Short timeout: a command
+// that happens to trigger the refresh should not hang on it.
+builder.Services.AddHttpClient("openrouter", c =>
+{
+    c.BaseAddress = new Uri("https://openrouter.ai/api/v1/");
+    c.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddSingleton<PriceBook>();
 builder.Services.AddHttpClient("apiserver", c =>
 {
     c.BaseAddress = new Uri(cfg.ApiServerUrl + "/");
@@ -422,6 +430,33 @@ if (cfg.AdminApiSecret.Length >= 32)
                          + "Do not quote the unenforced numbers to a consumer as limits.",
             });
         return Results.Text(arr.ToJsonString(), "application/json");
+    });
+
+    // The reference prices, so admin-mcp prices usage with the same numbers the
+    // bot shows instead of keeping a second copy that can drift.
+    app.MapGet("/admin/prices", async (HttpRequest req, PriceBook book, CancellationToken ct) =>
+    {
+        if (!AdminOk(req, adminSecretBytes)) return Results.Unauthorized();
+        var p = await book.GetAsync(ct);
+        static JsonObject Ref(PriceRef r) => new()
+        {
+            ["label"] = r.Label,
+            ["input_per_m"] = r.InPerM,
+            ["output_per_m"] = r.OutPerM,
+            ["cache_read_per_m"] = r.CacheReadPerM,
+            ["basis"] = r.Basis,
+        };
+        return J(200, new JsonObject
+        {
+            ["unit"] = "USD per million tokens",
+            ["openrouter"] = Ref(p.OpenRouter),
+            ["openrouter_providers"] = p.Providers,
+            ["openrouter_output_min_per_m"] = p.OutMin,
+            ["openrouter_output_max_per_m"] = p.OutMax,
+            ["alibaba_singapore"] = Ref(p.AlibabaSg),
+            ["alibaba_beijing"] = Ref(p.AlibabaBj),
+            ["note"] = "Reference prices for the same model at public providers. Not what any consumer is charged.",
+        });
     });
 
     // One consumer's effective settings: each value, and whether it comes from
@@ -713,6 +748,7 @@ sealed class Worker(
     KeyStore keys,
     IHttpClientFactory http,
     Telegram tg,
+    PriceBook priceBook,
     ILogger<Worker> log) : BackgroundService
 {
     // Telegram redelivers on failure, and it can redeliver an update we already
@@ -944,6 +980,7 @@ sealed class Worker(
             "/errors"     => new Reply(await ErrorsAsync(a1 ?? "24h", ct)),
             "/tiers"      => new Reply(TiersHelp()),
             "/langfuse"   => new Reply(LangfuseHelp()),
+            "/prices"     => new Reply(await PricesAsync(ct)),
             // No argument is the common case — an operator wants "show me
             // this consumer", not a request id they would have to go and find
             // first. Falling back to the picker beats a usage hint.
@@ -1025,6 +1062,9 @@ sealed class Worker(
         new("p95", "What they used", "[name]",
             "latency percentiles, per consumer (gateway + engine)",
             "Latency percentiles per consumer"),
+        new("prices", "What they used", "",
+            "reference prices for this model: OpenRouter and Alibaba Cloud",
+            "Reference prices used for cost"),
         new("errors", "What they used", "[1h|24h|7d]",
             "status mix per consumer", "Status mix per consumer"),
         new("tiers", "Who and how much", "", "what each policy tier means",
@@ -1317,9 +1357,15 @@ sealed class Worker(
         var inT   = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_input_token[{window}]))", ct);
         var outT  = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_output_token[{window}]))", ct);
         var reqsT = PromAsync($"sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[{window}]))", ct);
-        await Task.WhenAll(inT, outT, reqsT);
+        // Engine-side hit share per consumer, for the cache-aware price. Note
+        // the label: the engine says `consumer`, ai-statistics `ai_consumer`.
+        var hitT  = PromAsync($"1 - sum by (consumer) (increase(sglang:uncached_prompt_tokens_histogram_sum[{window}])) "
+                            + $"/ clamp_min(sum by (consumer) (increase(sglang:prompt_tokens_histogram_sum[{window}])), 1)", ct, "consumer");
+        var pricesT = priceBook.GetAsync(ct);
+        await Task.WhenAll(inT, outT, reqsT, hitT, pricesT);
 
         var inp = inT.Result; var outp = outT.Result; var reqs = reqsT.Result;
+        var hits = hitT.Result; var prices = pricesT.Result;
         if (inp.Count == 0 && outp.Count == 0) return $"No usage in the last {window}.";
 
         var names = inp.Keys.Union(outp.Keys).Union(reqs.Keys).ToList();
@@ -1333,9 +1379,38 @@ sealed class Worker(
                 return $"{n,-14}{i,9:N0}{o,8:N0}{(o > 0 ? i / o : 0),6:N1}{reqs.GetValueOrDefault(n),6:N0}";
             });
 
+        // Reference cost per consumer. Short money so four columns fit a phone.
+        static string M(decimal v) => v switch
+        {
+            0m => "0",
+            < 10m => v.ToString("0.00", CultureInfo.InvariantCulture),
+            < 1000m => v.ToString("0", CultureInfo.InvariantCulture),
+            _ => (v / 1000m).ToString("0.#", CultureInfo.InvariantCulture) + "K",
+        };
+        decimal orT = 0, orcT = 0, sgT = 0, bjT = 0;
+        var costHeader = $"{"consumer",-14}{"OR",7}{"OR-c",7}{"SG",7}{"BJ",7}";
+        var costRows = names
+            .OrderByDescending(n => inp.GetValueOrDefault(n) + outp.GetValueOrDefault(n))
+            .Select(n =>
+            {
+                var i = inp.GetValueOrDefault(n); var o = outp.GetValueOrDefault(n);
+                double? h = hits.TryGetValue(n, out var hv) ? hv : null;
+                var list = PriceBook.Cost(prices.OpenRouter, i, o);
+                var cached = PriceBook.Cost(prices.OpenRouter, i, o, h);
+                var sg = PriceBook.Cost(prices.AlibabaSg, i, o);
+                var bj = PriceBook.Cost(prices.AlibabaBj, i, o);
+                orT += list; orcT += cached; sgT += sg; bjT += bj;
+                return $"{n,-14}{M(list),7}{M(cached),7}{M(sg),7}{M(bj),7}";
+            }).ToList();
+
         var totalIn = inp.Values.Sum(); var totalOut = outp.Values.Sum();
         return Table($"<b>Usage</b> \u2014 last {window}", new[] { header }.Concat(rows))
              + $"\n<b>{totalIn + totalOut:N0}</b> tokens charged \u2014 {totalIn:N0} in, {totalOut:N0} out."
+             + "\n\n" + Table("<b>At reference prices</b>, USD", new[] { costHeader }.Concat(costRows))
+             + $"\nTotal: OpenRouter <b>{PriceBook.Usd(orT)}</b> (cache-aware {PriceBook.Usd(orcT)}), "
+             + $"Alibaba Singapore <b>{PriceBook.Usd(sgT)}</b>, Beijing <b>{PriceBook.Usd(bjT)}</b>."
+             + "\n<i>OR = OpenRouter list, OR-c = with this key's cache hits priced as cached, SG/BJ = Alibaba Cloud.</i>"
+             + "\n" + PriceFootnote(prices)
              + "\n<i>Quota is a single TOTAL-token balance: input and output are deducted at the same "
              + "rate. i:o shows how much of a bill is context re-sent rather than tokens generated.</i>"
              + "\n<i>Counters reset when the gateway restarts. Balances are the billing record.</i>";
@@ -1743,8 +1818,14 @@ sealed class Worker(
         var runT  = PromScalarAsync($"consumer:quota_days_left{led}", ct);
         var reqT  = PromScalarAsync($"sum(increase(gateway_requests_total{sel}[{w}])) or vector(0)", ct);
         var badT  = PromScalarAsync($"sum(increase(gateway_requests_total{{consumer=\"{name}\",status_class!=\"2xx\"}}[{w}])) or vector(0)", ct);
-        var inT   = PromScalarAsync($"sum(increase(gateway_tokens_total{{consumer=\"{name}\",direction=\"input\"}}[{w}])) or vector(0)", ct);
-        var outT  = PromScalarAsync($"sum(increase(gateway_tokens_total{{consumer=\"{name}\",direction=\"output\"}}[{w}])) or vector(0)", ct);
+        // Tokens from ai-statistics (Envoy), not Vector's gateway_tokens_total.
+        // Both are per direction, but Vector expires an idle series after ten
+        // minutes and Prometheus then loses the first request of every burst:
+        // measured 986 vs 1,520 input tokens for a sparse consumer. Envoy's
+        // series lives for the gateway's lifetime. These are also what cost is
+        // computed from, and what /usage reads, so the numbers agree.
+        var inT   = PromScalarAsync($"sum(increase(route_upstream_model_consumer_metric_input_token{led}[{w}])) or vector(0)", ct);
+        var outT  = PromScalarAsync($"sum(increase(route_upstream_model_consumer_metric_output_token{led}[{w}])) or vector(0)", ct);
         var gwT   = PromScalarAsync($"histogram_quantile(0.95, sum by (le) (rate(gateway_request_duration_seconds_bucket{sel}[{w}])))", ct);
         // Engine-side. These exist only since the consumer label was put on the
         // tokenizer metrics; before that the gateway's view was all there was.
@@ -1786,9 +1867,60 @@ sealed class Worker(
         return dash >= 0 && dash + 1 < host.Length ? host[(dash + 1)..] : host;
     }
 
+    // The four reference costs for one token count, as table rows.
+    private static IEnumerable<string> CostRows(Prices p, double? tin, double? tout, double? hit)
+    {
+        if (tin is null || tout is null) yield break;
+        yield return $"{"cost at",-14}{"(reference)",14}";
+        yield return $"{"OpenRouter",-14}{PriceBook.Usd(PriceBook.Cost(p.OpenRouter, tin.Value, tout.Value)),14}";
+        if (p.OpenRouter.CacheReadPerM is not null && hit is not null && double.IsFinite(hit.Value))
+            yield return $"{"  cache-aware",-14}{PriceBook.Usd(PriceBook.Cost(p.OpenRouter, tin.Value, tout.Value, hit)),14}";
+        yield return $"{"Alibaba SG",-14}{PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, tin.Value, tout.Value)),14}";
+        yield return $"{"Alibaba BJ",-14}{PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, tin.Value, tout.Value)),14}";
+    }
+
+    private static string PriceFootnote(Prices p) =>
+        $"<i>Reference prices for the same model, not a bill: {Esc(p.OpenRouter.Basis)}, "
+      + $"{Esc(PriceBook.PerMText(p.OpenRouter))}"
+      + (p.Providers > 0 && p.OutMin is { } lo && p.OutMax is { } hi
+            ? $" (output ${lo:0.##}–{hi:0.##} across {p.Providers} providers)" : "")
+      + $"; Alibaba Cloud {Esc(PriceBook.PerMText(p.AlibabaSg))} Singapore, {Esc(PriceBook.PerMText(p.AlibabaBj))} Beijing, "
+      + "as of 2026-09-12. Cache-aware applies this key's measured prefix-cache hit share. "
+      + "Cut-off requests are not in it. /prices for the table.</i>";
+
+    private async Task<string> PricesAsync(CancellationToken ct)
+    {
+        var p = await priceBook.GetAsync(ct);
+        string[] rows =
+        [
+            $"{"USD per M",-11}{"input",7}{"cached",7}{"output",7}",
+            Row(p.OpenRouter), Row(p.AlibabaSg), Row(p.AlibabaBj),
+        ];
+        static string Row(PriceRef r) =>
+            $"{r.Label,-11}{r.InPerM,7:0.###}{(r.CacheReadPerM is { } c ? c.ToString("0.###", CultureInfo.InvariantCulture) : "—"),7}{r.OutPerM,7:0.###}";
+
+        // A worked example makes the spread concrete: one typical agent day is
+        // input-heavy, and that is where the references disagree most.
+        const double exIn = 30_000_000, exOut = 800_000, exHit = 0.9;
+        return Table("<b>Reference prices</b> — same model, public providers", rows)
+             + $"\n<b>OpenRouter</b>: {Esc(p.OpenRouter.Basis)}"
+             + (p.Providers > 0 && p.OutMin is { } lo && p.OutMax is { } hi
+                   ? $". Output ranges ${lo:0.##}–{hi:0.##} per M across {p.Providers} providers; the list price above is OpenRouter's headline." : ".")
+             + $"\n<b>Alibaba Cloud</b>: {Esc(p.AlibabaSg.Basis)}; {Esc(p.AlibabaBj.Basis)}. No API publishes these, "
+             + "so they are updated by hand in bot.cs."
+             + $"\n\nExample, 30M in / 0.8M out / 90% cached: OpenRouter {PriceBook.Usd(PriceBook.Cost(p.OpenRouter, exIn, exOut))}"
+             + $" (cache-aware {PriceBook.Usd(PriceBook.Cost(p.OpenRouter, exIn, exOut, exHit))}), "
+             + $"Alibaba SG {PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, exIn, exOut))}, BJ {PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, exIn, exOut))}."
+             + "\n\n<i>What the same tokens would cost bought elsewhere — a yardstick for monitoring, not a bill. "
+             + "Shown in /key, /usage and the written report.</i>";
+    }
+
     private async Task<Reply> KeyCardAsync(string name, string window, CancellationToken ct)
     {
-        var st = await KeyStatsAsync(name, window, ct);
+        var statsT = KeyStatsAsync(name, window, ct);
+        var pricesT = priceBook.GetAsync(ct);
+        await Task.WhenAll(statsT, pricesT);
+        var st = statsT.Result; var prices = pricesT.Result;
 
         var rows = new List<string>
         {
@@ -1816,14 +1948,18 @@ sealed class Worker(
                 rows.Add($"{ShortInstance(inst),-14}{v / total * 100,13:N0} %");
         }
 
+        var costRows = CostRows(prices, st.TokensIn, st.TokensOut, st.CacheHit).ToList();
+        if (costRows.Count > 0) { rows.Add(""); rows.AddRange(costRows); }
+
         var body = Table($"<b>{Esc(name)}</b> — last {window}", rows);
 
         // Say which half of the stack each block came from. The two latencies
         // differ by the gateway filter chain, the router and two network hops,
         // and an operator comparing them needs to know that is expected.
-        body += "\n<i>Balance and runway: the ledger. requests/tokens/p95 gateway: "
-              + "the access log. ttft, itl, e2e, cache and the replica split: the "
-              + "engine itself.</i>";
+        body += "\n<i>Balance and runway: the ledger. tokens: gateway ai-statistics. "
+              + "requests, p95 gateway, cut-offs: the access log. ttft, itl, e2e, cache "
+              + "and the replica split: the engine itself.</i>";
+        if (costRows.Count > 0) body += "\n" + PriceFootnote(prices);
 
         if (st.Unbilled is >= 0.5)
             body += $"\n\n⚠️ <b>{Num(st.Unbilled)} request(s) were cut off and charged nothing</b> "
@@ -1932,22 +2068,38 @@ sealed class Worker(
         var dayT = KeyStatsAsync(name, "24h", ct);
         var weekT = KeyStatsAsync(name, "7d", ct);
         var tiersT = ledger.TiersAsync(ct);
-        await Task.WhenAll(dayT, weekT, tiersT);
-        var day = dayT.Result; var week = weekT.Result;
+        var pricesT = priceBook.GetAsync(ct);
+        await Task.WhenAll(dayT, weekT, tiersT, pricesT);
+        var day = dayT.Result; var week = weekT.Result; var prices = pricesT.Result;
         var tier = tiersT.Result.GetValueOrDefault(name, "unassigned");
 
         var facts = new StringBuilder();
         facts.Append("consumer=").Append(name).Append("\ntier=").Append(tier).Append('\n');
-        Block(facts, "last_24h", day);
-        Block(facts, "last_7d", week);
+        facts.Append("reference_prices_usd_per_million=")
+             .Append($"OpenRouter {PriceBook.PerMText(prices.OpenRouter)} ({prices.OpenRouter.Basis}); ")
+             .Append($"Alibaba Singapore {PriceBook.PerMText(prices.AlibabaSg)}; Alibaba Beijing {PriceBook.PerMText(prices.AlibabaBj)}\n");
+        Block(facts, "last_24h", day, prices);
+        Block(facts, "last_7d", week, prices);
 
         var html = await GenerateReportAsync(name, facts.ToString(), ct);
         var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmm", CultureInfo.InvariantCulture);
+
+        // The costs go in the caption as well, computed here: the model is told
+        // to include them, but a number the operator monitors should not depend
+        // on a model remembering to copy it.
+        string Line(string label, KeyStats st) =>
+            st.TokensIn is { } i && st.TokensOut is { } o
+                ? $"{label}: OpenRouter {PriceBook.Usd(PriceBook.Cost(prices.OpenRouter, i, o))} "
+                + $"(cache-aware {PriceBook.Usd(PriceBook.Cost(prices.OpenRouter, i, o, st.CacheHit))}) · "
+                + $"Alibaba SG {PriceBook.Usd(PriceBook.Cost(prices.AlibabaSg, i, o))} · "
+                + $"BJ {PriceBook.Usd(PriceBook.Cost(prices.AlibabaBj, i, o))}\n"
+                : "";
         await SendDocumentAsync(chatId, $"{name}-{stamp}.html", Encoding.UTF8.GetBytes(html),
             $"<b>{Esc(name)}</b> — written by the node, {stamp} UTC.\n"
+          + "At reference prices, not a bill:\n" + Line("24h", day) + Line("7d", week)
           + "<i>Numbers are measured; the reading of them is the model's.</i>", ct);
 
-        static void Block(StringBuilder b, string label, KeyStats st)
+        static void Block(StringBuilder b, string label, KeyStats st, Prices p)
         {
             b.Append('[').Append(label).Append("]\n");
             b.Append("balance_tokens=").Append(Num(st.Balance)).Append('\n');
@@ -1958,6 +2110,13 @@ sealed class Worker(
             b.Append("tokens_out=").Append(Num(st.TokensOut)).Append('\n');
             b.Append("cut_unbilled_requests=").Append(Num(st.Unbilled)).Append('\n');
             b.Append("cut_unbilled_seconds=").Append(Num(st.UnbilledSeconds)).Append('\n');
+            if (st.TokensIn is { } i && st.TokensOut is { } o)
+            {
+                b.Append("cost_usd_openrouter=").Append(PriceBook.Usd(PriceBook.Cost(p.OpenRouter, i, o))).Append('\n');
+                b.Append("cost_usd_openrouter_cache_aware=").Append(PriceBook.Usd(PriceBook.Cost(p.OpenRouter, i, o, st.CacheHit))).Append('\n');
+                b.Append("cost_usd_alibaba_singapore=").Append(PriceBook.Usd(PriceBook.Cost(p.AlibabaSg, i, o))).Append('\n');
+                b.Append("cost_usd_alibaba_beijing=").Append(PriceBook.Usd(PriceBook.Cost(p.AlibabaBj, i, o))).Append('\n');
+            }
             b.Append("gateway_p95_s=").Append(Num(st.GatewayP95, 3)).Append('\n');
             b.Append("engine_e2e_p95_s=").Append(Num(st.E2e, 3)).Append('\n');
             b.Append("engine_ttft_p95_s=").Append(Num(st.Ttft, 3)).Append('\n');
@@ -1993,7 +2152,12 @@ sealed class Worker(
         + "Quota is a single total-token balance; input and output are charged the same. "
         + "A request cut off before its final usage frame (client disconnect, stream timeout, "
         + "upstream error) is charged zero tokens although the engine may have worked on it; "
-        + "cut_unbilled_* counts those and their wall time.";
+        + "cut_unbilled_* counts those and their wall time. "
+        + "cost_usd_* is what the same input and output tokens would cost buying this model from "
+        + "public providers (OpenRouter list price, the same with cached input priced as cached, "
+        + "Alibaba Cloud Singapore and Beijing). They are reference prices for monitoring, NOT what "
+        + "the consumer was charged. The report MUST include a 'Reference cost' table with every "
+        + "cost_usd_* value for both windows, and must call them reference prices.";
 
     private async Task<string> GenerateReportAsync(string name, string facts, CancellationToken ct)
     {
@@ -3126,6 +3290,157 @@ static class Policy
 
     private static string Trim(decimal d) =>
         Math.Round(d, 1).ToString("0.#", CultureInfo.InvariantCulture);
+}
+
+// ===========================================================================
+// PriceBook — what the same tokens would cost for this model elsewhere.
+//
+// REFERENCE PRICES, NOT A BILL. Nobody is charged these; they exist so usage
+// can be read in money, and so a key's traffic can be compared with buying the
+// same model from a public provider. Every surface labels them that way.
+//
+// OpenRouter publishes prices over a public, unauthenticated API, so those are
+// fetched and refreshed daily; a snapshot stands in until the first fetch
+// succeeds, and a failed refresh keeps the last good price rather than showing
+// nothing. The headline model price is used, which is what openrouter.ai shows
+// for the model; the spread across its providers is reported next to it,
+// because it is wide (output $2.00-3.20 per M on 2026-09-13).
+//
+// Alibaba Cloud Model Studio has no price API. Its numbers are copied from
+// alibabacloud.com/help/en/model-studio/model-pricing, page dated 2026-09-12,
+// for Qwen3.8-27B (thinking and non-thinking are the same price, no cached-input
+// price, no tiering below 1M context). Update them by hand, with the date.
+//
+// Pricing needs a price per token DIRECTION, which is why these read the
+// ai-statistics counters (input and output separately) and never the ledger.
+// ===========================================================================
+sealed record PriceRef(string Label, decimal InPerM, decimal OutPerM, decimal? CacheReadPerM, string Basis);
+
+sealed record Prices(PriceRef OpenRouter, PriceRef AlibabaSg, PriceRef AlibabaBj,
+                     DateTimeOffset? FetchedAt, int Providers, decimal? OutMin, decimal? OutMax);
+
+sealed class PriceBook(IHttpClientFactory http, ILogger<PriceBook> log)
+{
+    public static readonly string OpenRouterModel =
+        Environment.GetEnvironmentVariable("PRICE_OPENROUTER_MODEL") is { Length: > 0 } m ? m : "qwen/qwen3.8-27b";
+
+    private static readonly PriceRef AliSg = new("Alibaba SG", 0.50m, 3.00m, null,
+        "Alibaba Cloud Model Studio, International (Singapore), Qwen3.8-27B, as of 2026-09-12");
+    private static readonly PriceRef AliBj = new("Alibaba BJ", 0.424m, 1.696m, null,
+        "Alibaba Cloud Model Studio, China (Beijing), Qwen3.8-27B, as of 2026-09-12");
+
+    private volatile Prices _current = new(
+        new PriceRef("OpenRouter", 0.214m, 2.55m, 0.15m, $"OpenRouter {OpenRouterModel}, snapshot of 2026-09-13 (not yet fetched)"),
+        AliSg, AliBj, null, 0, null, null);
+
+    private DateTimeOffset _lastAttempt = DateTimeOffset.MinValue;
+    private readonly SemaphoreSlim _refresh = new(1, 1);
+
+    public async Task<Prices> GetAsync(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var stale = _current.FetchedAt is not { } f || now - f > TimeSpan.FromHours(24);
+        // A failing refresh is retried at most every 15 minutes, so an
+        // OpenRouter outage costs one slow command per quarter hour, not all of them.
+        if (!stale || now - _lastAttempt < TimeSpan.FromMinutes(15) || !await _refresh.WaitAsync(0, ct))
+            return _current;
+        try
+        {
+            _lastAttempt = now;
+            _current = await FetchAsync(ct) ?? _current;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException
+                                      or FormatException or KeyNotFoundException or InvalidOperationException)
+        {
+            log.LogWarning("OpenRouter price refresh failed, keeping {Basis}: {Reason}", _current.OpenRouter.Basis, ex.Message);
+        }
+        finally { _refresh.Release(); }
+        return _current;
+    }
+
+    private async Task<Prices?> FetchAsync(CancellationToken ct)
+    {
+        var client = http.CreateClient("openrouter");
+
+        // The model list is ~0.7 MB. Streamed through JsonDocument rather than
+        // materialised as a JsonNode tree, and fetched once a day.
+        PriceRef? headline = null;
+        await using (var s = await client.GetStreamAsync("models", ct))
+        using (var doc = await JsonDocument.ParseAsync(s, cancellationToken: ct))
+        {
+            foreach (var model in doc.RootElement.GetProperty("data").EnumerateArray())
+            {
+                if (!model.TryGetProperty("id", out var id) || id.GetString() != OpenRouterModel) continue;
+                var p = model.GetProperty("pricing");
+                headline = new PriceRef("OpenRouter", PerM(p, "prompt")!.Value, PerM(p, "completion")!.Value,
+                    PerM(p, "input_cache_read"),
+                    $"OpenRouter {OpenRouterModel}, fetched {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC");
+                break;
+            }
+        }
+        if (headline is null)
+        {
+            log.LogWarning("OpenRouter lists no model {Model}; keeping the previous price", OpenRouterModel);
+            return null;
+        }
+
+        // The provider spread is context, not the price. Losing it is not a
+        // reason to discard a good headline.
+        int providers = 0; decimal? min = null, max = null;
+        try
+        {
+            await using var s = await client.GetStreamAsync($"models/{OpenRouterModel}/endpoints", ct);
+            using var doc = await JsonDocument.ParseAsync(s, cancellationToken: ct);
+            foreach (var e in doc.RootElement.GetProperty("data").GetProperty("endpoints").EnumerateArray())
+                if (e.TryGetProperty("pricing", out var p) && PerM(p, "completion") is { } o)
+                {
+                    providers++;
+                    min = min is null ? o : Math.Min(min.Value, o);
+                    max = max is null ? o : Math.Max(max.Value, o);
+                }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            log.LogInformation("OpenRouter provider spread unavailable: {Reason}", ex.Message);
+        }
+
+        log.LogInformation("OpenRouter prices for {Model}: in {In}/M out {Out}/M cached {Cache}/M across {N} providers",
+            OpenRouterModel, headline.InPerM, headline.OutPerM, headline.CacheReadPerM, providers);
+        return new Prices(headline, AliSg, AliBj, DateTimeOffset.UtcNow, providers, min, max);
+    }
+
+    // OpenRouter quotes USD per token as a decimal string ("0.00000255").
+    private static decimal? PerM(JsonElement pricing, string field) =>
+        pricing.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String
+        && decimal.TryParse(v.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var perToken)
+            ? decimal.Round(perToken * 1_000_000m, 6)
+            : null;
+
+    // Cost of `tin` input and `tout` output tokens at `p`. With a cache-read
+    // price and a hit share, the cached part of the input is priced as cached —
+    // the engine measures hits per consumer over a window, not per request, so
+    // this is an estimate of what a cache-discounting provider would charge.
+    public static decimal Cost(PriceRef p, double tin, double tout, double? cacheHit = null)
+    {
+        static decimal D(double v) => double.IsFinite(v) && v > 0 ? (decimal)v : 0m;
+        var input = D(tin);
+        var cached = p.CacheReadPerM is { } && cacheHit is { } h && double.IsFinite(h)
+            ? input * (decimal)Math.Clamp(h, 0, 1) : 0m;
+        return ((input - cached) * p.InPerM + cached * (p.CacheReadPerM ?? 0m) + D(tout) * p.OutPerM) / 1_000_000m;
+    }
+
+    public static string Usd(decimal v) => v switch
+    {
+        0m => "$0",
+        < 0.01m => "<$0.01",
+        < 100m => "$" + v.ToString("0.00", CultureInfo.InvariantCulture),
+        < 10_000m => "$" + v.ToString("N0", CultureInfo.InvariantCulture),
+        _ => "$" + (v / 1000m).ToString("0.#", CultureInfo.InvariantCulture) + "K",
+    };
+
+    public static string PerMText(PriceRef p) =>
+        $"${p.InPerM:0.###} in / ${p.OutPerM:0.###} out"
+        + (p.CacheReadPerM is { } c ? $" / ${c:0.###} cached" : "") + " per M";
 }
 
 // ===========================================================================

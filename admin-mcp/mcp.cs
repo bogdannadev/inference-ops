@@ -381,6 +381,9 @@ sealed class ReadTools
         + "gateway, router or network in it. inter_token_latency and prefix_cache_hit "
         + "exist only on the engine side — the gateway cannot see them. A dash means "
         + "no data in that window, which is not the same as zero. "
+        + "cost_usd_* is what the same tokens would cost buying this model from OpenRouter "
+        + "or Alibaba Cloud — reference prices for monitoring, never what the consumer was "
+        + "charged; say so whenever you quote them. "
         + "Windows: 5m, 1h, 6h, 24h, 7d, 30d.")]
     public static async Task<string> ConsumerStats(
         Backends b, IHttpClientFactory http,
@@ -402,8 +405,11 @@ sealed class ReadTools
         var runway = await S($"consumer:quota_days_left{led}");
         var reqs = await S($"sum(increase(gateway_requests_total{sel}[{w}])) or vector(0)");
         var bad = await S($"sum(increase(gateway_requests_total{{consumer=\"{consumer}\",status_class!=\"2xx\"}}[{w}])) or vector(0)");
-        var tin = await S($"sum(increase(gateway_tokens_total{{consumer=\"{consumer}\",direction=\"input\"}}[{w}])) or vector(0)");
-        var tout = await S($"sum(increase(gateway_tokens_total{{consumer=\"{consumer}\",direction=\"output\"}}[{w}])) or vector(0)");
+        // ai-statistics (Envoy) counters, the same source quota-bot prices from.
+        // Vector's gateway_tokens_total expires idle series and so loses the
+        // first request of every burst for a sparse consumer.
+        var tin = await S($"sum(increase(route_upstream_model_consumer_metric_input_token{led}[{w}])) or vector(0)");
+        var tout = await S($"sum(increase(route_upstream_model_consumer_metric_output_token{led}[{w}])) or vector(0)");
         var gw = await S($"histogram_quantile(0.95, sum by (le) (rate(gateway_request_duration_seconds_bucket{sel}[{w}])))");
         var e2e = await S($"histogram_quantile(0.95, sum by (le) (rate(sglang:e2e_request_latency_seconds_bucket{sel}[{w}])))");
         var ttft = await S($"histogram_quantile(0.95, sum by (le) (rate(sglang:time_to_first_token_seconds_bucket{sel}[{w}])))");
@@ -455,6 +461,44 @@ sealed class ReadTools
                    + tin.Value * hit * 0.0038;
             sb.Append("gpu_seconds_est=").Append(Backends.Num(ms / 1000.0, 1))
               .Append("  # the real resource; the ledger charges flat tokens instead\n");
+
+            // Reference cost: what these tokens would cost buying the same
+            // model from public providers. Prices come from quota-bot, the one
+            // place they are fetched and dated, so the bot and this tool agree.
+            if (b.Cfg.BotSecret.Length > 0)
+            {
+                try
+                {
+                    using var c = http.CreateClient("bot");
+                    using var pr = await c.GetAsync("admin/prices", ct);
+                    if (pr.IsSuccessStatusCode && JsonNode.Parse(await pr.Content.ReadAsStringAsync(ct)) is JsonObject p)
+                    {
+                        string Cost(string key, bool cacheAware)
+                        {
+                            var r = p[key];
+                            var inM = r?["input_per_m"]?.GetValue<decimal>() ?? 0m;
+                            var outM = r?["output_per_m"]?.GetValue<decimal>() ?? 0m;
+                            var cachedM = r?["cache_read_per_m"]?.GetValue<decimal>();
+                            var input = (decimal)Math.Max(0, tin.Value);
+                            var cached = cacheAware && cachedM is not null ? input * (decimal)hit : 0m;
+                            var usd = ((input - cached) * inM + cached * (cachedM ?? 0m)
+                                     + (decimal)Math.Max(0, tout.Value) * outM) / 1_000_000m;
+                            return usd.ToString("0.00", CultureInfo.InvariantCulture);
+                        }
+                        sb.Append("cost_usd_openrouter=").Append(Cost("openrouter", false)).Append('\n');
+                        sb.Append("cost_usd_openrouter_cache_aware=").Append(Cost("openrouter", true)).Append('\n');
+                        sb.Append("cost_usd_alibaba_singapore=").Append(Cost("alibaba_singapore", false)).Append('\n');
+                        sb.Append("cost_usd_alibaba_beijing=").Append(Cost("alibaba_beijing", false))
+                          .Append("  # REFERENCE prices for the same model elsewhere, not a bill; basis: ")
+                          .Append(p["openrouter"]?["basis"]?.GetValue<string>() ?? "?")
+                          .Append("; Alibaba Cloud as of 2026-09-12\n");
+                    }
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException or FormatException)
+                {
+                    sb.Append("cost_usd=unavailable  # quota-bot price lookup failed\n");
+                }
+            }
         }
         foreach (var r in perReplica?["data"]?["result"]?.AsArray() ?? [])
         {
