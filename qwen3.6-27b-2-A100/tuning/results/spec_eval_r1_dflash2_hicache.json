@@ -1,0 +1,485 @@
+{
+ "label": "dflash2_hicache",
+ "started": "2026-09-13T16:57:02Z",
+ "server": {
+  "speculative_algorithm": "DFLASH",
+  "speculative_num_draft_tokens": 8,
+  "speculative_draft_model_path": "incoai/Qwen3.8-27B-DFlash2",
+  "enable_hierarchical_cache": true,
+  "hicache_ratio": 3.0,
+  "max_running_requests": 4
+ },
+ "correctness": {
+  "rounds": [
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 106,
+    "answer": "94023760",
+    "expect": "94023760"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 175,
+    "answer": "Lark, Dover, Gale, Blair, Vance",
+    "expect": "['Lark', 'Dover', 'Gale', 'Blair', 'Vance']"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 491,
+    "answer": "58632",
+    "expect": "58632"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 6424,
+    "answer": "3850, 3857, 3864, 3871, 3878, 3885, 3892, 3899, 3906, 3913, 3920, 3927, 3934, 3941, 3948, 3955, 3962, 3969, 3976, 3983, 3990, 3997, 4004, 4011, 4018, 4025, 4032, 4039, 4046, 4053, 4060, 4067, 4074, 40",
+    "expect": "[3850, 3857, 3864, 3871, 3878, 3885, 3892, 3899, 3906, 3913, 3920, 3927, 3934, 3941, 3948, 3955, 3962, 3969, 3976, 3983, 3990, 3997, 4004, 4011, 4018, 4025, 4032, 4039, 4046, 4053, 4060, 4067, 4074, 4"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 79,
+    "answer": "37984960",
+    "expect": "37984960"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 152,
+    "answer": "Cedar, Drew, Wade, Alder, Jett",
+    "expect": "['Cedar', 'Drew', 'Wade', 'Alder', 'Jett']"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 583,
+    "answer": "45049",
+    "expect": "45049"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 7531,
+    "answer": "1893, 1958, 2023, 2088, 2153, 2218, 2283, 2348, 2413, 2478, 2543, 2608, 2673, 2738, 2803, 2868, 2933, 2998, 3063, 3128, 3193, 3258, 3323, 3388, 3453, 3518, 3583, 3648, 3713, 3778, 3843, 3908, 3973, 40",
+    "expect": "[1893, 1958, 2023, 2088, 2153, 2218, 2283, 2348, 2413, 2478, 2543, 2608, 2673, 2738, 2803, 2868, 2933, 2998, 3063, 3128, 3193, 3258, 3323, 3388, 3453, 3518, 3583, 3648, 3713, 3778, 3843, 3908, 3973, 4"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 73,
+    "answer": "92123162",
+    "expect": "92123162"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 142,
+    "answer": "Ivor, Orrin, Pike, Jett, Gale",
+    "expect": "['Ivor', 'Orrin', 'Pike', 'Jett', 'Gale']"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 559,
+    "answer": "53040",
+    "expect": "53040"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 7311,
+    "answer": "3026, 3122, 3218, 3314, 3410, 3506, 3602, 3698, 3794, 3890, 3986, 4082, 4178, 4274, 4370, 4466, 4562, 4658, 4754, 4850, 4946, 5042, 5138, 5234, 5330, 5426, 5522, 5618, 5714, 5810, 5906, 6002, 6098, 61",
+    "expect": "[3026, 3122, 3218, 3314, 3410, 3506, 3602, 3698, 3794, 3890, 3986, 4082, 4178, 4274, 4370, 4466, 4562, 4658, 4754, 4850, 4946, 5042, 5138, 5234, 5330, 5426, 5522, 5618, 5714, 5810, 5906, 6002, 6098, 6"
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 106,
+    "answer": "74229694",
+    "expect": "74229694"
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 143,
+    "answer": "Drew, Sloan, Kline, Zane, Gale",
+    "expect": "['Drew', 'Sloan', 'Kline', 'Zane', 'Gale']"
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 515,
+    "answer": "77736",
+    "expect": "77736"
+   },
+   {
+    "mode": "greedy",
+    "round": 3,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 7304,
+    "answer": "2052, 2146, 2240, 2334, 2428, 2522, 2616, 2710, 2804, 2898, 2992, 3086, 3180, 3274, 3368, 3462, 3556, 3650, 3744, 3838, 3932, 4026, 4120, 4214, 4308, 4402, 4496, 4590, 4684, 4778, 4872, 4966, 5060, 51",
+    "expect": "[2052, 2146, 2240, 2334, 2428, 2522, 2616, 2710, 2804, 2898, 2992, 3086, 3180, 3274, 3368, 3462, 3556, 3650, 3744, 3838, 3932, 4026, 4120, 4214, 4308, 4402, 4496, 4590, 4684, 4778, 4872, 4966, 5060, 5"
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 80,
+    "answer": "92207964",
+    "expect": "92207964"
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 125,
+    "answer": "Moss, Frost, Blair, Yates, Elm",
+    "expect": "['Moss', 'Frost', 'Blair', 'Yates', 'Elm']"
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 499,
+    "answer": "67204",
+    "expect": "67204"
+   },
+   {
+    "mode": "greedy",
+    "round": 4,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 4764,
+    "answer": "1768, 1772, 1776, 1780, 1784, 1788, 1792, 1796, 1800, 1804, 1808, 1812, 1816, 1820, 1824, 1828, 1832, 1836, 1840, 1844, 1848, 1852, 1856, 1860, 1864, 1868, 1872, 1876, 1880, 1884, 1888, 1892, 1896, 19",
+    "expect": "[1768, 1772, 1776, 1780, 1784, 1788, 1792, 1796, 1800, 1804, 1808, 1812, 1816, 1820, 1824, 1828, 1832, 1836, 1840, 1844, 1848, 1852, 1856, 1860, 1864, 1868, 1872, 1876, 1880, 1884, 1888, 1892, 1896, 1"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 93,
+    "answer": "63669702",
+    "expect": "63669702"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 138,
+    "answer": "Quinn, Yates, Brook, Dover, Frost",
+    "expect": "['Quinn', 'Yates', 'Brook', 'Dover', 'Frost']"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 753,
+    "answer": "75429",
+    "expect": "75429"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "",
+    "expect": "[1494, 1538, 1582, 1626, 1670, 1714, 1758, 1802, 1846, 1890, 1934, 1978, 2022, 2066, 2110, 2154, 2198, 2242, 2286, 2330, 2374, 2418, 2462, 2506, 2550, 2594, 2638, 2682, 2726, 2770, 2814, 2858, 2902, 2"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 94,
+    "answer": "66649216",
+    "expect": "66649216"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 162,
+    "answer": "Flint, Ivor, Crane, Alder, Yates",
+    "expect": "['Flint', 'Ivor', 'Crane', 'Alder', 'Yates']"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 426,
+    "answer": "60728",
+    "expect": "60728"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "8264, 8275, 8286, 8297, 8308, 8319, 8330, 8341, 8352, 8363, 8374, 8385, 8396, 8407, 8418, 8429, 8440, 8451, 8462, 8473, 8484, 8495, 8506, 8517, 8528, 8539, 8550, 8561, 8572, 8583, 8594, 8605, 8616, 86",
+    "expect": "[8264, 8275, 8286, 8297, 8308, 8319, 8330, 8341, 8352, 8363, 8374, 8385, 8396, 8407, 8418, 8429, 8440, 8451, 8462, 8473, 8484, 8495, 8506, 8517, 8528, 8539, 8550, 8561, 8572, 8583, 8594, 8605, 8616, 8"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 73,
+    "answer": "98434818",
+    "expect": "98434818"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 84,
+    "answer": "Dover, Elm, Sloan, Alder, Jett",
+    "expect": "['Dover', 'Elm', 'Sloan', 'Alder', 'Jett']"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 491,
+    "answer": "57105",
+    "expect": "57105"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 7851,
+    "answer": "6296, 6305, 6314, 6323, 6332, 6341, 6350, 6359, 6368, 6377, 6386, 6395, 6404, 6413, 6422, 6431, 6440, 6449, 6458, 6467, 6476, 6485, 6494, 6503, 6512, 6521, 6530, 6539, 6548, 6557, 6566, 6575, 6584, 65",
+    "expect": "[6296, 6305, 6314, 6323, 6332, 6341, 6350, 6359, 6368, 6377, 6386, 6395, 6404, 6413, 6422, 6431, 6440, 6449, 6458, 6467, 6476, 6485, 6494, 6503, 6512, 6521, 6530, 6539, 6548, 6557, 6566, 6575, 6584, 6"
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 92,
+    "answer": "83856766",
+    "expect": "83856766"
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 209,
+    "answer": "Brook, Sloan, Lark, Nash, Ivor",
+    "expect": "['Brook', 'Sloan', 'Lark', 'Nash', 'Ivor']"
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 523,
+    "answer": "65564",
+    "expect": "65564"
+   },
+   {
+    "mode": "prod",
+    "round": 3,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "",
+    "expect": "[6049, 6096, 6143, 6190, 6237, 6284, 6331, 6378, 6425, 6472, 6519, 6566, 6613, 6660, 6707, 6754, 6801, 6848, 6895, 6942, 6989, 7036, 7083, 7130, 7177, 7224, 7271, 7318, 7365, 7412, 7459, 7506, 7553, 7"
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 74,
+    "answer": "80630875",
+    "expect": "80630875"
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 99,
+    "answer": "Ellis, Reed, Kline, Blair, Vance",
+    "expect": "['Ellis', 'Reed', 'Kline', 'Blair', 'Vance']"
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 717,
+    "answer": "69302",
+    "expect": "69302"
+   },
+   {
+    "mode": "prod",
+    "round": 4,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "7689, 7782, 7875, 7968, 8061, 8154, 8247, 8340, 8433, 8526, 8619, 8712, 8805, 8898, 8991, 9084, 9177, 9270, 9363, 9456, 9549, 9642, 9735, 9828, 9921, 10014, 10107, 10200, 10293, 10386, 10479, 10572, 1",
+    "expect": "[7689, 7782, 7875, 7968, 8061, 8154, 8247, 8340, 8433, 8526, 8619, 8712, 8805, 8898, 8991, 9084, 9177, 9270, 9363, 9456, 9549, 9642, 9735, 9828, 9921, 10014, 10107, 10200, 10293, 10386, 10479, 10572, "
+   }
+  ],
+  "summary": {
+   "greedy": {
+    "kv": {
+     "ok": 5
+    },
+    "order": {
+     "ok": 5
+    },
+    "arith": {
+     "ok": 5
+    },
+    "seq": {
+     "ok": 5
+    }
+   },
+   "prod": {
+    "kv": {
+     "ok": 5
+    },
+    "order": {
+     "ok": 5
+    },
+    "arith": {
+     "ok": 5
+    },
+    "seq": {
+     "truncated": 4,
+     "ok": 1
+    }
+   }
+  },
+  "determinism_serial_greedy": [
+   true,
+   true
+  ]
+ },
+ "speed": [
+  {
+   "phase": "short-c1",
+   "concurrency": 1,
+   "requests": 4,
+   "decode_tok_s_median": 69.76,
+   "decode_tok_s_all": [
+    61.95,
+    63.12,
+    69.76,
+    71.33
+   ],
+   "ttft_s_median": 0.189,
+   "aggregate_tok_s": 65.6,
+   "accept_length": 3.057,
+   "errors": []
+  },
+  {
+   "phase": "short-c4",
+   "concurrency": 4,
+   "requests": 8,
+   "decode_tok_s_median": 66.43,
+   "decode_tok_s_all": [
+    61.68,
+    63.04,
+    65.17,
+    65.91,
+    66.43,
+    70.24,
+    70.25,
+    82.14
+   ],
+   "ttft_s_median": 0.212,
+   "aggregate_tok_s": 246.5,
+   "accept_length": 3.516,
+   "errors": []
+  },
+  {
+   "phase": "long-c1",
+   "concurrency": 1,
+   "requests": 4,
+   "decode_tok_s_median": 59.5,
+   "decode_tok_s_all": [
+    57.07,
+    59.31,
+    59.5,
+    62.38
+   ],
+   "ttft_s_median": 0.495,
+   "aggregate_tok_s": 57.7,
+   "accept_length": 2.983,
+   "errors": []
+  },
+  {
+   "phase": "long-c4",
+   "concurrency": 4,
+   "requests": 8,
+   "decode_tok_s_median": 53.54,
+   "decode_tok_s_all": [
+    50.34,
+    51.94,
+    51.95,
+    52.67,
+    53.54,
+    53.9,
+    57.17,
+    64.69
+   ],
+   "ttft_s_median": 1.539,
+   "aggregate_tok_s": 189.7,
+   "accept_length": 3.189,
+   "errors": []
+  }
+ ]
+}

@@ -1,0 +1,342 @@
+{
+ "label": "mtp_hicache",
+ "started": "2026-09-13T16:28:31Z",
+ "server": {
+  "speculative_algorithm": "EAGLE",
+  "speculative_num_draft_tokens": 6,
+  "speculative_draft_model_path": null,
+  "enable_hierarchical_cache": true,
+  "hicache_ratio": 3.0,
+  "max_running_requests": 4
+ },
+ "correctness": {
+  "rounds": [
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 106,
+    "answer": "94023760",
+    "expect": "94023760"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 175,
+    "answer": "Lark, Dover, Gale, Blair, Vance",
+    "expect": "['Lark', 'Dover', 'Gale', 'Blair', 'Vance']"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 508,
+    "answer": "58632",
+    "expect": "58632"
+   },
+   {
+    "mode": "greedy",
+    "round": 0,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 6639,
+    "answer": "3850, 3857, 3864, 3871, 3878, 3885, 3892, 3899, 3906, 3913, 3920, 3927, 3934, 3941, 3948, 3955, 3962, 3969, 3976, 3983, 3990, 3997, 4004, 4011, 4018, 4025, 4032, 4039, 4046, 4053, 4060, 4067, 4074, 40",
+    "expect": "[3850, 3857, 3864, 3871, 3878, 3885, 3892, 3899, 3906, 3913, 3920, 3927, 3934, 3941, 3948, 3955, 3962, 3969, 3976, 3983, 3990, 3997, 4004, 4011, 4018, 4025, 4032, 4039, 4046, 4053, 4060, 4067, 4074, 4"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 79,
+    "answer": "37984960",
+    "expect": "37984960"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 170,
+    "answer": "Cedar, Drew, Wade, Alder, Jett",
+    "expect": "['Cedar', 'Drew', 'Wade', 'Alder', 'Jett']"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 583,
+    "answer": "45049",
+    "expect": "45049"
+   },
+   {
+    "mode": "greedy",
+    "round": 1,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 5322,
+    "answer": "1893, 1958, 2023, 2088, 2153, 2218, 2283, 2348, 2413, 2478, 2543, 2608, 2673, 2738, 2803, 2868, 2933, 2998, 3063, 3128, 3193, 3258, 3323, 3388, 3453, 3518, 3583, 3648, 3713, 3778, 3843, 3908, 3973, 40",
+    "expect": "[1893, 1958, 2023, 2088, 2153, 2218, 2283, 2348, 2413, 2478, 2543, 2608, 2673, 2738, 2803, 2868, 2933, 2998, 3063, 3128, 3193, 3258, 3323, 3388, 3453, 3518, 3583, 3648, 3713, 3778, 3843, 3908, 3973, 4"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 73,
+    "answer": "92123162",
+    "expect": "92123162"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 117,
+    "answer": "Ivor, Orrin, Pike, Jett, Gale",
+    "expect": "['Ivor', 'Orrin', 'Pike', 'Jett', 'Gale']"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 580,
+    "answer": "53040",
+    "expect": "53040"
+   },
+   {
+    "mode": "greedy",
+    "round": 2,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "",
+    "expect": "[3026, 3122, 3218, 3314, 3410, 3506, 3602, 3698, 3794, 3890, 3986, 4082, 4178, 4274, 4370, 4466, 4562, 4658, 4754, 4850, 4946, 5042, 5138, 5234, 5330, 5426, 5522, 5618, 5714, 5810, 5906, 6002, 6098, 6"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 112,
+    "answer": "74229694",
+    "expect": "74229694"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 246,
+    "answer": "Drew, Sloan, Kline, Zane, Gale",
+    "expect": "['Drew', 'Sloan', 'Kline', 'Zane', 'Gale']"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 844,
+    "answer": "77736",
+    "expect": "77736"
+   },
+   {
+    "mode": "prod",
+    "round": 0,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "",
+    "expect": "[2052, 2146, 2240, 2334, 2428, 2522, 2616, 2710, 2804, 2898, 2992, 3086, 3180, 3274, 3368, 3462, 3556, 3650, 3744, 3838, 3932, 4026, 4120, 4214, 4308, 4402, 4496, 4590, 4684, 4778, 4872, 4966, 5060, 5"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 81,
+    "answer": "92207964",
+    "expect": "92207964"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 96,
+    "answer": "Moss, Frost, Blair, Yates, Elm",
+    "expect": "['Moss', 'Frost', 'Blair', 'Yates', 'Elm']"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 504,
+    "answer": "67204",
+    "expect": "67204"
+   },
+   {
+    "mode": "prod",
+    "round": 1,
+    "kind": "seq",
+    "grade": "ok",
+    "completion_tokens": 6718,
+    "answer": "1768, 1772, 1776, 1780, 1784, 1788, 1792, 1796, 1800, 1804, 1808, 1812, 1816, 1820, 1824, 1828, 1832, 1836, 1840, 1844, 1848, 1852, 1856, 1860, 1864, 1868, 1872, 1876, 1880, 1884, 1888, 1892, 1896, 19",
+    "expect": "[1768, 1772, 1776, 1780, 1784, 1788, 1792, 1796, 1800, 1804, 1808, 1812, 1816, 1820, 1824, 1828, 1832, 1836, 1840, 1844, 1848, 1852, 1856, 1860, 1864, 1868, 1872, 1876, 1880, 1884, 1888, 1892, 1896, 1"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "kv",
+    "grade": "ok",
+    "completion_tokens": 73,
+    "answer": "63669702",
+    "expect": "63669702"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "order",
+    "grade": "ok",
+    "completion_tokens": 210,
+    "answer": "Quinn, Yates, Brook, Dover, Frost",
+    "expect": "['Quinn', 'Yates', 'Brook', 'Dover', 'Frost']"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "arith",
+    "grade": "ok",
+    "completion_tokens": 499,
+    "answer": "75429",
+    "expect": "75429"
+   },
+   {
+    "mode": "prod",
+    "round": 2,
+    "kind": "seq",
+    "grade": "truncated",
+    "completion_tokens": 8000,
+    "answer": "",
+    "expect": "[1494, 1538, 1582, 1626, 1670, 1714, 1758, 1802, 1846, 1890, 1934, 1978, 2022, 2066, 2110, 2154, 2198, 2242, 2286, 2330, 2374, 2418, 2462, 2506, 2550, 2594, 2638, 2682, 2726, 2770, 2814, 2858, 2902, 2"
+   }
+  ],
+  "summary": {
+   "greedy": {
+    "kv": {
+     "ok": 3
+    },
+    "order": {
+     "ok": 3
+    },
+    "arith": {
+     "ok": 3
+    },
+    "seq": {
+     "ok": 2,
+     "truncated": 1
+    }
+   },
+   "prod": {
+    "kv": {
+     "ok": 3
+    },
+    "order": {
+     "ok": 3
+    },
+    "arith": {
+     "ok": 3
+    },
+    "seq": {
+     "truncated": 2,
+     "ok": 1
+    }
+   }
+  },
+  "determinism_serial_greedy": [
+   true,
+   true
+  ]
+ },
+ "speed": [
+  {
+   "phase": "short-c1",
+   "concurrency": 1,
+   "requests": 4,
+   "decode_tok_s_median": 51.4,
+   "decode_tok_s_all": [
+    46.35,
+    51.14,
+    51.4,
+    52.59
+   ],
+   "ttft_s_median": 0.204,
+   "aggregate_tok_s": 49.8,
+   "accept_length": 2.591,
+   "errors": []
+  },
+  {
+   "phase": "short-c4",
+   "concurrency": 4,
+   "requests": 8,
+   "decode_tok_s_median": 45.48,
+   "decode_tok_s_all": [
+    40.86,
+    42.87,
+    43.74,
+    44.85,
+    45.48,
+    50.62,
+    53.69,
+    58.49
+   ],
+   "ttft_s_median": 0.249,
+   "aggregate_tok_s": 165.9,
+   "accept_length": 2.692,
+   "errors": []
+  },
+  {
+   "phase": "long-c1",
+   "concurrency": 1,
+   "requests": 4,
+   "decode_tok_s_median": 49.85,
+   "decode_tok_s_all": [
+    48.08,
+    48.36,
+    49.85,
+    58.71
+   ],
+   "ttft_s_median": 0.516,
+   "aggregate_tok_s": 49.4,
+   "accept_length": 2.88,
+   "errors": []
+  },
+  {
+   "phase": "long-c4",
+   "concurrency": 4,
+   "requests": 8,
+   "decode_tok_s_median": 37.34,
+   "decode_tok_s_all": [
+    35.67,
+    36.35,
+    37.22,
+    37.23,
+    37.34,
+    37.99,
+    39.77,
+    44.43
+   ],
+   "ttft_s_median": 1.753,
+   "aggregate_tok_s": 137.9,
+   "accept_length": 2.689,
+   "errors": []
+  }
+ ]
+}

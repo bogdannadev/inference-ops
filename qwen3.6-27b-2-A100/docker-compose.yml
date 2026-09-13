@@ -1,7 +1,7 @@
 # =============================================================================
 # QWEN3.8-27B BF16 — SGLANG PATTERN A
-# 2× TP=1 replicas + cache-aware router + EAGLE (MTP) speculative decoding
-# + HiCache + Caddy edge gateway + segmented networks
+# 2× TP=1 replicas + cache-aware router + DFlash2 speculative decoding
+# + HiCache (host-RAM KV tier) + Caddy edge gateway + segmented networks
 #
 # NAMES ARE DELIBERATELY STALE. Containers, networks, the router, the Caddy
 # upstream and --served-model-name all still read `qwen36-27b` after the
@@ -28,30 +28,53 @@
 #     lateral-movement hardening).
 #   - Only Caddy publishes host ports (80/443)
 #
-# HiCache:
-#   REMOVED 2026-07-31. It worked — it just never got used. Measured on the
-#   live replicas after 2 days of production traffic:
-#     cached_tokens device   r0 7,496,896   r1 8,026,048
-#     cached_tokens host     r0    32,768   r1    34,816   -> 0.43% of hits
-#   Root cause: one shared system prompt stays permanently hot in the
-#   160,768-token DEVICE tier and is never evicted, so the ~1.95M-token host
-#   tier is written on every miss and read almost never. Cost of that 0.43%:
-#   ~253 GiB RSS per replica (506 GiB total) and ~4m10s added to every boot.
+# HiCache + DFlash2 — APPLIED 2026-09-13. Full record, measurements and the
+# memory walk that produced these numbers: tuning/docs/HICACHE_DFLASH2.md
 #
-#   The 36x TTFT win (16K prompt, 12.278s cold -> 0.338s warm) is the DEVICE
-#   radix tree, which is a separate mechanism and is UNAFFECTED —
-#   disable_radix_cache stays False and mamba_radix_cache_strategy stays
-#   extra_buffer. Removing HiCache does not remove prefix caching.
+#   --enable-hierarchical-cache --hicache-ratio 3
+#       Host-RAM tier for the radix cache (KV + Mamba states), 3x the device
+#       pool, ~52 GB pinned per replica (KV 35.9 + Mamba 10.2 + draft KV 5.6).
+#       Re-enabled because the workload
+#       changed: long agent sessions (50-140K tokens) interleave and evict each
+#       other from the 169K device pool, then recompute on their next turn.
+#       Replay of production requests: recomputed prompt tokens 4.0M -> 2.0M
+#       per day. Probe: a 45K prompt evicted from the device reloads in
+#       1.1-1.8 s instead of a 14.2 s recompute. The July removal (0.43% host
+#       hits) was a different workload: one hot system prompt, no eviction.
+#       BOOT CHECK: "Tree cache initialized ... hicache_attached=True".
 #
-#   BOOT CHECK: max_total_num_tokens must still read 160768. The KV pool is
-#   profiled before any HiCache allocation, so it should be unchanged —
-#   confirm it rather than assuming.
+#   --speculative-algorithm DFLASH, draft incoai/Qwen3.8-27B-DFlash2 (pinned
+#   revision), --speculative-num-draft-tokens 8 (the draft's block size)
+#       Replaces EAGLE/MTP 5-step. One 5-layer draft pass per step instead of
+#       five MTP passes each streaming the 2.5 GB lm_head. On r1 vs MTP:
+#       +38% single-stream, +39% c=4 short, +27% / +43% at ~55K context c=1 /
+#       c=4. Correctness gate (thinking on, concurrency 4, objective answers,
+#       cross-request leak detection) identical to MTP. Upstream #36548 /
+#       #38009 were the reason for that gate; re-run tuning/bench/spec_eval.py
+#       on any engine bump.
 #
-#   Flags removed (both replicas): --enable-hierarchical-cache,
-#   --hicache-size 128, --hicache-io-backend direct,
-#   --hicache-mem-layout page_first_direct, --hicache-write-policy write_through.
-#   Re-add only if traffic gains a large COLD working set that the device tier
-#   cannot hold — that is the workload HiCache is for.
+#   The draft costs activation headroom, so three memory flags moved with it:
+#   --speculative-draft-kv-cache-dtype fp8_e4m3
+#       The draft KV pool is sized to the full target pool and allocated from
+#       headroom, not the static budget (2.74 GB at bf16). fp8 halves it. It
+#       cannot change output: the target verifies every token.
+#   --mem-fraction-static 0.94 (was 0.92)
+#       At 0.92 the target pool fell to 143,872 tokens, below --context-length
+#       169000; 27 production requests since 2026-09-04 exceeded 143K.
+#       0.94 gives 182,528 tokens and 43 Mamba slots (same as before).
+#   --chunked-prefill-size / --max-prefill-tokens 4096 (was 16384)
+#       The first DFlash2 boot OOM'd in GDN prefill on its first 45K prompt.
+#       4096-token chunks fit; cold 45K TTFT unchanged (14.2 s both).
+#       Stress: 160K cold prompt + 3x30K decoding, twice, no OOM.
+#   BOOT CHECK: max_total_num_tokens >= 169000 (expect 182528).
+#
+#   ROLLBACK: restore the four EAGLE flags (algorithm EAGLE, num-draft-tokens
+#   6, num-steps 5, eagle-topk 1), mem-fraction 0.92, chunked/max prefill 16384;
+#   HiCache backs out by deleting its two flags. Roll one replica at a time.
+#
+# HiCache history: REMOVED 2026-07-31 after serving 0.43% of hits for 253 GiB
+# RSS per replica (--hicache-size 128 applied per pool, a sizing footgun that
+# --hicache-ratio no longer has).
 #
 # Phase 1 tuning — APPLIED TO BOTH REPLICAS 2026-07-31.
 #
@@ -114,11 +137,9 @@
 # <<<
 #
 # Speculative decoding:
-#   EAGLE against the model's bundled MTP head (mtp.safetensors), per the
-#   official Qwen3.6 cookbook. BOOT CHECK on every start (issue #29857):
-#   read the `Memory pool end` line — if the profiled max_total_num_tokens
-#   has collapsed (~50 GB VRAM stranded), drop the four --speculative-*
-#   flags and reboot clean before investigating.
+#   DFlash2 since 2026-09-13 (was EAGLE against the bundled MTP head). BOOT
+#   CHECK on every start: read the `Memory pool end` lines — the target pool
+#   must stay >= --context-length, and `available_gpu_mem` should read ~2.9 GB.
 #
 # Metrics:
 #   Observability tier lives in compose.metrics.yml — SAME project.
@@ -436,9 +457,9 @@ services:
   #                    "Input length (N tokens) exceeds the maximum allowed
   #                     length (M tokens)."
   #
-  #   prefill/decode : chunked-prefill and max-prefill aligned at 16384
-  #                    (previous 32768/16384 split meant the effective
-  #                    chunk was 16384 anyway — one number, stated once).
+  #   prefill/decode : chunked-prefill and max-prefill aligned at 4096 since
+  #                    2026-09-13 (was 16384): DFlash2 leaves less activation
+  #                    headroom and 16384-token chunks OOM'd. See the header.
   #                    --max-running-requests 4 (1 -> 2 on 2026-07-28,
   #                    2 -> 4 on 2026-07-31). Four concurrent 36K-token
   #                    requests use 144K of the 160,768-token pool; the Mamba
@@ -709,17 +730,19 @@ services:
       --dtype bfloat16
       --tp 1
       --context-length 169000
-      --mem-fraction-static 0.92
+      --mem-fraction-static 0.94
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
       --enable-session-radix-cache
+      --enable-hierarchical-cache
+      --hicache-ratio 3
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
       --page-size 64
-      --chunked-prefill-size 16384
-      --max-prefill-tokens 16384
+      --chunked-prefill-size 4096
+      --max-prefill-tokens 4096
       --max-running-requests 4
       --max-queued-requests 32
       --cuda-graph-max-bs-decode 4
@@ -740,10 +763,11 @@ services:
       --otlp-traces-endpoint otel-collector:4317
       --log-requests
       --log-requests-level 1
-      --speculative-algorithm EAGLE
-      --speculative-num-draft-tokens 6
-      --speculative-num-steps 5
-      --speculative-eagle-topk 1
+      --speculative-algorithm DFLASH
+      --speculative-draft-model-path incoai/Qwen3.8-27B-DFlash2
+      --speculative-draft-model-revision dedf8df68adfb1afeaf7b7480c0a0243108177b4
+      --speculative-num-draft-tokens 8
+      --speculative-draft-kv-cache-dtype fp8_e4m3
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
@@ -803,8 +827,8 @@ services:
     # `restart: unless-stopped` bypasses it entirely on a host reboot — so the
     # ordering evaporated exactly when it would have mattered.
     #
-    # Parallel boot is safe: separate GPUs, and with HiCache gone the host-RAM
-    # question is moot. (The old note here read "831 GB free against 128 GB of
+    # Parallel boot is safe: separate GPUs, and HiCache pins ~52 GB of host RAM
+    # per replica against ~800 GB free. (The old note here read "831 GB free against 128 GB of
     # --hicache-size per replica" and was wrong by ~2x anyway: --hicache-size
     # sizes the KV tier ONLY. The Mamba tier (128.02 GB) and draft tier (8 GB)
     # were allocated on top, for 264 GB per replica, not 128.)
@@ -854,17 +878,19 @@ services:
       --dtype bfloat16
       --tp 1
       --context-length 169000
-      --mem-fraction-static 0.92
+      --mem-fraction-static 0.94
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
       --enable-session-radix-cache
+      --enable-hierarchical-cache
+      --hicache-ratio 3
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
       --page-size 64
-      --chunked-prefill-size 16384
-      --max-prefill-tokens 16384
+      --chunked-prefill-size 4096
+      --max-prefill-tokens 4096
       --max-running-requests 4
       --max-queued-requests 32
       --cuda-graph-max-bs-decode 4
@@ -885,10 +911,11 @@ services:
       --otlp-traces-endpoint otel-collector:4317
       --log-requests
       --log-requests-level 1
-      --speculative-algorithm EAGLE
-      --speculative-num-draft-tokens 6
-      --speculative-num-steps 5
-      --speculative-eagle-topk 1
+      --speculative-algorithm DFLASH
+      --speculative-draft-model-path incoai/Qwen3.8-27B-DFlash2
+      --speculative-draft-model-revision dedf8df68adfb1afeaf7b7480c0a0243108177b4
+      --speculative-num-draft-tokens 8
+      --speculative-draft-kv-cache-dtype fp8_e4m3
       --watchdog-timeout 1200
       --api-key ${SGLANG_API_KEY}
 
