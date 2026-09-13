@@ -9,11 +9,19 @@ tuning/
     TUNING_PLAN.md          phase plan, measured baseline, ladder analysis
     KERNEL_TUNING_INFO.md   A100 SM80 + Qwen3.6-27B facts, kernel inventory
     KERNEL_TUNING_SPEC.md   what to tune, in what order, with what gates
+    HICACHE_DFLASH2.md      2026-09-13: HiCache + DFlash2 A/B, memory walk, applied config
+    PREFILL_KERNELS.md      2026-09-13: prefill custom-kernel campaign plan (checklist annotated)
+    PREFILL_KERNELS_CHECKLIST.md  the supplied BF16 prefill kernel checklist
   bench/
     capture.py              telemetry sampler + preflight (SGLang + DCGM)
     worker_ladder.py        concurrency ladder against ONE worker, no router
     compare.py              render one result, or diff two
     run_ab.sh               containerised driver
+    run_eval.sh             containerised driver for the evalkit scripts below
+    hicache_probe.py        evicted-prefix reload test (HiCache)
+    spec_eval.py            speculative-decoding correctness + speed gate
+    mem_stress.py           near-max-context memory stress
+    hicache_sim.py          replay gateway.requests through a device/host cache model
   prometheus/
     dcgm-counters.csv       custom DCGM counter set (DCP profiling fields)
     README.md               parser rules, bind-mount gotcha, nsys conflict
