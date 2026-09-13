@@ -67,6 +67,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 /alerts                     what is firing right now
 
 /newkey [name]              create a key, one tap per tier
+/connect <name>             endpoint, model, API key and limits for any client
 /opencode <name>            re-send a key's config
 /topup <name> <tokens>      add to a balance
 
