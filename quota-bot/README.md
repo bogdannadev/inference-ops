@@ -47,7 +47,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 
 ```
 /keys                       every key, its balance and tier
-/balance [name]             balances, most urgent first
+/balance [name]             left of quota, burn, limits and refill
 /key                        one key: numbers, settings, traces
 /tiers                      tier defaults and what they enforce
 /tier <name> <tier>         record a consumer's tier
@@ -56,7 +56,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 
 /usage [1h|24h|7d|30d]      tokens and reference cost per key
 /top [1h|24h|7d]            busiest keys, share and errors
-/p95 [name]                 latency per key, gateway and engine
+/p95 [name] [window]        latency per key, gateway and engine (default 24h)
 /prices                     OpenRouter and Alibaba price table
 /errors [1h|24h|7d]         error answers per key
 /trace <request-id>         find one request, end to end
@@ -90,6 +90,14 @@ well in code does not read well in a 32-column code block. The rules live on
 table holds only fixed-width label/value pairs, and the explanation goes last in
 an expandable blockquote. `/top`, `/usage`, `/errors` and the key card switch
 window by button, editing the message in place.
+
+**Check for bare `<` and `&`, not only tags.** On 2026-09-13 `/top`, `/usage`
+and low-traffic key cards stopped arriving: `<$0.01` and `<1%` are not tags to a
+tag-balance check, but Telegram parses them as one and rejects the whole
+message (`can't parse entities: Unsupported start tag`). Values that can start
+with `<` are now written `&lt;`, and a refused HTML reply is resent as plain
+text so the operator still gets the numbers. The capture check must flag any
+`<` that does not open an allowed tag and any `&` that is not an entity.
 
 To re-run the capture: start a copy of the bot with
 `TELEGRAM_API_BASE=http://<fake>:8081` and a dummy token next to a tiny HTTP
