@@ -6,10 +6,11 @@
 // quota-bot already answers "what is happening" from Telegram, but it is
 // deliberately blind to the per-request tables: it runs on `edge`, and
 // ClickHouse (gateway.requests, the access log; engine.requests, SGLang's own
-// record of every finished request) is backend-only, so /trace prints SQL for a
-// human to run instead of running it. This process is the one allowed to cross
-// that line, so an admin's client can chain "who spiked" -> "which requests" ->
-// "what did the engine do" without pasting queries between steps.
+// record of every finished request) is backend-only. This process is the one
+// allowed to cross that line, so an admin's client can chain "who spiked" ->
+// "which requests" -> "what did the engine do" without pasting queries between
+// steps — and the bot's own per-request screens are served from here too (THE
+// BOT'S READ PORT, below).
 //
 // It is NOT a second bot. Everything here is either a read, or one of the two
 // balance operations that Redis makes atomic. Key lifecycle stays in the bot —
@@ -46,6 +47,16 @@
 // this problem: they go through the gateway's quota API, which is a Redis
 // INCRBY/SET, atomic by construction. So this server does balances and the bot
 // does identity.
+//
+// THE BOT'S READ PORT (8081)
+// quota-bot shows a key's latest requests and one request end to end. It cannot
+// query ClickHouse itself (edge-only, above), so it asks here, on a second
+// listener that Caddy never proxies (Caddy targets :8080). That port serves
+// exactly two fixed, parameterised reads under /bot/ and nothing else, behind
+// BOT_READ_SECRET, which is a different secret from MCP_BEARER_TOKEN: a leaked
+// bot secret reads request metadata (ids, statuses, token counts, timings — no
+// prompts are stored anywhere) and cannot reach a single MCP tool. Unset, the
+// port answers 404 to everything.
 // =============================================================================
 
 #:sdk Microsoft.NET.Sdk.Web
@@ -105,6 +116,7 @@ var cfg = new McpConfig(
     AuditPath:      Opt("AUDIT_PATH", "/data/audit.log"),
     BotUrl:         Opt("BOT_ADMIN_URL", "http://quota-bot:8080").TrimEnd('/'),
     BotSecret:      Opt("ADMIN_API_SECRET", ""),
+    BotReadSecret:  Opt("BOT_READ_SECRET", ""),
     WritesEnabled:  Opt("MCP_WRITES_ENABLED", "true") == "true");
 
 // The token is compared in constant time, so it is hashed once here rather than
@@ -113,6 +125,21 @@ var cfg = new McpConfig(
 if (cfg.BearerToken.Length < 32)
     throw new InvalidOperationException("MCP_BEARER_TOKEN must be at least 32 characters");
 var expectedToken = SHA256.HashData(Encoding.UTF8.GetBytes(cfg.BearerToken));
+
+// The bot's read port. A short secret disables it rather than failing boot: the
+// MCP endpoint is the reason this process exists and must not go down over it.
+const int BotReadPort = 8081;
+byte[]? expectedBotToken = cfg.BotReadSecret.Length >= 32
+    ? SHA256.HashData(Encoding.UTF8.GetBytes(cfg.BotReadSecret)) : null;
+
+static bool BearerMatches(HttpContext ctx, byte[] expected)
+{
+    var auth = ctx.Request.Headers.Authorization.ToString();
+    const string scheme = "Bearer ";
+    return auth.StartsWith(scheme, StringComparison.OrdinalIgnoreCase)
+           && CryptographicOperations.FixedTimeEquals(
+                  SHA256.HashData(Encoding.UTF8.GetBytes(auth[scheme.Length..])), expected);
+}
 
 var builder = WebApplication.CreateSlimBuilder(args);
 builder.Services.AddSingleton(cfg);
@@ -168,6 +195,28 @@ app.MapGet("/healthz", () => Results.Text("ok"));
 // ---------------------------------------------------------------- gate 2 ----
 app.Use(async (ctx, next) =>
 {
+    // The two listeners never share a route. The bot port serves /bot/* behind
+    // its own secret and nothing else; the Caddy-facing port never serves /bot/*.
+    var botPort = ctx.Connection.LocalPort == BotReadPort;
+    var botPath = ctx.Request.Path.StartsWithSegments("/bot");
+    if (botPort || botPath)
+    {
+        if (!botPort || !botPath || expectedBotToken is null)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        if (!BearerMatches(ctx, expectedBotToken))
+        {
+            log.LogWarning("bot read port: unauthenticated request from {Ip}",
+                ctx.Connection.RemoteIpAddress?.ToString() ?? "?");
+            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+        await next();
+        return;
+    }
+
     if (ctx.Request.Path.StartsWithSegments("/healthz")) { await next(); return; }
 
     // Origin validation is a MUST in the transport spec. A non-browser client
@@ -183,13 +232,7 @@ app.Use(async (ctx, next) =>
         return;
     }
 
-    var auth = ctx.Request.Headers.Authorization.ToString();
-    const string scheme = "Bearer ";
-    var ok = auth.StartsWith(scheme, StringComparison.OrdinalIgnoreCase)
-             && CryptographicOperations.FixedTimeEquals(
-                    SHA256.HashData(Encoding.UTF8.GetBytes(auth[scheme.Length..])),
-                    expectedToken);
-    if (!ok)
+    if (!BearerMatches(ctx, expectedToken))
     {
         log.LogWarning("unauthenticated request from {Ip}",
             ctx.Connection.RemoteIpAddress?.ToString() ?? "?");
@@ -202,6 +245,57 @@ app.Use(async (ctx, next) =>
 
 app.MapMcp("/mcp");
 
+// ------------------------------------------------------- bot read port ----
+// Rows as JSON objects of raw ClickHouse value text (null for SQL NULL); the bot
+// parses and formats. Built as JsonObject and written as text, as in quota-bot's
+// /admin/*: Results.Json with an anonymous type fails the AOT build (IL2026).
+static JsonArray RowsJson(List<Dictionary<string, string?>> rows)
+{
+    var arr = new JsonArray();
+    foreach (var row in rows)
+    {
+        var o = new JsonObject();
+        foreach (var (k, v) in row) o[k] = v is null ? null : JsonValue.Create(v);
+        arr.Add((JsonNode)o);
+    }
+    return arr;
+}
+
+static IResult JsonText(JsonObject o, int status = 200) =>
+    Results.Text(o.ToJsonString(), "application/json", null, status);
+
+static IResult ReadFailed(string error) => JsonText(new JsonObject { ["error"] = error }, 502);
+
+app.MapGet("/bot/requests/{consumer}", async (string consumer, int? limit, Backends b,
+    IHttpClientFactory http, CancellationToken ct) =>
+{
+    if (!Backends.SafeName(consumer)) return Results.NotFound();
+    KeyValuePair<string, string>[] ps = [
+        new("consumer", consumer),
+        new("hours", "168"),
+        new("lim", Math.Clamp(limit ?? 10, 1, 50).ToString(CultureInfo.InvariantCulture)),
+    ];
+    var (rows, error) = await b.ChRowsAsync(http, RequestSql.KeyLatest, ps, ct);
+    return error is not null ? ReadFailed(error)
+        : JsonText(new JsonObject { ["rows"] = RowsJson(rows) });
+});
+
+app.MapGet("/bot/request/{requestId}", async (string requestId, Backends b,
+    IHttpClientFactory http, CancellationToken ct) =>
+{
+    if (!RequestSql.PlausibleId(requestId)) return Results.NotFound();
+    KeyValuePair<string, string>[] ps = [new("rid", requestId)];
+    var gwT = b.ChRowsAsync(http, RequestSql.GatewayRow, ps, ct);
+    var enT = b.ChRowsAsync(http, RequestSql.EngineRow, ps, ct);
+    await Task.WhenAll(gwT, enT);
+    if ((gwT.Result.Error ?? enT.Result.Error) is { } error) return ReadFailed(error);
+    return JsonText(new JsonObject
+    {
+        ["gateway"] = RowsJson(gwT.Result.Rows),
+        ["engine"] = RowsJson(enT.Result.Rows),
+    });
+});
+
 log.LogInformation("admin-mcp listening; writes={Writes} origins={Origins}",
     cfg.WritesEnabled, string.Join(",", cfg.AllowedOrigins));
 app.Run();
@@ -213,7 +307,65 @@ sealed record McpConfig(
     string BearerToken, HashSet<string> AllowedOrigins,
     string PrometheusUrl, string ClickHouseUrl, string ClickHouseUser, string ClickHousePass,
     string GatewayUrl, string AdminCredential,
-    string AuditPath, string BotUrl, string BotSecret, bool WritesEnabled);
+    string AuditPath, string BotUrl, string BotSecret, string BotReadSecret, bool WritesEnabled);
+
+// Per-request SQL used by both an MCP tool and the bot's read port, so the two
+// cannot drift. Literals with bound parameters only, like every query here.
+static class RequestSql
+{
+    public static bool PlausibleId(string id) =>
+        id.Length is >= 8 and <= 64 && id.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
+
+    public const string GatewayRow = """
+        SELECT ts, consumer, route, model, status, duration_ms, llm_ms,
+               input_tokens, output_tokens, total_tokens, response_flags, chat_id, chat_round
+        FROM gateway.requests FINAL
+        WHERE request_id = {rid:String}
+        """;
+
+    // The engine side is bounded to the hour around the request (the gateway
+    // allows 900 s), so the join never reads the whole table.
+    public const string EngineRow = """
+        SELECT e.finished_at, e.received_at, e.replica, e.is_streaming,
+               e.prompt_tokens, e.completion_tokens, e.cached_device, e.cached_host,
+               e.queue_s, e.ttft_s, e.prefill_s, e.decode_s, e.e2e_s,
+               e.finish_type, e.num_retractions, e.rid
+        FROM gateway.requests AS g FINAL
+        INNER JOIN (
+            SELECT * FROM engine.requests FINAL
+            WHERE finished_at >= (SELECT min(ts) FROM gateway.requests WHERE request_id = {rid:String}) - INTERVAL 1 MINUTE
+              AND finished_at <= (SELECT max(ts) FROM gateway.requests WHERE request_id = {rid:String}) + INTERVAL 1 HOUR
+        ) AS e ON e.rid = g.chat_id
+        WHERE g.request_id = {rid:String} AND g.chat_id != ''
+        """;
+
+    // A key's latest completion requests, each with its engine record when there
+    // is one. /v1/models is left out: clients poll it and it would bury the
+    // requests that cost anything. A LEFT JOIN miss leaves e.rid empty (String
+    // is not Nullable) and the Nullable engine columns NULL.
+    public const string KeyLatest = """
+        SELECT g.ts, g.request_id, g.route, g.status, g.duration_ms,
+               g.input_tokens, g.output_tokens, g.response_flags,
+               e.rid, e.replica, e.cached_device, e.cached_host, e.ttft_s, e.e2e_s, e.finish_type
+        FROM (
+            SELECT ts, request_id, route, status, duration_ms, input_tokens, output_tokens,
+                   response_flags, chat_id
+            FROM gateway.requests FINAL
+            WHERE consumer = {consumer:String}
+              AND route != 'ai-models'
+              AND ts > now() - INTERVAL {hours:UInt32} HOUR
+            ORDER BY ts DESC
+            LIMIT {lim:UInt32}
+        ) AS g
+        LEFT JOIN (
+            SELECT rid, replica, cached_device, cached_host, ttft_s, e2e_s, finish_type
+            FROM engine.requests FINAL
+            WHERE consumer = {consumer:String}
+              AND finished_at > now() - INTERVAL {hours:UInt32} HOUR - INTERVAL 1 HOUR
+        ) AS e ON e.rid = g.chat_id
+        ORDER BY g.ts DESC
+        """;
+}
 
 // Query helpers shared by the tool classes. Everything a tool needs to reach
 // lives here so the tools themselves stay readable.
@@ -644,32 +796,11 @@ sealed class ReadTools
         [Description("The x-request-id the gateway minted for the request.")] string requestId,
         CancellationToken ct)
     {
-        if (requestId.Length is < 8 or > 64
-            || !requestId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-'))
+        if (!RequestSql.PlausibleId(requestId))
             return $"Not a plausible request id: {Backends.Trim(requestId, 60)}";
 
-        var fact = await b.ChSafeAsync(http, """
-            SELECT ts, consumer, route, model, status, duration_ms, llm_ms,
-                   input_tokens, output_tokens, total_tokens, response_flags, chat_id, chat_round
-            FROM gateway.requests FINAL
-            WHERE request_id = {rid:String}
-            """, [new("rid", requestId)], ct);
-
-        // The engine side is bounded to the hour around the request (the gateway
-        // allows 900 s), so the join never reads the whole table.
-        var engine = await b.ChSafeAsync(http, """
-            SELECT e.finished_at, e.received_at, e.replica, e.is_streaming,
-                   e.prompt_tokens, e.completion_tokens, e.cached_device, e.cached_host,
-                   e.queue_s, e.ttft_s, e.prefill_s, e.decode_s, e.e2e_s,
-                   e.finish_type, e.num_retractions, e.rid
-            FROM gateway.requests AS g FINAL
-            INNER JOIN (
-                SELECT * FROM engine.requests FINAL
-                WHERE finished_at >= (SELECT min(ts) FROM gateway.requests WHERE request_id = {rid:String}) - INTERVAL 1 MINUTE
-                  AND finished_at <= (SELECT max(ts) FROM gateway.requests WHERE request_id = {rid:String}) + INTERVAL 1 HOUR
-            ) AS e ON e.rid = g.chat_id
-            WHERE g.request_id = {rid:String} AND g.chat_id != ''
-            """, [new("rid", requestId)], ct);
+        var fact = await b.ChSafeAsync(http, RequestSql.GatewayRow, [new("rid", requestId)], ct);
+        var engine = await b.ChSafeAsync(http, RequestSql.EngineRow, [new("rid", requestId)], ct);
 
         var sb = new StringBuilder("== gateway.requests (billing-grade) ==\n");
         // The result always carries its header line; a match adds a second.

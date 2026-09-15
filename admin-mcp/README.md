@@ -7,9 +7,9 @@ An MCP server for operating this inference node from an admin's Claude client.
 `quota-bot` already answers "what is happening" from Telegram, and it is
 deliberately blind to the per-request tables: it runs on `edge`, ClickHouse
 (`gateway.requests`, the access log; `engine.requests`, SGLang's own record of
-every finished request) is backend-only, and so `/trace` prints SQL for a human
-to run rather than running it. That was the right call
-for a bot reachable from a public Telegram webhook.
+every finished request) is backend-only. That is the right call for a bot
+reachable from a public Telegram webhook. The bot's per-request screens are
+served from here instead — see *The bot's read port* below.
 
 This process is the one allowed to cross that line. What it buys is not another
 copy of the bot's commands — it is investigation that chains: *who spiked* →
@@ -75,6 +75,23 @@ only on `edge`, and is never published by Caddy.
 else — which reads exactly like an auth failure and is not one. The field names
 also differ between endpoints: `/quota/refresh` takes `quota`, `/quota/delta`
 takes `value`. Both cost a debugging round here.
+
+### The bot's read port
+
+A second listener, `:8081`, exists only for quota-bot's **Requests** screen and
+`/trace`. Caddy proxies `admin-mcp:8080` and nothing else, and the port is not
+published, so it is reachable only from `edge`.
+
+- Two routes, both GET, both fixed SQL with bound parameters (`RequestSql` in
+  `mcp.cs`, shared with `request_detail` so the two cannot drift):
+  `/bot/requests/{consumer}?limit=N` (latest completion requests over 7 days,
+  each LEFT JOINed to its engine record) and `/bot/request/{request_id}`.
+- Gated by `BOT_READ_SECRET`, deliberately **not** `MCP_BEARER_TOKEN`: a leaked
+  bot secret reads request metadata — ids, statuses, token counts, timings; no
+  prompts are stored anywhere — and cannot call a single MCP tool. Under 32
+  characters or unset, the port answers 404 to everything.
+- The listeners never share a route: `/bot/*` on `:8080` is 404, anything but
+  `/bot/*` on `:8081` is 404.
 
 ## Tools
 

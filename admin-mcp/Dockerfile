@@ -39,8 +39,8 @@ FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled AS final
 WORKDIR /app
 COPY --from=build /out/ ./
 
-ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
+ENV ASPNETCORE_URLS="http://0.0.0.0:8080;http://0.0.0.0:8081" \
     DOTNET_gcServer=0
 
-EXPOSE 8080
+EXPOSE 8080 8081
 ENTRYPOINT ["/app/mcp"]

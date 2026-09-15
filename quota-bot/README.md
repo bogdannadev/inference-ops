@@ -362,12 +362,16 @@ arguments: the consumer list *is* the interface. Tap a name, get its numbers;
 tap again for its per-request records, or for a written report.
 `/trace` with no argument lands on the same picker.
 
-The card reads Prometheus only. That is a limit, not an oversight — this bot
-runs on `edge`, and ClickHouse is backend-only, because an internet-reachable
-bot with a route to the worker ports is a worse trade than an operator pasting
-one SQL query. So *statistics* are answered here in full, and *one request* is
-answered with the query (`/trace <request-id>` joins the gateway row to the
-engine row on `chat_id = rid`); admin-mcp runs the same queries.
+The card reads Prometheus. Per-request records come from ClickHouse, which
+this bot still cannot reach: it runs on `edge`, ClickHouse is backend-only, and
+an internet-reachable bot with a route to the worker ports is the wrong trade.
+So **Requests** on the card (the key's latest 10, each with its engine record)
+and `/trace <request-id>` (one request, gateway row joined to engine row on
+`chat_id = rid`) ask **admin-mcp's bot read port** — `:8081`, never proxied by
+Caddy, two fixed parameterised reads behind `BOT_READ_SECRET`, which is shared
+by both `.env` files and is not the MCP bearer. The bot shows the rows, never a
+query to paste. Without the secret those screens say the records are not
+connected.
 
 Balance and runway come from the ledger; requests, tokens, engine p95, first
 token, decode speed, cache split and the replica split from the engine's

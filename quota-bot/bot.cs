@@ -130,6 +130,11 @@ var cfg = new BotConfig(
     // unset means those endpoints are not mapped at all, which is the right
     // default for an install that has no MCP server in front of it.
     AdminApiSecret:  Opt("ADMIN_API_SECRET", ""),
+    // admin-mcp's bot read port: a key's latest requests and one request end
+    // to end, from ClickHouse, which this edge-only process cannot reach.
+    // Unset secret means those screens say the records are unavailable.
+    RecordsUrl:      Opt("ADMIN_MCP_READ_URL", "http://admin-mcp:8081").TrimEnd('/'),
+    RecordsSecret:   Opt("BOT_READ_SECRET", ""),
     AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
     AlertChatIds:    alertChatIds);
 
@@ -262,6 +267,15 @@ builder.Services.AddHttpClient("prometheus", c =>
 {
     c.BaseAddress = new Uri(cfg.PrometheusUrl + "/");
     c.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddHttpClient("records", c =>
+{
+    c.BaseAddress = new Uri(cfg.RecordsUrl + "/");
+    // Above admin-mcp's own 25 s ClickHouse cap plus its hop, so a slow query
+    // surfaces as its error text rather than as our timeout.
+    c.Timeout = TimeSpan.FromSeconds(30);
+    if (cfg.RecordsSecret.Length > 0)
+        c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer " + cfg.RecordsSecret);
 });
 // Public price API, read once a day by PriceBook. Short timeout: a command
 // that happens to trigger the refresh should not hang on it.
@@ -1082,8 +1096,8 @@ sealed class Worker(
             // this consumer", not a request id they would have to go and find
             // first. Falling back to the picker beats a usage hint.
             "/trace"      => a1 is null ? await KeyPickerAsync(ct)
-                           : (await keys.ReadConsumersAsync(ct)).ContainsKey(a1) ? KeyTraceCard(a1)
-                           : new Reply(TraceHelp(a1)),
+                           : (await keys.ReadConsumersAsync(ct)).ContainsKey(a1) ? await KeyRequestsCardAsync(a1, ct)
+                           : await TraceRequestAsync(a1, ct),
             "/tier"       => (a1 is null || a2 is null)
                                  ? new Reply(Usage("/tier &lt;name&gt; &lt;trial|team|service|batch|admin&gt;", "/tier acme service"))
                                  : await TierAsync(a1, a2, ct),
@@ -2043,14 +2057,75 @@ sealed class Worker(
     private Task QuotaSetAsync(string name, long value, CancellationToken ct) =>
         QuotaApi.SetAsync(http, name, value, ct);
 
-    // ---- per-request lookups -----------------------------------------------
+    // ---- per-request records -------------------------------------------------
     //
-    // Deliberately queries to paste, not lookups. Both per-request tables —
-    // gateway.requests (the access log: status, charge, request id) and
-    // engine.requests (SGLang's record: cache split, timings, replica) — live
-    // in ClickHouse, which is backend-only, and this bot runs on `edge`.
-    // admin-mcp can run them.
-    private static string TraceHelp(string requestId)
+    // Real rows, never SQL to paste. Both per-request tables — gateway.requests
+    // (the access log: status, charge, request id) and engine.requests
+    // (SGLang's record: cache split, timings, replica) — live in ClickHouse,
+    // which is backend-only, and this bot stays edge-only. admin-mcp is
+    // dual-homed and serves exactly these two reads on its bot port (:8081,
+    // never proxied by Caddy) behind BOT_READ_SECRET. The SQL lives there, in
+    // RequestSql, shared with its MCP tools.
+    //
+    // The join is exact: the gateway logs the response's `id` as chat_id, and
+    // SGLang sets that id to its own request id, which is engine.requests.rid.
+    private async Task<(JsonObject? Body, string? Error)> RecordsAsync(string path, CancellationToken ct)
+    {
+        if (cfg.RecordsSecret.Length < 32)
+            return (null, "Per-request records are not connected: BOT_READ_SECRET is unset.");
+        try
+        {
+            using var r = await http.CreateClient("records").GetAsync(path, ct);
+            var text = await r.Content.ReadAsStringAsync(ct);
+            var node = r.Content.Headers.ContentType?.MediaType == "application/json"
+                ? JsonNode.Parse(text) as JsonObject : null;
+            if (r.IsSuccessStatusCode && node is not null) return (node, null);
+            return (null, node?["error"] is JsonValue ev && ev.TryGetValue<string>(out var e)
+                ? "Records query failed: " + (e.Length > 200 ? e[..200] + "…" : e)
+                : $"Records service answered HTTP {(int)r.StatusCode}.");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogWarning(ex, "records read failed: {Path}", path);
+            return (null, "Records service (admin-mcp) is unreachable.");
+        }
+    }
+
+    // Row values arrive as ClickHouse's value text, or JSON null for SQL NULL.
+    private static string? Col(JsonNode? row, string k) =>
+        row?[k] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    private static double? ColNum(JsonNode? row, string k) =>
+        double.TryParse(Col(row, k), NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
+        && double.IsFinite(d) ? d : null;
+
+    // "13 Sep 17:28:03", UTC. The year is noise on a screen of recent requests.
+    private static string When(string? ts) =>
+        DateTime.TryParseExact(ts, "yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture,
+                               DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var t)
+            ? t.ToString("d MMM HH:mm:ss", CultureInfo.InvariantCulture)
+            : Esc(ts ?? "—");
+
+    // Same glyphs as /errors, with the refusal named: a bare code sends the
+    // operator off to look up which plugin answers what.
+    private static string StatusText(int status) => status switch
+    {
+        0 => "✂️ closed early",
+        >= 200 and < 300 => $"✅ {status}",
+        401 => "⛔ 401 bad key",
+        403 => "⛔ 403 no balance",
+        422 => "⚠️ 422 max_tokens",
+        429 => "⏳ 429 rate limited",
+        >= 500 => $"\U0001f534 {status}",
+        _ => $"⚠️ {status}",
+    };
+
+    // One label/value line of a <pre> block: 28 columns, inside Fmt.PhoneCols.
+    private static string Kv(string label, string value) => $"{label,-16}{value,12}\n";
+
+    private static string NumOrDash(double? v) => v is { } d ? Fmt.Num(d) : "—";
+
+    private async Task<Reply> TraceRequestAsync(string requestId, CancellationToken ct)
     {
         // Cheap sanity check. A mistyped id produces an empty result, which
         // reads like "the request did not happen" rather than "you typed it
@@ -2058,30 +2133,62 @@ sealed class Worker(
         var looksLikeId = requestId.Length is >= 8 and <= 64
             && requestId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
         if (!looksLikeId)
-            return $"<code>{Esc(Head(requestId))}</code> is neither a key name nor a request id.\n\n"
-                 + "A request id is the x-request-id the gateway mints per request, a UUID: the "
-                 + "<code>request_id</code> column of gateway.requests.";
+            return new Reply($"<code>{Esc(Head(requestId))}</code> is neither a key name nor a request id.\n\n"
+                 + "A request id is the UUID the gateway gives each request. /key → a consumer → Requests lists the latest ones.");
 
-        var id = Esc(requestId);
-        // The join key is exact: the gateway logs the response's `id` as
-        // chat_id, and SGLang sets that id to its own request id (meta_info.id,
-        // streamed or not), which is engine.requests.rid. Verified on every
-        // charged request since the exporter went live (2026-09-15), including
-        // two identical requests 400 ms apart that a token-and-time match could
-        // not tell apart. Laid out for a phone: short lines, the id on its own.
-        return $"\U0001f50e <b>Request</b>\n<code>{id}</code>\n\n"
-             + "<b>1 · At the gateway</b> — ClickHouse on the host\n"
-             + "<pre>SELECT *\nFROM gateway.requests FINAL\nWHERE request_id =\n  '" + id + "';</pre>\n"
-             + "Consumer, status, tokens charged, latency.\n\n"
-             + "<b>2 · Inside the engine</b>\n"
-             + "<pre>SELECT e.*\nFROM gateway.requests\n  AS g FINAL\nJOIN engine.requests\n  AS e FINAL\n"
-             + "  ON e.rid = g.chat_id\nWHERE g.request_id =\n  '" + id + "';</pre>\n"
-             + "Replica, cache split (GPU and HiCache), queue, first token, decode time, finish reason."
-             + Fmt.Note(
-                 "<b>The key</b>: the gateway records the response id as <code>chat_id</code>, and the engine "
-               + "uses its own request id as that response id, so the two rows join exactly.\n\n"
-               + "A request cut off before its response (client disconnect) has no <code>chat_id</code> and no "
-               + "engine row: SGLang writes no record for a request whose client went away.");
+        var sb = new StringBuilder($"\U0001f50e <b>Request</b>\n<code>{Esc(requestId)}</code>\n");
+        var (body, error) = await RecordsAsync($"bot/request/{Uri.EscapeDataString(requestId)}", ct);
+        if (error is not null) return new Reply(sb.Append($"\n⚠️ {Esc(error)}").ToString());
+
+        var g = body?["gateway"] is JsonArray { Count: > 0 } ga ? ga[0] : null;
+        if (g is null)
+            return new Reply(sb.Append("\nNo request with this id at the gateway.\n\n"
+                + "Only traffic through the gateway is recorded; the direct hostname is not.").ToString());
+        var e = body?["engine"] is JsonArray { Count: > 0 } ea ? ea[0] : null;
+        var status = (int)(ColNum(g, "status") ?? -1);
+
+        sb.Append($"\n<b>{Esc(Col(g, "consumer") ?? "?")}</b> · {StatusText(status)}\n")
+          .Append($"{When(Col(g, "ts"))} UTC\n<pre>")
+          .Append(Kv("input", NumOrDash(ColNum(g, "input_tokens"))))
+          .Append(Kv("output", NumOrDash(ColNum(g, "output_tokens"))))
+          .Append(Kv("charged", NumOrDash(ColNum(g, "total_tokens"))))
+          .Append(Kv("gateway time", Fmt.Secs(ColNum(g, "duration_ms") / 1000)));
+        if (Col(g, "response_flags") is { Length: > 0 } flags && flags != "-")
+            sb.Append(Kv("envoy flags", Esc(flags)));
+        sb.Append("</pre>");
+
+        if (e is not null)
+        {
+            var prompt = ColNum(e, "prompt_tokens");
+            var dev = ColNum(e, "cached_device");
+            var host = ColNum(e, "cached_host");
+            sb.Append($"\n<b>Inside the engine</b> · {Esc(Col(e, "replica") ?? "?")} · {Esc(Col(e, "finish_type") ?? "?")}\n<pre>")
+              .Append(Kv("cached on GPU", NumOrDash(dev)))
+              .Append(Kv("cached HiCache", NumOrDash(host)))
+              .Append(Kv("computed", prompt is { } p && dev is { } d && host is { } h ? Fmt.Num(Math.Max(0, p - d - h)) : "—"))
+              .Append(Kv("queue", Fmt.Secs(ColNum(e, "queue_s"))))
+              .Append(Kv("first token", Fmt.Secs(ColNum(e, "ttft_s"))))
+              .Append(Kv("prefill", Fmt.Secs(ColNum(e, "prefill_s"))))
+              .Append(Kv("decode", Fmt.Secs(ColNum(e, "decode_s"))))
+              .Append(Kv("engine total", Fmt.Secs(ColNum(e, "e2e_s"))))
+              .Append(Kv("retractions", NumOrDash(ColNum(e, "num_retractions"))))
+              .Append("</pre>");
+        }
+        else
+        {
+            sb.Append('\n').Append(status switch
+            {
+                0 => "No engine record: the client closed the connection before the response, and SGLang writes none for that.",
+                >= 200 and < 300 => "No engine record: requests before 2026-09-13 19:46 UTC have none, and neither do the gateway's own quota calls.",
+                _ => "Refused before the engine, so there is no engine record.",
+            });
+        }
+
+        return new Reply(sb.ToString() + Fmt.Note(
+            "Times are UTC. <b>charged</b> is what the balance was debited. <b>gateway time</b> is the whole "
+          + "request as the gateway saw it; <b>engine total</b> is SGLang's part of it. <b>Cached</b> input was "
+          + "not recomputed: GPU prefix hits are nearly free, HiCache hits are reloaded from host RAM. "
+          + "The two records are joined exactly: the gateway logs the response id, which is the engine's request id."));
     }
 
     // ---- /key: pick a consumer, then read it --------------------------------
@@ -2153,7 +2260,7 @@ sealed class Worker(
         return kind switch
         {
             "kc:" => await KeyCardAsync(rest, window, ct),
-            "kt:" => KeyTraceCard(rest),
+            "kt:" => await KeyRequestsCardAsync(rest, ct),
             "kr:" => KeyReportStart(rest, chatId, ct),
             "kp:" => await PolicyCardAsync(rest, null, ct),
             "kx:" => await ConnectAsync(rest, ct),
@@ -2398,29 +2505,49 @@ sealed class Worker(
         return new Reply(sb.ToString(), keyboard);
     }
 
-    // A key's requests, newest first, from both per-request tables. Queries to
-    // paste — see "per-request lookups" above for why the bot does not run them.
-    private static Reply KeyTraceCard(string name)
+    // A key's latest requests, newest first, each with its engine record when
+    // there is one. Real rows from admin-mcp — see "per-request records" above.
+    private async Task<Reply> KeyRequestsCardAsync(string name, CancellationToken ct)
     {
-        var n = Esc(name);
-        var text =
-            $"\U0001f50e <b>{n}</b> · its requests\n\n"
-          + "<b>Inside the engine</b>, latest 20 — ClickHouse on the host:\n"
-          + "<pre>SELECT finished_at, rid,\n  replica,\n  prompt_tokens AS inp,\n  completion_tokens AS out,\n"
-          + "  cached_device AS gpu,\n  cached_host AS hicache,\n  ttft_s, e2e_s,\n  finish_type\n"
-          + $"FROM engine.requests FINAL\nWHERE consumer =\n  '{n}'\nORDER BY finished_at DESC\nLIMIT 20;</pre>\n"
-          + "<b>At the gateway</b> — status, charge, request id:\n"
-          + $"<pre>SELECT ts, request_id,\n  status, total_tokens,\n  duration_ms, chat_id\nFROM gateway.requests FINAL\nWHERE consumer =\n  '{n}'\nORDER BY ts DESC\nLIMIT 20;</pre>\n"
-          + "Run /trace &lt;request-id&gt; for one request on both sides.";
+        var keyboard = new InlineKeyboardMarkup([[new InlineKeyboardButton("← Key card", $"kc:24h:{name}")]]);
+        var sb = new StringBuilder($"\U0001f50e <b>{Esc(name)}</b> · latest requests\n");
 
-        var notes = "gpu and hicache are the prompt tokens served from each cache tier; the rest was computed. "
-                  + "A gateway row's chat_id is its engine row's rid. "
-                  + "Rows before 2026-09-14 were copied from the gateway log and have tokens only.\n\n"
-                  + "This bot cannot run the queries itself: it is on the edge network and ClickHouse is "
-                  + "backend-only, deliberately. admin-mcp can.";
+        var (body, error) = await RecordsAsync($"bot/requests/{Uri.EscapeDataString(name)}?limit=10", ct);
+        if (error is not null) return new Reply(sb.Append($"\n⚠️ {Esc(error)}").ToString(), keyboard);
+        if (body?["rows"] is not JsonArray { Count: > 0 } rows)
+            return new Reply(sb.Append("\nNo requests in the last 7 days.").ToString(), keyboard);
 
-        return new Reply(text + Fmt.Note(notes),
-            new InlineKeyboardMarkup([[new InlineKeyboardButton("← Key card", $"kc:24h:{name}")]]));
+        foreach (var row in rows)
+        {
+            var status = (int)(ColNum(row, "status") ?? -1);
+            var input = ColNum(row, "input_tokens") ?? 0;
+            var output = ColNum(row, "output_tokens") ?? 0;
+            sb.Append($"\n<b>{When(Col(row, "ts"))}</b> · {StatusText(status)}\n")
+              .Append($"{Fmt.Num(input)} in · {Fmt.Num(output)} out · {Fmt.Secs(ColNum(row, "duration_ms") / 1000)}");
+            if (Col(row, "response_flags") is { Length: > 0 } flags && flags != "-")
+                sb.Append($" · {Esc(flags)}");
+            sb.Append('\n');
+
+            // e.rid is empty when the LEFT JOIN found no engine record.
+            if (Col(row, "rid") is { Length: > 0 })
+            {
+                var parts = new List<string> { Esc(Col(row, "replica") ?? "?") };
+                if (ColNum(row, "cached_device") is { } dev && ColNum(row, "cached_host") is { } host && input >= 1)
+                    parts.Add($"cache {Fmt.Pct((dev + host) / input)}");
+                if (ColNum(row, "ttft_s") is { } ttft) parts.Add($"first token {Fmt.Secs(ttft)}");
+                if (Col(row, "finish_type") is { Length: > 0 } fin && fin != "unknown") parts.Add(Esc(fin));
+                sb.Append(string.Join(" · ", parts)).Append('\n');
+            }
+            sb.Append($"<code>{Esc(Col(row, "request_id") ?? "")}</code>\n");
+        }
+
+        sb.Append("\nTap an id to copy it, then send /trace &lt;id&gt; for that request in full.");
+        return new Reply(sb.ToString() + Fmt.Note(
+            "Newest first, last 7 days, times UTC. /v1/models calls are left out. <b>in</b> and <b>out</b> are "
+          + "the tokens charged; the time is the whole request at the gateway. The line under it is the engine's "
+          + "record: replica, the share of input served from cache (GPU or HiCache), time to first token and "
+          + "why generation stopped. A request without one was refused before the engine, closed early, or is "
+          + "from before 2026-09-13 19:46 UTC."), keyboard);
     }
 
     // ---- the written report -------------------------------------------------
@@ -5187,7 +5314,8 @@ sealed record BotConfig(
     string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int OutputLimit,
-    string AlertSecret, string AdminApiSecret, string AlertmanagerUrl, HashSet<long> AlertChatIds);
+    string AlertSecret, string AdminApiSecret, string RecordsUrl, string RecordsSecret,
+    string AlertmanagerUrl, HashSet<long> AlertChatIds);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<Reply>> Run);

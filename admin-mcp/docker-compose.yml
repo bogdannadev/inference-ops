@@ -43,7 +43,10 @@ services:
       - .env
 
     environment:
-      - ASPNETCORE_URLS=http://0.0.0.0:8080
+      # :8080 is the MCP endpoint, the only port Caddy proxies. :8081 is the
+      # bot's read port (two fixed reads behind BOT_READ_SECRET) — reachable
+      # from quota-bot on `edge` and never published or proxied. See mcp.cs.
+      - ASPNETCORE_URLS=http://0.0.0.0:8080;http://0.0.0.0:8081
       - DOTNET_gcServer=0
       - DOTNET_GCConserveMemory=5
       - DOTNET_gcConcurrent=0
