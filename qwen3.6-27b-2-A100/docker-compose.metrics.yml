@@ -397,7 +397,7 @@ services:
       # The clickhouse user, not a dedicated one. That instance's admin user
       # lacks ACCESS MANAGEMENT, so minting a least-privilege INSERT-only user
       # needs an XML users.d file and a ClickHouse restart. Worth doing; not
-      # worth a restart of the trace store today.
+      # done yet.
       CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
 
     volumes:
@@ -405,6 +405,11 @@ services:
       # The gateway's log, owned by the higress compose project. Read-only:
       # Vector must never be able to truncate or delete the source of record.
       - ../higress-standalone/compose/volumes/gateway/log:/var/log/proxy:ro
+      # SGLang per-request usage records (--export-metrics-to-file), one dir per
+      # replica. Read-WRITE only so the file source can delete a file 3 days
+      # after reading it (remove_after_secs); the rows are in ClickHouse by then.
+      - ./logs/r0/request-metrics:/var/log/sglang/r0
+      - ./logs/r1/request-metrics:/var/log/sglang/r1
       # Checkpoints AND the disk buffer. Must be a named volume, not tmpfs: a
       # checkpoint that does not survive a restart means re-reading the whole
       # file, and a buffer that does not survive means losing whatever was
@@ -414,11 +419,11 @@ services:
     command:
       - --config=/etc/vector/vector.yaml
 
-    # Documentation, not a requirement — Prometheus reaches this over the
-    # backend network. 9598 is the per-consumer aggregate exporter; 8686 is
-    # Vector's own GraphQL API, used by the healthcheck.
+    # Documentation, not a requirement. 8686 is Vector's own GraphQL API, used
+    # by the healthcheck. (9598, the per-consumer counter exporter, was removed
+    # 2026-09-15: per-consumer numbers are exact sums from ClickHouse now,
+    # scraped by Prometheus job engine-usage.)
     expose:
-      - "9598"
       - "8686"
 
     # NOT `vector top` — that is an interactive TUI and exits 74 with
@@ -487,7 +492,7 @@ services:
     # on `higressint`. If that changes, use --redis.password-file rather than
     # putting a credential in this file.
 
-    # No healthcheck, deliberately — the same reason as otel-collector below.
+    # No healthcheck, deliberately.
     # The image is built FROM scratch: no shell, no wget, so CMD-SHELL cannot
     # run and CMD has nothing to exec. (Tried it: the container ran fine while
     # reporting `unhealthy`, with "exec: wget: executable file not found".)

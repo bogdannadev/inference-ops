@@ -66,6 +66,44 @@
         "definition": "label_values(consumer:quota_balance:tokens, ai_consumer)",
         "regex": "",
         "skipUrlSync": false
+      },
+      {
+        "name": "window",
+        "label": "Window",
+        "type": "custom",
+        "query": "1h,24h,7d,30d",
+        "current": {
+          "selected": true,
+          "text": "24h",
+          "value": "24h"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": true,
+            "text": "24h",
+            "value": "24h"
+          },
+          {
+            "selected": false,
+            "text": "7d",
+            "value": "7d"
+          },
+          {
+            "selected": false,
+            "text": "30d",
+            "value": "30d"
+          }
+        ],
+        "hide": 0,
+        "multi": false,
+        "includeAll": false,
+        "skipUrlSync": false,
+        "description": "Window for the exact per-consumer tables: the preceding 1h, 24h, 7d or 30d, independent of the time picker."
       }
     ]
   },
@@ -82,7 +120,7 @@
   "panels": [
     {
       "type": "row",
-      "title": "Ledger \u2014 the billing record",
+      "title": "Ledger — the billing record",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -95,7 +133,7 @@
     {
       "type": "table",
       "title": "Consumer ledger",
-      "description": "Balance is the DURABLE record and is a single TOTAL-token number: ai-quota deducts input+output at the same rate and v2.2.4 has no weighting option. The in/out columns show what that total was actually made of \u2014 output tokens each cost a forward pass, while input is prefilled once and mostly radix-cache served. Spend and share come from Envoy counters, which reset on gateway restart and must never be invoiced.",
+      "description": "Balance is the DURABLE record and is a single TOTAL-token number: ai-quota deducts input+output at the same rate and v2.2.4 has no weighting option. The in/out columns show what that total was actually made of — output tokens each cost a forward pass, while input is prefilled once and mostly radix-cache served. Spend and share come from Envoy counters, which reset on gateway restart and must never be invoiced.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -412,7 +450,7 @@
     {
       "type": "stat",
       "title": "Ledger reachable",
-      "description": "redis_up for higress-redis. Not a nicety: ai-quota has no fail-open, so if the ledger is unreachable every billable route returns 403 'No quota left' regardless of actual balances \u2014 indistinguishable, to a caller, from having run out.",
+      "description": "redis_up for higress-redis. Not a nicety: ai-quota has no fail-open, so if the ledger is unreachable every billable route returns 403 'No quota left' regardless of actual balances — indistinguishable, to a caller, from having run out.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -615,7 +653,7 @@
     {
       "type": "timeseries",
       "title": "Token rate by consumer, split by direction",
-      "description": "Input and output are charged identically \u2014 ai-quota deducts input+output 1:1 and v2.2.4 has no weighting option \u2014 but they cost nothing alike. Each output token is a forward pass, and decode here is bandwidth-bound at ~50ms. Input is prefilled in one pass and, for a multi-turn agent that re-sends its context, mostly hits the radix cache: node-wide 84.8% of prompt tokens have been cache hits. A consumer sitting at 40:1 input:output is paying mostly for the cheapest thing the node does.",
+      "description": "Token throughput per consumer from SGLang's own counters, for the shape over time. For totals use 'Exact usage by consumer' — rate() here is fine for a trend but increase() over these counters loses the first request after a replica restart. Input and output are charged identically, but an output token is a forward pass and input on an agent re-sending its context is mostly a prefix-cache hit.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -666,9 +704,21 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer,direction) (rate(gateway_tokens_total{consumer=~\"$consumer\"}[$__rate_interval]))",
-          "legendFormat": "{{consumer}} {{direction}}",
+          "expr": "sum by (consumer) (rate(sglang:prompt_tokens_total{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{consumer}} input",
           "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (rate(sglang:generation_tokens_total{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{consumer}} output",
+          "refId": "B",
           "instant": false,
           "format": "time_series",
           "range": true
@@ -678,7 +728,7 @@
     {
       "type": "timeseries",
       "title": "Request rate by consumer",
-      "description": "Completions/s per consumer.",
+      "description": "Requests finished per second, per consumer, as SGLang counts them.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -730,8 +780,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval]))",
-          "legendFormat": "{{ai_consumer}}",
+          "expr": "sum by (consumer) (rate(sglang:num_requests_total{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
           "format": "time_series",
@@ -741,8 +791,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Mean time to first token, by consumer",
-      "description": "A sum over a count, so this is a MEAN and is labelled as one. ai-statistics emits no histogram, so there are no per-consumer percentiles until the request record lands in Stage B \u2014 one slow request among a hundred fast ones is invisible here.",
+      "title": "Mean time to first token (engine), by consumer",
+      "description": "Mean TTFT as SGLang measured it (queue wait + prefill). A MEAN: one slow request among a hundred fast ones barely moves it — the p95 panels show the tail.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -794,8 +844,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_first_token_duration{ai_consumer=~\"$consumer\"}[$__rate_interval])) / clamp_min(sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_llm_stream_duration_count{ai_consumer=~\"$consumer\"}[$__rate_interval])), 1)",
-          "legendFormat": "{{ai_consumer}}",
+          "expr": "sum by (consumer) (rate(sglang:time_to_first_token_seconds_sum{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])) / (sum by (consumer) (rate(sglang:time_to_first_token_seconds_count{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
           "format": "time_series",
@@ -806,7 +856,7 @@
     {
       "type": "bargauge",
       "title": "Share of node (1h)",
-      "description": "Each consumer's tokens as a fraction of everything the ENGINE produced and consumed, not of the metered total. The shares deliberately do not sum to 1 \u2014 the gap is traffic on the direct hostname, which carries no consumer identity.",
+      "description": "Each consumer's tokens as a fraction of everything the ENGINE produced and consumed, not of the metered total. The shares deliberately do not sum to 1 — the gap is traffic on the direct hostname, which carries no consumer identity.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -881,8 +931,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Latency p95 by consumer",
-      "description": "Whole-request duration as Envoy saw it, from the access-log fact table via Vector. This did not exist before Stage B: ai-statistics emits sums and counts but no histogram, so a single 40-second request among a hundred fast ones was invisible in the per-consumer mean.",
+      "title": "Gateway latency p95, rolling 1h, by consumer",
+      "description": "Exact: summed in ClickHouse over SGLang's per-request records (engine.requests) and the gateway access log, scraped as gauges by job engine-usage; see clickhouse/engine-usage-metrics.sql. Each point is the exact p95 of successful chat and completions requests in the hour before it, as the gateway timed them (whole request).",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -930,7 +980,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket{consumer=~\"$consumer\"}[$__rate_interval])))",
+          "expr": "max by (consumer) (gateway_usage_duration_seconds{consumer=~\"$consumer\", p=\"95\", window=\"1h\"})",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,
@@ -941,8 +991,8 @@
     },
     {
       "type": "table",
-      "title": "Status mix by consumer",
-      "description": "Per-consumer outcomes, which Prometheus could not answer at all before Stage B. `unauthenticated` is the 401 path \u2014 a wrong or missing key has no consumer to attribute to, and naming it keeps that traffic visible instead of vanishing from the breakdown.",
+      "title": "Status mix by consumer · $window",
+      "description": "Exact: summed in ClickHouse over SGLang's per-request records (engine.requests) and the gateway access log, scraped as gauges by job engine-usage; see clickhouse/engine-usage-metrics.sql. Exact counts from the gateway access log for the selected window. `unauthenticated` is the 401 path. cut = billable request that ended before its usage frame (client disconnect, timeout, upstream error) and was charged nothing.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1059,16 +1109,22 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
               "Time 1": true,
               "Time 2": true,
-              "Time 3": true
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time": true
             },
             "renameByName": {
               "consumer": "Consumer",
               "Value #A": "2xx",
               "Value #B": "4xx",
-              "Value #C": "5xx"
+              "Value #C": "5xx",
+              "Value #D": "429 limit",
+              "Value #E": "403 balance",
+              "Value #F": "cut, unbilled"
             }
           }
         }
@@ -1079,7 +1135,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_requests_total{consumer=~\"$consumer\", status_class=\"2xx\"}[$__range]))",
+          "expr": "sum by (consumer) (gateway_usage_requests{consumer=~\"$consumer\", status_class=\"2xx\", window=\"$window\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1091,7 +1147,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_requests_total{consumer=~\"$consumer\", status_class=\"4xx\"}[$__range]))",
+          "expr": "sum by (consumer) (gateway_usage_requests{consumer=~\"$consumer\", status_class=\"4xx\", window=\"$window\"})",
           "legendFormat": "",
           "refId": "B",
           "instant": true,
@@ -1103,9 +1159,45 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_requests_total{consumer=~\"$consumer\", status_class=\"5xx\"}[$__range]))",
+          "expr": "sum by (consumer) (gateway_usage_requests{consumer=~\"$consumer\", status_class=\"5xx\", window=\"$window\"})",
           "legendFormat": "",
           "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (gateway_usage_rate_limited_requests{consumer=~\"$consumer\", window=\"$window\"})",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (gateway_usage_quota_denied_requests{consumer=~\"$consumer\", window=\"$window\"})",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (gateway_usage_cut_requests{consumer=~\"$consumer\", window=\"$window\"})",
+          "legendFormat": "",
+          "refId": "F",
           "instant": true,
           "format": "table",
           "range": false
@@ -1114,8 +1206,8 @@
     },
     {
       "type": "table",
-      "title": "Input : output ratio",
-      "description": "How much of each consumer's bill is context re-sent rather than tokens generated. High values are agent traffic replaying a growing conversation; those input tokens are largely cache hits and cost a fraction of what they are charged.",
+      "title": "Exact usage by consumer · $window",
+      "description": "Exact: summed in ClickHouse over SGLang's per-request records (engine.requests) and the gateway access log, scraped as gauges by job engine-usage; see clickhouse/engine-usage-metrics.sql. Tokens are what the ledger charged (aborted requests excluded). cache hit = prompt tokens the engine did not recompute, over the input whose cache split was recorded; HiCache = the part reloaded from host RAM. Cached input is still charged in full. A high in : out means the bill is context re-sent, not work generated.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1128,25 +1220,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            }
-          },
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
+          "decimals": 0
         },
         "overrides": [
           {
@@ -1158,32 +1232,62 @@
               {
                 "id": "decimals",
                 "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cache hit"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
               },
               {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "HiCache"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
               },
               {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 10
-                    },
-                    {
-                      "color": "orange",
-                      "value": 30
-                    }
-                  ]
-                }
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tokens in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tokens out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
               }
             ]
           }
@@ -1194,7 +1298,7 @@
         "cellHeight": "sm",
         "sortBy": [
           {
-            "displayName": "in : out",
+            "displayName": "tokens in",
             "desc": true
           }
         ]
@@ -1211,12 +1315,22 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
-              "Time 1": true
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time": true
             },
             "renameByName": {
               "consumer": "Consumer",
-              "Value #A": "in : out"
+              "Value #A": "requests",
+              "Value #B": "tokens in",
+              "Value #C": "tokens out",
+              "Value #D": "in : out",
+              "Value #E": "cache hit",
+              "Value #F": "HiCache"
             }
           }
         }
@@ -1227,9 +1341,69 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (consumer) (increase(gateway_tokens_total{consumer=~\"$consumer\", direction=\"input\"}[$__range])) / clamp_min(sum by (consumer) (increase(gateway_tokens_total{consumer=~\"$consumer\", direction=\"output\"}[$__range])), 1)",
+          "expr": "sum by (consumer) (engine_usage_requests{consumer=~\"$consumer\", window=\"$window\"})",
           "legendFormat": "",
           "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (engine_usage_prompt_tokens{consumer=~\"$consumer\", window=\"$window\"})",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (engine_usage_completion_tokens{consumer=~\"$consumer\", window=\"$window\"})",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (engine_usage_prompt_tokens{consumer=~\"$consumer\", window=\"$window\"}) / (sum by (consumer) (engine_usage_completion_tokens{consumer=~\"$consumer\", window=\"$window\"}) > 0)",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "(sum by (consumer) (engine_usage_cached_device_tokens{consumer=~\"$consumer\", window=\"$window\"}) + sum by (consumer) (engine_usage_cached_host_tokens{consumer=~\"$consumer\", window=\"$window\"})) / (sum by (consumer) (engine_usage_cache_known_prompt_tokens{consumer=~\"$consumer\", window=\"$window\"}) > 0)",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (engine_usage_cached_host_tokens{consumer=~\"$consumer\", window=\"$window\"}) / (sum by (consumer) (engine_usage_cache_known_prompt_tokens{consumer=~\"$consumer\", window=\"$window\"}) > 0)",
+          "legendFormat": "",
+          "refId": "F",
           "instant": true,
           "format": "table",
           "range": false
@@ -1251,7 +1425,7 @@
     {
       "type": "timeseries",
       "title": "Engine TTFT p95, by consumer",
-      "description": "Time to first token as the ENGINE measured it: queue wait plus prefill, with no gateway, router or network in it. Compare against 'Mean time to first token, by consumer' above, which is Higress's view of the same moment. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
+      "description": "Time to first token as the ENGINE measured it: queue wait plus prefill, with no gateway, router or network in it. Histogram-based, so approximate at low request counts. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1378,8 +1552,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Prefix cache hit, by consumer",
-      "description": "Share of each consumer's prompt tokens served from the radix cache, derived as 1 - uncached/total. Per-consumer cache behaviour is what decides whether cache_aware routing pays off for them: a consumer with a long stable system prompt should sit near 1, a consumer sending unique prompts near 0. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
+      "title": "Prefix cache hit, rolling 1h, by consumer",
+      "description": "Exact: summed in ClickHouse over SGLang's per-request records (engine.requests) and the gateway access log, scraped as gauges by job engine-usage; see clickhouse/engine-usage-metrics.sql. Each point: share of the consumer's prompt tokens in the preceding hour that the engine served from its prefix cache (all), and the part reloaded from host RAM (HiCache). A GPU hit is nearly free; a HiCache reload costs ~1.2 s per 45K tokens against ~14 s to recompute.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1431,9 +1605,21 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "1 - sum by (consumer) (rate(sglang:uncached_prompt_tokens_histogram_sum{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])) / clamp_min(sum by (consumer) (rate(sglang:prompt_tokens_histogram_sum{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])), 1)",
-          "legendFormat": "{{consumer}}",
+          "expr": "(sum by (consumer) (engine_usage_cached_device_tokens{consumer=~\"$consumer\", window=\"1h\"}) + sum by (consumer) (engine_usage_cached_host_tokens{consumer=~\"$consumer\", window=\"1h\"})) / (sum by (consumer) (engine_usage_cache_known_prompt_tokens{consumer=~\"$consumer\", window=\"1h\"}) > 0)",
+          "legendFormat": "{{consumer}} all",
           "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (consumer) (engine_usage_cached_host_tokens{consumer=~\"$consumer\", window=\"1h\"}) / (sum by (consumer) (engine_usage_cache_known_prompt_tokens{consumer=~\"$consumer\", window=\"1h\"}) > 0)",
+          "legendFormat": "{{consumer}} HiCache",
+          "refId": "B",
           "instant": false,
           "format": "time_series",
           "range": true
@@ -1443,7 +1629,7 @@
     {
       "type": "timeseries",
       "title": "Output token rate, by consumer and replica",
-      "description": "Which GPU is doing whose work. The gateway cannot answer this \u2014 it hands every request to one router address and never learns which replica served it \u2014 so this is the only view that ties a consumer to r0 or r1, and the place a routing imbalance shows up per tenant. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
+      "description": "Which GPU is doing whose work. The gateway cannot answer this — it hands every request to one router address and never learns which replica served it — so this is the only view that ties a consumer to r0 or r1, and the place a routing imbalance shows up per tenant. Requests that did not come through the gateway carry consumer=\"\" and are excluded here. The label arrives on x-request-id-labels, not SGLang's default x-custom-labels: the router forwards only an allow-list plus the x-request-id- prefix, so the default name is silently dropped. See docs/METRICS-ECOSYSTEM.md.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1506,8 +1692,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Edge overhead p95 (gateway minus engine), by consumer",
-      "description": "Difference of two p95s from histograms with different bucket edges \u2014 an indicator only, and it can go NEGATIVE, which is an artefact rather than the gateway being faster than the engine. MEASURED TRUTH, from duration_ms - llm_ms per request in gateway.requests over 30 days: p50 1ms, p95 3ms, p99 7ms, max 14ms. The gateway filter chain costs single-digit milliseconds. If this panel shows seconds, it is showing quantile arithmetic, not overhead \u2014 go to the fact table.",
+      "title": "Gateway p95 minus engine p95, rolling 1h, by consumer",
+      "description": "Difference of two exact p95s over the same hour — still quantile arithmetic, not per-request overhead, and it can go negative. MEASURED TRUTH, from duration_ms - llm_ms per request in gateway.requests over 30 days: p50 1ms, p95 3ms, p99 7ms, max 14ms. The gateway filter chain costs single-digit milliseconds.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1559,7 +1745,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (consumer,le) (rate(gateway_request_duration_seconds_bucket{consumer=~\"$consumer\"}[$__rate_interval]))) - histogram_quantile(0.95, sum by (consumer,le) (rate(sglang:e2e_request_latency_seconds_bucket{consumer=~\"$consumer\", consumer!=\"\"}[$__rate_interval])))",
+          "expr": "max by (consumer) (gateway_usage_duration_seconds{consumer=~\"$consumer\", p=\"95\", window=\"1h\"}) - max by (consumer) (engine_usage_e2e_seconds{consumer=~\"$consumer\", p=\"95\", window=\"1h\"})",
           "legendFormat": "{{consumer}}",
           "refId": "A",
           "instant": false,

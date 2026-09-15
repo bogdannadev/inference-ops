@@ -14,3 +14,6 @@ grafana_data/
 # Python bytecode from local syntax checks
 __pycache__/
 *.pyc
+
+# Rendered from .env by deploy/render-prometheus-secrets.sh
+prometheus/secrets/

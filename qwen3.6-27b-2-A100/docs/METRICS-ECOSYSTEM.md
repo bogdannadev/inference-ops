@@ -1,222 +1,170 @@
 # The metrics ecosystem — what each store answers
 
-Written 2026-09-05, after Stage D. This exists because "what does Langfuse
-actually let me see?" had no good answer, and the honest answer turned out to
-be *"less than you think, and one number was wrong by 293x."*
+Rewritten 2026-09-15, when Langfuse, the OpenTelemetry collector and Vector's
+per-consumer counters were removed. The design rule since then: **one source
+per question, and the engine is the source of truth for anything it can
+measure.** SGLang does the work and counts it; the gateway is asked only what
+the engine cannot see.
 
-Read this before adding a dashboard or asking a question of the data.
+Read this before adding a dashboard, a bot screen or a question of the data.
 
 ## The one-line version
 
 | Question | Ask | Never ask |
 |---|---|---|
-| How many tokens does X owe? | **Redis ledger** (`/balance`, `/usage`) | Langfuse, Prometheus |
-| Who used what, exactly, per request? | **`gateway.requests`** (ClickHouse) | Langfuse |
-| Is the node healthy right now? | **Prometheus / Grafana** | Langfuse |
-| Why was *this one request* slow? | **Langfuse** (engine span waterfall) | Prometheus |
-| How fast is the engine in general? | **Prometheus** (98 sglang metrics) | Langfuse |
+| What does X have left to spend? | **Redis ledger** (`/balance`) | anything else |
+| How many tokens did X use, exactly? | **`engine.requests`** → `engine_usage_*` (`/usage`, `/top`, `/key`) | `increase()` over any counter |
+| Cache hit, HiCache share, engine latency per key? | **`engine.requests`** → `engine_usage_*` (`/key`, `/p95`) | histogram buckets |
+| Refused, rate-limited, cut off, gateway latency? | **`gateway.requests`** → `gateway_usage_*` (`/errors`, `/top`) | engine data (it never saw those) |
+| What did this one request do? | **`gateway.requests` joined to `engine.requests`** on `chat_id = rid` (`/trace`, admin-mcp `request_detail`) | a timestamp join |
+| Is the node healthy right now? | **Prometheus** (`sglang:*`, DCGM, node) / Grafana, `/health` | usage gauges |
 
-**Billing reads the ledger.** Prometheus counters reset; Langfuse aggregates
-are derived from spans and are not authoritative. That rule predates this
-document and it still holds.
+**Billing reads the ledger.** The exact usage numbers agree with it request by
+request (verified 2026-09-15: 62 tokens charged, 62 in the engine records, 62 in
+the limiter's window), but the balance is what bills.
 
-## The four stores
+## The picture
+
+```
+ client ──► Caddy ──► Higress gateway ──► smg router ──► SGLang r0 / r1
+                        │  key-auth, ai-quota,             │  --export-metrics-to-file
+                        │  ai-token-ratelimit               │  one JSON line per finished request
+                        │  access log (file)                │  (logs/<replica>/request-metrics/)
+                        ▼                                   ▼
+                      Vector ─────────────────────────► Vector
+                        │                                   │
+                        ▼                                   ▼
+             ClickHouse gateway.requests         ClickHouse engine.requests
+                        └───────────┬───────────────────────┘
+                                    │  GET /engine_usage_metrics (predefined query,
+                                    │  read-only user; clickhouse/engine-usage-metrics.sql)
+                                    ▼
+ Redis ledger ─► redis_exporter ─► Prometheus ◄── sglang:* /metrics, DCGM, node, router
+                                    │   engine_usage_*, gateway_usage_* (gauges, 1h/24h/7d/30d)
+                                    │   consumer:* recording rules (burn, runway, share)
+                     ┌──────────────┼────────────────┐
+                     ▼              ▼                ▼
+                  quota-bot       Grafana       Alertmanager
+          admin-mcp ─► ClickHouse directly (any window, per request)
+```
+
+## The stores
 
 ### 1. Redis ledger — the money
 
-Balances per consumer, enforced by ai-quota at request time. This is the only
-store that can say what someone owes. No history: it holds a balance, not a
-series. `redis_exporter` publishes it to Prometheus so dashboards and alerts
-can read it, but the ledger itself is the truth.
+Balances per consumer, enforced by ai-quota at request time; tier, per-key
+settings and refill markers next to them; the limiter's window counters. The
+only store that can say what someone can still spend. No history.
+`redis_exporter` publishes balances to Prometheus (`consumer:quota_balance:tokens`).
 
-Bot: `/keys`, `/balance`, `/usage`, `/topup`, `/setquota`.
+Bot: `/keys`, `/balance`, `/policy`, `/topup`, `/setquota`.
 
-### 2. `gateway.requests` (ClickHouse) — the fact table
+### 2. `engine.requests` (ClickHouse) — what the engine did
 
-One row per request through the gateway, written by Vector from Envoy's access
-log. **This is the per-request, per-consumer record of what actually happened**:
-`request_id`, `consumer`, `route`, `model`, `status`, `duration_ms`, `llm_ms`,
-`input_tokens`, `output_tokens`, `total_tokens`, `chat_id`, `chat_round`,
-plus `node`/`stack` since Stage D.
+One row per request SGLang **finished**, written by the engine itself
+(`--export-metrics-to-file`), shipped by Vector, `ReplacingMergeTree` on
+`(finished_at, rid)`, 400-day TTL. Per row: consumer (from the gateway's
+`x-request-id-labels`), replica, prompt and completion tokens, cached tokens
+split into GPU (`cached_device`) and HiCache (`cached_host`), queue, TTFT,
+prefill, decode and end-to-end seconds, finish reason. No prompt text
+(`--log-requests-level 1`). Schema: `clickhouse/engine-requests.sql`.
 
-End-to-end acknowledged and checkpointed, so a ClickHouse outage is a replay,
-not a hole. 180-day TTL. Reconciled against the ledger exactly (370 == 370).
+- **Token counts are identical** to the gateway's and the client's, request by
+  request (verified 2026-09-13).
+- **Rows before 2026-09-13 19:46 UTC** were copied once from `gateway.requests`
+  (`source = 'gateway-backfill'`): tokens only, no cache split, no timings.
+- **A client disconnect writes no record.** SGLang raises out of
+  `_wait_one_response` before the exporter runs, so requests the client
+  abandoned are visible only in `gateway.requests` as cuts — which matches the
+  ledger, which charged them nothing. Scheduler-side aborts do write a record
+  (`finish_type = 'abort'`) and are excluded from charged tokens.
+- **Two clocks inside one record.** Received/finished timestamps come from the
+  tokenizer process, forward-entry and prefill-finished from the scheduler, and
+  their wall-clock anchors drift apart (r0: 1.03 s on 2026-09-15). Timings are
+  therefore computed from same-process differences only — see `engine_rows` in
+  `vector/vector.yaml`, tested in `vector/vector_test.yaml`.
 
-**Its blind spot:** it only sees traffic *through the gateway*. Requests on the
-direct hostname bypass Higress entirely and never appear here. Until per-person
-keys land, that is most of the traffic.
+### 3. `gateway.requests` (ClickHouse) — what the gateway saw
 
-### 3. Prometheus — the time series
+One row per request through Higress, from Envoy's access log via Vector:
+`request_id`, `consumer`, `route`, `status`, `duration_ms`, `llm_ms`, tokens,
+`response_flags`, and `chat_id` — the response id, which is the engine's `rid`,
+so a gateway row joins its engine row exactly. 180-day TTL. Asked only what the engine cannot see: 401 / 403
+/ 422 / 429 refusals, requests cut off before their usage frame (0 tokens
+charged, flags DC/SI/UC/UPE/UT), and whole-request latency. Blind to traffic on
+the direct hostname.
 
-14 scrape targets. 98 `sglang:*` metrics (TTFT, queue depth, KV pool, MFU,
-accept length, forward-pass timings), DCGM per-GPU fields, node, Caddy edge
-RED, router `smg_*`, collector self-telemetry, ClickHouse, Alertmanager, and
-the ledger via `redis_exporter`.
+### 4. Prometheus — time series, and the exact gauges
 
-Plus `gateway_*` metrics that Vector derives from the same access log it writes
-to ClickHouse — `gateway_requests_total`, `gateway_tokens_total`,
-`gateway_request_duration_seconds`, all labelled by `consumer`, `route`,
-`status_class` — the gateway's view of each tenant.
+- `sglang:*` engine metrics, DCGM, node, Caddy, router, ClickHouse,
+  Alertmanager, the ledger via `redis_exporter`, quota-bot's policy metrics.
+  Node health and trends. The per-consumer SGLang counters are fine for
+  `rate()` trends and wrong for totals: a consumer's series is created by its
+  first request after a replica start, so `increase()` never sees that request,
+  and `increase()` extrapolates to the window edges (measured on 29,079 prompt
+  tokens: engine `increase()` 11,194, gateway `increase()` 29,825, records 29,079).
+- **`engine_usage_*` and `gateway_usage_*`** — exact sums and exact quantiles
+  per consumer for the preceding 1h, 24h, 7d and 30d, computed in ClickHouse by
+  `clickhouse/engine-usage-metrics.sql` and scraped once a minute (job
+  `engine-usage`). They are gauges: read the latest value, never `rate()` them.
+  Up to ~2 minutes behind. SQL regression cases: `./deploy/test-usage-sql.sh`.
+- `consumer:quota_spend:*`, `consumer:quota_days_left`,
+  `consumer:token_share:ratio1h` — recording rules over the exact gauges and
+  the ledger (`prometheus/rules.yml`, tests in `rules_test.yml`).
+- Alerts on the pipeline itself: `EngineUsageScrapeDown`,
+  `EngineUsageRecordsStale`.
 
-Since Stage D every series carries `node="a100"` and `stack="qwen36-27b"`.
+## Cache hits and what they cost
 
-**Its blind spot, until 2026-09-05:** the 98 engine metrics carried
-`engine_type`, `instance`, `is_streaming`, `model`, `model_name`, `node` and
-nothing about who asked, so "what is acme's p95 TTFT *inside the engine*" had
-no answer. The tokenizer-side metrics now carry a `consumer` label — see
-**Per-key engine metrics** at the bottom of this file. The scheduler-side metrics (KV pool, queue depth, cache hit rate,
-MFU) remain node-wide by nature: they describe a shared GPU, not a request.
+The engine reports, per request, how many prompt tokens came from the GPU
+prefix cache and how many were reloaded from host RAM (HiCache).
 
-### 4. Langfuse — one request at a time, and per-user rollups
-
-This is where the confusion was. Be precise about what it is:
-
-**Langfuse 4.5.0 runs in `events_only` mode.** The v3 tables are empty by
-design — `traces` 0 rows, `observations` 0 rows — and all 3.19M spans live in
-`events_core` / `events_full`. The v3 API endpoints return:
-
-> "This endpoint is not available on deployments running in Langfuse v4
-> events_only mode."
-
-Use `GET /api/public/v2/observations` and `GET /api/public/v2/metrics`. If you
-followed a v3 doc page and got that error, nothing is broken.
-
-**What Langfuse is genuinely good for here:** opening one request and seeing
-the engine's phase breakdown — `request_process`, `prefill_waiting`,
-`prefill_forward`, `decode_forward`, `tokenize`, and a `Req <id>` span carrying
-`gen_ai.usage.*` and `gen_ai.latency.time_to_first_token`. That waterfall is
-the only place the *inside* of a single request is visible. Nothing else has it.
-
-**What it cannot do, and why:**
-
-- **Per-user works. Per-session does not.** An earlier version of this file
-  said `user_id` was set on "7 spans out of ~100,000" and called the Users page
-  empty. That was the wrong denominator, and it was misleading: **`user_id` is
-  set on 100% of the spans that can carry it** — 36 of 36 gateway ingress spans
-  over 24h — and 0% of engine spans, which have no way to know who called. The
-  fraction is tiny only because engine spans outnumber gateway spans ~6500:1.
-  Filtering by consumer in Langfuse works today, both in the Users page and via
-  `GET /api/public/v2/observations?userId=<consumer>`; verified 2026-09-05.
-  `session_id` really is empty (zero spans) — see the Sessions note below.
-- **A user's traces stop at the gateway.** The gateway ingress span carries the
-  identity *and* `gen_ai.usage.*`, so per-consumer token and latency views hold
-  up. What you cannot do is open one of those traces and see the engine's
-  phase breakdown inside it: the router starts a new trace, so the engine spans
-  live elsewhere. See `OBSERVABILITY.md` for the two-hop join that crosses it.
-- **Token and cost aggregates were wrong by 293x until 2026-09-05.** Langfuse
-  read `attributes.decode_ct` off `decode_loop` spans as token usage: 98,198,709
-  over 24h against a real 345,195. `decode_loop` is now dropped in the
-  collector, which also removed 76.9% of span volume. Post-fix a 4-minute
-  window reports 144 tokens instead of millions. **Even so, do not bill from
-  Langfuse** — there is no model pricing configured for `qwen36-27b`, so
-  `totalCost` is meaningless.
-- **It sees ~80% of engine spans, not all.** Router-routed requests share the
-  router's trace id; health-check probes hit workers directly and get their own
-  64-bit (zero-prefixed) trace. That cohort is noise, not loss.
-
-### Should we move off Langfuse 4.5.0?
-
-Checked 2026-09-05. Latest stable is **4.30.0**, released the day before; we
-run 4.5.0, twenty-five minor versions back. The answer is **we can stay, and
-upgrading would not have fixed anything we were confused about.**
-
-*Why staying is safe.* Langfuse's own upgrade policy is that minor versions
-within a major are non-disruptive and migrate themselves on start. Reading the
-actual migrations rather than the policy: between the two tags there are
-**2 ClickHouse migrations**, both `ADD COLUMN ... DEFAULT` / `MODIFY SETTING`
-carrying the comment *"Metadata-only: existing parts are not rewritten"*, and
-**7 Prisma migrations**, all in evaluator / feature-flag / integration tables we
-do not populate. Our whole dataset is 540 MiB over 3.19M rows. The two breaking
-changes in the window (4.20.0 `LANGFUSE_AWS_BEDROCK_*` -> `LANGFUSE_AI_*`,
-4.24.0 requiring `LANGFUSE_AI_PROVIDER`) touch only the Langfuse-AI provider
-config, which we do not set; the others are a 14-day JWT cap and an entitlement
-on org API-key creation, neither of which we use.
-
-*Why upgrading would not have helped.* The 25 releases are overwhelmingly
-experiments, evaluators and dataset work. Our problem was never a missing
-feature — it was that (a) `decode_loop` spans were being read as token usage,
-which we fixed in the collector, and (b) engine spans carry no identity and the
-router breaks trace continuity, which is an SGLang property no Langfuse version
-changes. `events_only` is likewise not a bug to upgrade out of: it is v4's
-intended end state, and 4.30 is further into it, not less.
-
-*What we deliberately have not configured.* Model pricing. Setting a price for
-`qwen36-27b` would make Langfuse's cost columns render a number, and that number
-would immediately become a second, non-authoritative answer to "what does acme
-owe" sitting next to the ledger. The cost of inference on this node is recorded
-properly in `docs/KEY-TIERS.md` in ms and joules per token. Langfuse shows
-`totalCost` = 0 on purpose.
-
-*So the pin stays.* `docker-compose.langfuse.yml` holds 4.5.0 by digest. Revisit
-if we ever want evaluators or Monitors; the upgrade itself is a pull, a
-recreate and roughly a minute of migrations, with a Postgres dump as the
-rollback.
+- **Hit rate** = (GPU + HiCache tokens) / prompt tokens of requests whose split
+  was recorded. The HiCache share is shown separately.
+- **The balance is not discounted.** ai-quota deducts every prompt token,
+  cached or not; there is no weighting option.
+- **What a hit saves is engine time.** A GPU hit is nearly free. A HiCache hit
+  costs a host-to-GPU reload — 1.24 s for 44,992 tokens against 14.2 s to
+  recompute (2026-09-13). "Prefill avoided" in the bot uses the prefill speed
+  measured on the same requests.
+- **At reference prices** ("with cache"), cached input is priced at the
+  provider's cached-input rate; input whose split is unknown is priced as
+  uncached.
 
 ## A new key needs no registration anywhere
 
-Nothing has to be added to Grafana or Langfuse when a consumer is created.
-Both are driven off data the key produces on its own, which is the property
-worth protecting — a roster maintained by hand drifts the day someone forgets.
+Nothing has to be added anywhere when a consumer is created, changed or
+revoked; verified end to end on 2026-09-15 with a throwaway key (create → 200 on
+the first request → records carry the consumer → tier and per-key limit change
+reach the limiter and `/metrics` → revoke → 401 within 3 s, ledger, policy and
+limiter window keys all deleted).
 
-**Langfuse.** The `ai-statistics` wasm plugin is bound to the routes, not to
-consumers, and maps `x-mse-consumer` onto two span attributes for every
-request:
-
-```json
-{"key": "consumer",         "value": "x-mse-consumer", "value_source": "request_header"}
-{"key": "langfuse.user.id", "value": "x-mse-consumer", "value_source": "request_header"}
-```
-
-`langfuse.user.id` is one of the attribute names Langfuse maps onto its
-first-class `userId`, so a new consumer appears in Users on its first request.
-`default_value` is `unauthenticated`, so failed-auth traffic is grouped rather
-than dropped.
-
-**Grafana.** *Usage & Quota* and *AI Gateway (Higress)* both carry a `consumer`
-template variable — multi-select, All by default — and every per-consumer panel
-filters on it. Two details are deliberate:
-
-- **The roster comes from the ledger**, `label_values(consumer:quota_balance:tokens,
-  ai_consumer)`, not from traffic. A key created a minute ago has a balance and
-  no requests, and the Vector-derived access-log counters disappear from
-  Prometheus entirely while the node is idle — sourcing the list from either
-  would leave a new key unselectable.
-- **All is `.*`, not the OR of that list.** So a consumer that is sending
-  traffic but is missing from the ledger still shows up instead of silently
-  vanishing from every panel.
-
-Two label names exist and are not interchangeable: `ai_consumer` on the ledger
-recording rules and Higress's own AI metrics, `consumer` on everything Vector
-derives from the access log and on the sglang tokenizer metrics.
-
-**Still missing: Sessions.** `session_id` is set on zero spans, so Langfuse's
-Sessions page is empty and multi-turn conversations do not group. The mechanism
-is the same one that already works for users — add a third `ai-statistics`
-attribute mapping `langfuse.session.id` from a request header. OpenCode already
-sends `X-Session-Id` (see the router routing-key note). Not done: it would
-group only the clients that send such a header, and no one has asked to see
-conversations grouped yet.
+- **Engine records** carry the consumer from the gateway header on the first
+  request.
+- **Grafana** *Usage & Quota* takes its roster from the ledger,
+  `label_values(consumer:quota_balance:tokens, ai_consumer)`, so a key with a
+  balance and no traffic is selectable; All is `.*`, so traffic from a consumer
+  missing from the ledger still shows.
+- Two label names exist: `ai_consumer` on the ledger rules, Higress metrics and
+  quota-bot's metrics; `consumer` on `engine_usage_*`, `gateway_usage_*` and the
+  sglang tokenizer metrics.
 
 ## Where to look, by question
 
 ```
-"acme's bill is wrong"            -> /balance acme, then gateway.requests
-                                     WHERE consumer='acme'
-"the node feels slow"             -> Grafana overview + sglang dashboards
-"this request took 40s"           -> gateway.requests for the request_id, then
-                                     the two-hop join to Langfuse (OBSERVABILITY.md)
-"are we dropping requests"        -> /errors, gateway_requests_total by status_class
-"is the cache working"            -> sglang:cache_hit_rate, and the routing
-                                     evidence in tuning/docs/ROUTING.md
-"who is hammering the node"       -> /top, gateway_tokens_total by consumer
-"what is p95 TTFT for acme"       -> Grafana Usage & Quota, Engine-side row,
-                                     or /p95 acme
-"just acme, everywhere"           -> the Consumer picker on Usage & Quota and
-                                     AI Gateway; in Langfuse, filter Users
-"I added a key, where is it"      -> already there. Grafana lists it from the
-                                     ledger, Langfuse from its first request
-"everything about one key"        -> /key in the bot: pick it from a list, no
-                                     typing. Report writes an HTML file
+"acme's bill is wrong"            -> /balance acme; /key acme; then
+                                     engine.requests WHERE consumer='acme'
+"the node feels slow"             -> /health, Grafana overview + sglang dashboards
+"this request took 40s"           -> /trace <request-id>: gateway row, then the
+                                     engine row via chat_id = rid (queue, TTFT,
+                                     decode, cache split)
+"are we refusing requests"        -> /errors (429 limit, 403 balance, 5xx, cuts)
+"is the cache working"            -> /key or /usage (GPU vs HiCache), /health,
+                                     tuning/docs/ROUTING.md for routing evidence
+"who is using the node"           -> /top
+"what is p95 TTFT for acme"       -> /p95 acme, or Usage & Quota
+"I added a key, where is it"      -> already there
+"everything about one key"        -> /key: pick it from a list; Report writes HTML
 ```
 
 ## Per-key engine metrics — live 2026-09-05
@@ -268,9 +216,8 @@ name, so it does not mistake `x-request-id-labels` for a request id.
 
 ### What this buys that nothing else could
 
-The gateway already produced per-consumer request rate, token counts, status
-mix and whole-request latency (`gateway_*`, from the access log). The engine
-adds three things the gateway structurally cannot see:
+The gateway sees per-consumer status codes and whole-request latency. The
+engine adds what the gateway structurally cannot see:
 
 | | why the gateway cannot |
 |---|---|
@@ -278,8 +225,9 @@ adds three things the gateway structurally cannot see:
 | **Prefix cache hit per consumer** | cache accounting happens inside the radix tree |
 | **Replica attribution per consumer** | it hands every request to one router address and never learns whether r0 or r1 served it |
 
-Panels: Grafana -> *Usage & Quota* -> **Engine-side, by consumer** (5 panels).
-Bot: `/p95` appends an engine block with ttft / itl / e2e.
+Panels: Grafana -> *Usage & Quota* -> **Engine-side, by consumer**. The bot's
+numbers come from the per-request records (`engine.requests`), which carry the
+same consumer label and add the GPU / HiCache split per request.
 
 Labelled on TTFT, inter-token latency, and everything behind
 `observe_one_finished_request` (e2e latency, prompt and generation token
@@ -303,4 +251,6 @@ rather than being deletable.
 
 **Known gap, upstream:** `observe_one_aborted_request` does not take custom
 labels (`# TODO: also use custom_labels from the request`,
-tokenizer_manager.py), so aborted requests are still counted without a consumer.
+tokenizer_manager.py), so aborted requests are counted without a consumer on
+the Prometheus side; client-disconnected requests also leave no per-request
+record. Per-consumer cut-offs come from `gateway.requests`.

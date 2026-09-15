@@ -28,10 +28,11 @@ ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <host>
 | `dcgm` | `dcgm-exporter:9400` | 5s | per-GPU DCGM fields (DCGM_FI_DEV_*, DCP profiling fields) |
 | `node` | `qwen36-27b-node-exporter:9100` | 15s | host CPU/RAM/disk/network |
 | `caddy` | `caddy:2020` | 15s | edge RED metrics — see below |
-| `otel-collector` | `otel-collector:8888` | 15s | trace-pipeline self-telemetry |
 | `alertmanager` | `qwen36-27b-alertmanager:9093` | 30s | alert **delivery** health — see below |
 | `redis-ledger` | `qwen36-27b-redis-exporter:9121` | 30s | the ai-quota **billing ledger** — see below |
-| `clickhouse` | `qwen36-27b-langfuse-clickhouse:9363` | 30s | trace-store disk, parts, queries — see below |
+| `clickhouse` | `qwen36-27b-langfuse-clickhouse:9363` | 30s | ClickHouse's own disk, parts, queries — see below |
+| `engine-usage` | `qwen36-27b-langfuse-clickhouse:8123/engine_usage_metrics` | 60s | exact per-consumer usage gauges (`engine_usage_*`, `gateway_usage_*`), basic auth — see *Exact per-consumer usage* below |
+| `quota-bot` | `quota-bot:8080` | 30s | per-key policy: tier, quota, refill date, daily/per-minute limits and use |
 | ~~`higress-apiserver`~~ | — | — | **removed 2026-09-04** — see below |
 | `prometheus` | `localhost:9090` | 15s | self-scrape (`up{job="prometheus"}` exempted from the down alert) |
 
@@ -72,17 +73,10 @@ route to the worker ports and ZMQ sockets, which is the lateral-movement path
 the network split exists to close. Scrapes are outbound from Prometheus, so
 this direction preserves the invariant.
 
-### OTel Collector
-
-`otelcol_exporter_send_failed_spans` and `otelcol_exporter_queue_size` are the
-two series that matter. A Langfuse outage or a stale `LANGFUSE_OTEL_AUTH`
-shows up as failed spans and a filling queue well before anyone notices the
-Langfuse UI has stopped filling in.
-
 ### ClickHouse
 
 Added 2026-08-11 after an audit found ClickHouse spending ~1.85 GB on
-self-observation to back **396 KiB** of actual trace data:
+self-observation to back **396 KiB** of actual data (then Langfuse traces):
 
 | | |
 |---|---|
@@ -95,8 +89,8 @@ self-observation to back **396 KiB** of actual trace data:
 Accumulated in five days. Nothing attributed it to ClickHouse: node-exporter
 reports host disk in aggregate, and the stock image ships its `<prometheus>`
 section commented out, so the database exposed no metrics at all. Retention is
-now bounded (see `clickhouse/config.d/`, and `docs/LANGFUSE.md` for the full
-account); this job is what makes a regression visible early.
+now bounded (see `clickhouse/config.d/`); this job is what makes a regression
+visible early.
 
 Series worth knowing:
 
@@ -149,13 +143,13 @@ engine-side rule can see them:
 - `EdgeServerErrors` — 5xx > 0.05/s for 5m (critical)
 - `EdgeConfigReloadFailed` — running edge diverged from the Caddyfile (warning)
 
-**`tracing`** — the pipeline is asynchronous end to end, which is the design
-goal (a Langfuse outage must not apply backpressure to a generation) and also
-why it fails silently:
+**Usage records** — the per-request pipeline (engine file → Vector →
+ClickHouse → scrape) is asynchronous, so nothing in the request path notices
+when it breaks; these are the signals. (The `tracing` group went with Langfuse
+on 2026-09-14.)
 
-- `TraceExportFailing` — failed spans for 10m (warning); nearly always a stale `LANGFUSE_OTEL_AUTH`
-- `TraceQueueFilling` — export queue > 50% for 10m (warning)
-- `TraceSpansRefused` — `memory_limiter` rejecting at the receiver for 5m (warning)
+- `EngineUsageScrapeDown` — the `engine-usage` scrape failing (warning); bot usage screens say "usage data unavailable"
+- `EngineUsageRecordsStale` — the engine served requests in the last 15m but no new record arrived for 15m (warning); Vector or ClickHouse stopped ingesting
 
 ### Two things removed on 2026-09-04
 
@@ -318,27 +312,38 @@ Two quirks of the framework, both cost time:
   `exp_samples`. It is absent only where `sum()` or a `bool` comparison dropped
   it.
 
-## Per-consumer latency and status — the Vector aggregates
+## Exact per-consumer usage — `engine_usage_*` and `gateway_usage_*`
 
-`ai-statistics` emits seven counters and none carries a status code or a
-histogram, so "which consumer is getting 422s" and "what is p95 for this
-consumer" had no answer in Prometheus at all. Vector now derives both from the
-access log alongside its ClickHouse writes:
+Every per-consumer token, request, cache and latency number the bot, admin-mcp
+and the Usage & Quota board show is a plain sum or an exact quantile over
+per-request rows, computed in ClickHouse by `clickhouse/engine-usage-metrics.sql`
+and served as Prometheus text at `GET /engine_usage_metrics` (a predefined HTTP
+handler rendered into `clickhouse/config.d/engine-metrics-handler.xml` by
+`./deploy/render-engine-metrics-handler.sh`; read-only `engine_metrics` user).
 
 ```
-gateway_requests_total{consumer,route,status_class}
-gateway_tokens_total{consumer,model}
-gateway_request_duration_seconds{consumer,route}   # histogram
+engine_usage_{requests,prompt_tokens,completion_tokens}{window,consumer}
+engine_usage_{cache_known_prompt_tokens,cached_device_tokens,cached_host_tokens}{window,consumer}
+engine_usage_{prefill_seconds,decode_seconds,aborted_requests,aborted_completion_tokens}{window,consumer}
+engine_usage_{ttft_seconds,e2e_seconds}{window,consumer,p="50"|"95"}
+engine_usage_queue_seconds{p="95"}, engine_usage_decode_tokens_per_second{p="50"}
+engine_usage_replica_completion_tokens{window,consumer,replica}
+gateway_usage_requests{window,consumer,status_class}
+gateway_usage_{rate_limited,unauthorized,quota_denied,cut}_requests{window,consumer}
+gateway_usage_cut_seconds, gateway_usage_duration_seconds{p="50"|"95"|"99"}
+engine_usage_{first,last}_record_timestamp_seconds{source}, gateway_usage_last_record_timestamp_seconds
 ```
 
-They live in Prometheus rather than being read from ClickHouse because
-quota-bot is on `edge` and the trace store is backend-only — and putting an
-internet-reachable bot on the backend would give it a route to the worker ports.
-The aggregates come to where the bot already looks.
+`window` is 1h, 24h, 7d or 30d before the scrape. They are **gauges** — read the
+latest value; `rate()` or `increase()` over them is meaningless. Why not
+counters: see `docs/METRICS-ECOSYSTEM.md` (the lost first request and
+`increase()` extrapolation, measured). They replaced Vector's
+`gateway_requests_total` / `gateway_tokens_total` / `gateway_request_duration_seconds`
+on 2026-09-15.
 
-`consumer="unauthenticated"` is the 401 path: a wrong or missing key has no
-consumer to attribute to, and naming it keeps that traffic in the breakdown
-instead of vanishing.
+`consumer="unauthenticated"` is the 401 path on the gateway side; engine traffic
+that bypassed the gateway has no consumer label. The SQL's cut-off predicate has
+regression cases: `./deploy/test-usage-sql.sh`.
 
 ### Quota is a single total-token balance
 
@@ -418,7 +423,7 @@ GROUP BY consumer;
 
 ## Grafana dashboards — `grafana/provisioning/dashboards/`
 
-Seven dashboards, one per folder, auto-provisioned (read-only):
+Dashboards, one folder each, auto-provisioned (read-only):
 
 | Folder | File | Content |
 |---|---|---|
@@ -428,8 +433,7 @@ Seven dashboards, one per folder, auto-provisioned (read-only):
 | `gpu` | `qwen36-27b-gpu-dcgm.json` | per-GPU util, power, clocks, occupancy, memory |
 | `host` | `qwen36-27b-host.json` | node-exporter: CPU, RAM, disk, network, load |
 | `edge` | `qwen36-27b-edge-caddy.json` | Caddy: traffic, 401/5xx, TTFB, body sizes, upstream health |
-| `pipeline` | `qwen36-27b-trace-pipeline.json` | collector span flow, backpressure, ClickHouse storage |
-| `usage` | `qwen36-27b-usage-quota.json` | balances, burn rate, days-left, share of node — the operator's board |
+| `usage` | `qwen36-27b-usage-quota.json` | balances, burn rate, days-left, share of node, exact usage and status mix per consumer (Window picker), cache and latency — the operator's board |
 
 **The checked-in JSON is the single source of truth** — edit it directly.
 `allowUiUpdates: false`, so browser edits are overwritten on the next 10s scan
@@ -452,17 +456,6 @@ Two panels carry most of the value and are easy to misread:
 One label quirk worth knowing: `caddy_http_requests_total` carries **no `code`
 label**. Status-code breakdowns come from the duration histogram's `_count`
 series instead — same numerator, different series.
-
-### Trace Pipeline dashboard
-
-Span flow (accepted vs sent vs failed), export-queue backpressure, batch sizes,
-collector CPU/RSS, and the ClickHouse storage panels described above. Because
-the pipeline is asynchronous, nothing in the request path degrades when it
-breaks — this dashboard and the `tracing` alert group are the only signals.
-
-Stale `otlphttp/langfuse` series may appear beside `otlp_http/langfuse` in the
-queue panels: the exporter was renamed when the old alias began logging a
-deprecation warning, and the old series persist for the retention window.
 
 ## Grafana SLO alerts — `grafana/provisioning/alerting/alertrules.yml`
 
@@ -555,7 +548,7 @@ docker exec qwen36-27b-prometheus stat -c '%i %s' /etc/prometheus/alerts.yml
 
 Different inode means the mount is stale and only a container recreate fixes
 it. The same hazard applies to the remaining single-file mounts in this repo —
-`Caddyfile`, `otel/collector.yaml`, `clickhouse/config.d/*.xml`. Those are left
+`Caddyfile`, `clickhouse/config.d/*.xml`. Those are left
 as file mounts on purpose (mounting a directory over ClickHouse's `config.d`
 would mask the image's own `docker_related_config.xml` and break its listeners),
 and it is tolerable there because none of them is edited-and-hot-reloaded —
@@ -574,68 +567,48 @@ curl -s -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" \
   http://localhost:3000/api/prometheus/grafana/api/v1/rules
 ```
 
-## Correlation — resolving one request across all four stores
+## Correlation — resolving one request
 
-Added Stage D, 2026-09-05. Verified end to end, not inferred.
+Rewritten 2026-09-15, when tracing was removed. Verified end to end.
 
 ### One identity everywhere
 
-`node=a100` and `stack=qwen36-27b` are stamped on all three signals:
-Prometheus `global.external_labels`, the collector's `resource/identity`
-processor (so every span carries `resourceAttributes.node` / `.stack`
-regardless of which SDK emitted it), and `gateway.requests.node` / `.stack`.
-The same predicate now selects the same deployment in any of the three.
+`node=a100` and `stack=qwen36-27b` are stamped on Prometheus series
+(`global.external_labels`) and on `gateway.requests.node` / `.stack`.
 
-### The join takes two hops, and that is correct
+### Gateway row to engine row — an exact key
 
-The gateway's request id reaches the router, but the **router does not honour
-the inbound traceparent** — it starts a new trace and carries *that* to the
-workers. So there is no single key from edge to engine. There is a complete
-path, using the id for the first hop and the trace for the second:
-
-```
-gateway.requests.request_id                 (UUID, Envoy x-request-id)
-   = higress span  attributes.guid:x-request-id
-   = smg span      attributes.request_id
-                   -> smg span trace_id
-                      = sglang engine spans trace_id
-```
-
-Do not expect the engine to carry the gateway's request id. SGLang generates
-its own 32-hex rid and ignores caller-supplied ones —
+The engine never sees the gateway's request id (SGLang generates its own 32-hex
+rid and ignores caller-supplied ones —
 `entrypoints/openai/serving_base.py::_generate_request_id_base` returns `None`
-unconditionally, ahead of dead code that would have honoured it, and there is
-no `x-request-id` header handling in `srt/` at all.
-
-### The runbook query
-
-Given a `request_id` from the fact table, the bot, or an edge log:
+unconditionally). But it does return that rid to the client as the response
+`id` (`meta_info["id"]`, streamed or not), the router passes it through, and the
+gateway logs it as `chat_id`. So:
 
 ```sql
-WITH '<REQUEST_ID>' AS rid,
-     (SELECT trace_id FROM events_core
-       WHERE service_name = 'smg'
-         AND metadata_values[indexOf(metadata_names,'attributes.request_id')] = rid
-       LIMIT 1) AS tid
-SELECT
-  (SELECT count() FROM gateway.requests WHERE request_id = rid)            AS fact_rows,
-  (SELECT count() FROM events_core WHERE service_name='higress-gateway.higress-system'
-     AND metadata_values[indexOf(metadata_names,'attributes.guid:x-request-id')] = rid) AS gw_spans,
-  (SELECT count() FROM events_core WHERE service_name='smg'    AND trace_id = tid) AS router_spans,
-  (SELECT count() FROM events_core WHERE service_name='sglang' AND trace_id = tid) AS engine_spans;
+SELECT e.*
+FROM gateway.requests AS g FINAL
+JOIN engine.requests AS e FINAL ON e.rid = g.chat_id
+WHERE g.request_id = '<REQUEST_ID>';
 ```
 
-Worked example, 2026-09-05, `388cc7a0-0cb5-9d28-a670-4bcd753385e2`:
-**1 fact row, 1 gateway span, 1 router span, 10 engine spans.**
+Verified 2026-09-15 on every charged request since the exporter went live: one
+engine row each, same consumer, same token counts — including two identical
+requests 400 ms apart. The bot prints the query (`/trace <request-id>`);
+admin-mcp runs it (`request_detail`).
 
-`tid` is the value to paste into Langfuse to see the engine trace.
+A request cut off before its response (client disconnect) has an empty
+`chat_id`, 0 tokens at the gateway, and **no engine row at all**: SGLang writes
+no record for a request whose client went away.
+
+(Do not join on timestamps. A replica's tokenizer and scheduler clocks, and the
+gateway's, drift apart — r0 by ~1 s on 2026-09-15.)
 
 ### What this does NOT give you
 
-**No metric-to-trace exemplars.** SGLang emits no exemplars on its histograms
-(`/metrics` contains zero exemplar-annotated samples) and this Prometheus runs
-without `--enable-feature=exemplar-storage`. Turning the flag on would store
-nothing. Jumping from a latency spike on a dashboard to the exact slow request
-therefore still means: find the window, query `gateway.requests` for the slow
-`request_id` in it, then run the query above. This needs upstream work in the
-engine's metrics layer, not configuration here.
+**No metric-to-request exemplars.** SGLang emits no exemplars on its histograms
+and this Prometheus runs without `--enable-feature=exemplar-storage`. Jumping
+from a latency spike to the slow request means: find the window, query
+`engine.requests` (or `gateway.requests`) for the slow rows in it, then join as
+above. No phase waterfall inside the forward pass either — the record gives
+queue, prefill and decode seconds per request, not per iteration.

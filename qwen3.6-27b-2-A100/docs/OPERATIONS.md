@@ -6,7 +6,7 @@ runs treat them as orphans.
 
 ```bash
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.metrics.yml"
-COMPOSE_ALL="$COMPOSE -f docker-compose.langfuse.yml"
+COMPOSE_ALL="$COMPOSE -f docker-compose.clickhouse.yml"
 ```
 
 ## Status
@@ -145,6 +145,50 @@ docker run --rm --network qwen36-27b-backend curlimages/curl:latest \
 
 If a job is absent, check the compose overlay is running (`$COMPOSE ps`) and
 that the scrape config was picked up (`/api/v1/status/config`).
+
+## Usage records pipeline
+
+Every per-key number in the bot comes from here (see `docs/METRICS-ECOSYSTEM.md`):
+SGLang request files → Vector → `engine.requests` / `gateway.requests` →
+`GET /engine_usage_metrics` → Prometheus job `engine-usage`.
+
+```bash
+# freshness: newest engine record, scrape health (alerts: EngineUsageRecordsStale, EngineUsageScrapeDown)
+curl -s --data-urlencode 'query=time() - max(engine_usage_last_record_timestamp_seconds{source="engine"})' localhost:9090/api/v1/query
+curl -s --data-urlencode 'query=up{job="engine-usage"}' localhost:9090/api/v1/query
+
+# after editing clickhouse/engine-usage-metrics.sql
+./deploy/render-engine-metrics-handler.sh        # rewrites config.d/engine-metrics-handler.xml
+$COMPOSE_ALL up -d --no-deps --force-recreate langfuse-clickhouse   # handlers load at start only
+./deploy/test-usage-sql.sh
+
+# after editing vector/vector.yaml
+docker run --rm --cpuset-cpus 48-55 -v "$PWD/vector:/etc/vector:ro" --entrypoint vector \
+  timberio/vector:0.58.0-alpine test /etc/vector/vector.yaml /etc/vector/vector_test.yaml
+$COMPOSE_ALL up -d --no-deps --force-recreate vector
+```
+
+A ClickHouse recreate makes the scrape fail for about a minute; the bot's usage
+screens say "usage data unavailable" meanwhile, which is expected.
+
+**Re-ingesting engine records** (after fixing the `engine_rows` transform).
+Vector keeps each request file for 3 days after reading it
+(`remove_after_secs`). A one-shot Vector with its own checkpoint directory
+re-reads what is still on disk; `engine.requests` is a `ReplacingMergeTree` on
+`(finished_at, rid)` by `ingest_ts`, so the new rows replace the old ones.
+Done this way on 2026-09-15 to correct timings on 112 rows:
+
+```bash
+# reingest.yaml = the engine_request_files source (without remove_after_secs),
+# the engine_rows transform and the clickhouse_engine sink from vector.yaml,
+# data_dir /tmp/reingest, memory buffer
+docker run -d --name vector-reingest --network qwen36-27b-backend --cpuset-cpus 48-55 \
+  --tmpfs /tmp/reingest -v "$PWD/vector:/etc/vector:ro" -v "$PWD/reingest.yaml:/reingest.yaml:ro" \
+  -v "$PWD/logs/r0/request-metrics:/var/log/sglang/r0:ro" -v "$PWD/logs/r1/request-metrics:/var/log/sglang/r1:ro" \
+  timberio/vector:0.58.0-alpine --config /reingest.yaml
+# wait until count() of rows with ingest_ts after the start equals the line count of the files, then
+docker rm -f vector-reingest
+```
 
 ## Rollback / baseline
 

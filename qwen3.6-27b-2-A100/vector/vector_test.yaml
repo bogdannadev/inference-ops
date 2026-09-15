@@ -6,73 +6,92 @@
 #     test /etc/vector/vector.yaml /etc/vector/vector_test.yaml
 #
 tests:
-  - name: cut stream is flagged unbilled
+  - name: engine record becomes an engine.requests row
     inputs:
-      - insert_at: gateway_metric_fields
+      - insert_at: engine_rows
         type: log
-        log_fields: { consumer: "alice", route: "ai-chat", status: 200, duration_ms: 4112, total_tokens: 0, response_flags: "DC", model: "" }
+        log_fields:
+          file: "/var/log/sglang/r1/sglang-request-metrics-20260914_01.log"
+          message: '{"request_parameters": "{\"rid\": \"abc123\", \"stream\": true, \"custom_labels\": {\"consumer\": \"alice\"}}", "id": "abc123", "finish_reason": {"type": "stop", "matched": 248046}, "prompt_tokens": 9693, "completion_tokens": 30, "reasoning_tokens": 36, "cached_tokens": 9664, "cached_tokens_details": {"device": 9600, "host": 64}, "queue_time": 0.002, "api_server_dispatch_finish_ts": 1789327385.625, "forward_entry_time": 1789327385.75, "prefill_finished_time": 1789327386.25, "request_received_ts": 1789327385.5, "request_finished_ts": 1789327387.5, "e2e_latency": 2.0, "num_retractions": 0}'
     outputs:
-      - extract_from: gateway_metric_fields
+      - extract_from: engine_rows
         conditions:
           - type: vrl
-            source: 'assert_eq!(.unbilled_cut, 1) && assert_eq!(.unbilled_cut_s, 4.112)'
-  - name: normal request emits zero
+            source: |
+              assert_eq!(.consumer, "alice") &&
+              assert_eq!(.replica, "r1") &&
+              assert_eq!(.rid, "abc123") &&
+              assert_eq!(.is_streaming, true) &&
+              assert_eq!(.prompt_tokens, 9693) &&
+              assert_eq!(.completion_tokens, 30) &&
+              assert_eq!(.cached_device, 9600) &&
+              assert_eq!(.cached_host, 64) &&
+              assert_eq!(.ttft_s, 0.627) &&
+              assert_eq!(.prefill_s, 0.5) &&
+              assert_eq!(.decode_s, 1.373) &&
+              assert_eq!(.finish_type, "stop") &&
+              assert_eq!(.finished_at, "2026-09-13 19:23:07.500") &&
+              assert_eq!(.source, "engine")
+  - name: engine record without consumer or cache details keeps totals
     inputs:
-      - insert_at: gateway_metric_fields
+      - insert_at: engine_rows
         type: log
-        log_fields: { consumer: "alice", route: "ai-chat", status: 200, duration_ms: 1000, total_tokens: 81, response_flags: "-", model: "m" }
+        log_fields:
+          file: "/var/log/sglang/r0/sglang-request-metrics-20260914_01.log"
+          message: '{"request_parameters": "{\"rid\": \"x\", \"stream\": false}", "id": "x", "finish_reason": {"type": "abort"}, "prompt_tokens": 100, "completion_tokens": 3, "cached_tokens": 64, "cached_tokens_details": null, "request_received_ts": 1789327385.5, "request_finished_ts": 1789327386.5, "e2e_latency": 1.0}'
     outputs:
-      - extract_from: gateway_metric_fields
+      - extract_from: engine_rows
         conditions:
           - type: vrl
-            source: 'assert_eq!(.unbilled_cut, 0) && assert_eq!(.unbilled_cut_s, 0.0)'
-  - name: combined flags and upstream protocol error count
+            source: |
+              assert_eq!(.consumer, "") &&
+              assert_eq!(.replica, "r0") &&
+              assert_eq!(.cached_device, 64) &&
+              assert_eq!(.cached_host, 0) &&
+              assert_eq!(.ttft_s, null) &&
+              assert_eq!(.queue_s, null) &&
+              assert_eq!(.reasoning_tokens, null) &&
+              assert_eq!(.finish_type, "abort")
+  # Shape of SGLang's scheduler-side abort (_handle_abort_req, v0.5.19):
+  # no prompt, cache or finish timestamp fields, only completion_tokens, the
+  # e2e latency and the response-sent time stamped on the way out.
+  - name: aborted engine record keeps consumer and leaves cache unknown
     inputs:
-      - insert_at: gateway_metric_fields
+      - insert_at: engine_rows
         type: log
-        log_fields: { consumer: "bob", route: "ai-completions", status: 0, duration_ms: 900468, total_tokens: 0, response_flags: "UC,UPE", model: "" }
+        log_fields:
+          file: "/var/log/sglang/r1/sglang-request-metrics-20260914_01.log"
+          message: '{"request_parameters": "{\"rid\": \"ab1\", \"stream\": true, \"custom_labels\": {\"consumer\": \"alice\"}}", "id": "ab1", "finish_reason": {"type": "abort", "message": "client disconnected"}, "weight_version": "default", "e2e_latency": 3.2, "completion_tokens": 12, "response_sent_to_client_ts": 1789327390.25}'
     outputs:
-      - extract_from: gateway_metric_fields
+      - extract_from: engine_rows
         conditions:
           - type: vrl
-            source: 'assert_eq!(.unbilled_cut, 1)'
-  - name: free model listing and admin quota call are not billable
+            source: |
+              assert_eq!(.consumer, "alice") &&
+              assert_eq!(.finish_type, "abort") &&
+              assert_eq!(.prompt_tokens, 0) &&
+              assert_eq!(.completion_tokens, 12) &&
+              assert_eq!(.cached_tokens, null) &&
+              assert_eq!(.cached_device, null) &&
+              assert_eq!(.cached_host, null) &&
+              assert_eq!(.e2e_s, 3.2) &&
+              assert_eq!(.finished_at, "2026-09-13 19:23:10.250") &&
+              assert_eq!(.received_at, "2026-09-13 19:23:10.250")
+  # The scheduler's clock 1.03 s ahead of the tokenizer's, as measured on r0
+  # on 2026-09-15: timings must not change.
+  - name: scheduler clock skew does not leak into timings
     inputs:
-      - insert_at: gateway_metric_fields
+      - insert_at: engine_rows
         type: log
-        log_fields: { consumer: "alice", route: "ai-models", status: 200, duration_ms: 3, total_tokens: 0, response_flags: "DC", model: "" }
+        log_fields:
+          file: "/var/log/sglang/r0/sglang-request-metrics-20260915_13.log"
+          message: '{"request_parameters": "{\"rid\": \"sk1\", \"stream\": false, \"custom_labels\": {\"consumer\": \"alice\"}}", "id": "sk1", "finish_reason": {"type": "length"}, "prompt_tokens": 13, "completion_tokens": 4, "cached_tokens": 0, "cached_tokens_details": {"device": 0, "host": 0}, "queue_time": 0.001, "api_server_dispatch_finish_ts": 1789327385.625, "forward_entry_time": 1789327386.656, "prefill_finished_time": 1789327386.726, "request_received_ts": 1789327385.5, "request_finished_ts": 1789327385.75, "e2e_latency": 0.25}'
     outputs:
-      - extract_from: gateway_metric_fields
+      - extract_from: engine_rows
         conditions:
           - type: vrl
-            source: 'assert_eq!(.unbilled_cut, 0)'
-  - name: zero-token rejection without a cut flag is not a cut
-    inputs:
-      - insert_at: gateway_metric_fields
-        type: log
-        log_fields: { consumer: "alice", route: "ai-chat", status: 403, duration_ms: 2, total_tokens: 0, response_flags: "-", model: "" }
-    outputs:
-      - extract_from: gateway_metric_fields
-        conditions:
-          - type: vrl
-            source: 'assert_eq!(.unbilled_cut, 0)'
-  - name: counters are emitted
-    inputs:
-      - insert_at: gateway_metric_fields
-        type: log
-        log_fields: { consumer: "alice", route: "ai-chat", status: 200, duration_ms: 4112, total_tokens: 0, input_tokens: 0, output_tokens: 0, response_flags: "DC", model: "" }
-    outputs:
-      - extract_from: gateway_metrics
-        conditions:
-          - type: vrl
-            source: '.name != "unbilled_requests_total" || (.tags.consumer == "alice" && .counter.value == 1.0)'
-  - name: a models request keeps all its metrics
-    inputs:
-      - insert_at: gateway_metric_fields
-        type: log
-        log_fields: { consumer: "alice", route: "ai-models", status: 200, duration_ms: 3, total_tokens: 0, input_tokens: 0, output_tokens: 0, response_flags: "-", model: "" }
-    outputs:
-      - extract_from: gateway_metrics
-        conditions:
-          - type: vrl
-            source: '.name != "requests_total" || .counter.value == 1.0'
+            source: |
+              assert_eq!(.prefill_s, 0.07) &&
+              assert_eq!(.ttft_s, 0.196) &&
+              assert_eq!(.decode_s, 0.054) &&
+              assert_eq!(.e2e_s, 0.25)

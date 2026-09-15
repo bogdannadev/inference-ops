@@ -9,6 +9,28 @@ it lives in two published artifacts:
 This file is the execution order and the record of what was decided. Update it
 as stages land.
 
+## Stage E — exact usage, one source per question ✅ DONE 2026-09-15
+
+Supersedes the tracing half of Stages C and D and the Vector aggregates of
+Stage B. Records below those stages are kept as history.
+
+- **SGLang is the source of truth** for tokens, requests, cache and engine
+  latency: `--export-metrics-to-file` → Vector → `engine.requests`. The gateway
+  access log (`gateway.requests`) answers only refusals, cut-offs and gateway
+  latency.
+- **Exact aggregates, not counters**: `clickhouse/engine-usage-metrics.sql`
+  served at `/engine_usage_metrics`, scraped as `engine_usage_*` /
+  `gateway_usage_*` gauges (1h/24h/7d/30d). Recording rules for burn, runway
+  and share moved onto them. quota-bot, admin-mcp and Usage & Quota read them.
+- **Removed**: Langfuse (web, worker, Postgres, Redis, MinIO), the OTel
+  collector, SGLang/router/Higress tracing, the `tracing` alert group, the trace
+  pipeline dashboard, Vector's `gateway_*` counter exporter and its scrape job,
+  the bot's `/langfuse`.
+- Verified: per-request tokens identical across client, gateway and engine;
+  key create → change → revoke end to end; engine timings computed from
+  same-process clocks only after r0's tokenizer and scheduler clocks were found
+  1.03 s apart. Why and how: `docs/METRICS-ECOSYSTEM.md`.
+
 ## Decisions taken (2026-09-04)
 
 | Question | Decision |

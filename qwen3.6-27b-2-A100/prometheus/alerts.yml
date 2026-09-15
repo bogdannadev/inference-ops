@@ -157,59 +157,6 @@ groups:
             edge has silently diverged from the Caddyfile in this repo.
 
   # ---------------------------------------------------------------------------
-  # Trace pipeline (OTel Collector -> Langfuse)
-  #
-  # The whole pipeline is asynchronous, which is the point — a Langfuse outage
-  # must never apply backpressure to a generation. The cost of that design is
-  # that it fails silently: nothing in the request path degrades when traces
-  # stop arriving, so without these rules the first symptom is someone opening
-  # the UI days later and finding it empty.
-  # ---------------------------------------------------------------------------
-  - name: tracing
-    rules:
-      - alert: TraceExportFailing
-        expr: sum(rate(otelcol_exporter_send_failed_spans[5m])) > 0
-        for: 10m
-        labels:
-          severity: warning
-          node: a100
-        annotations:
-          summary: "Collector failing to export spans to Langfuse"
-          description: >-
-            Sustained export failures are almost always LANGFUSE_OTEL_AUTH no
-            longer matching a live project key pair — a 401 indistinguishable
-            from a wrong key. Re-derive it with deploy/init-langfuse.sh; see
-            docs/LANGFUSE.md.
-
-      - alert: TraceQueueFilling
-        expr: >-
-          sum(otelcol_exporter_queue_size)
-            / clamp_min(sum(otelcol_exporter_queue_capacity), 1) > 0.5
-        for: 10m
-        labels:
-          severity: warning
-          node: a100
-        annotations:
-          summary: "Collector export queue {{ $value | humanizePercentage }} full"
-          description: >-
-            Langfuse is not draining spans as fast as they arrive. The queue is
-            the buffer that makes a Langfuse restart free; once it fills, spans
-            are dropped and cannot be recovered.
-
-      - alert: TraceSpansRefused
-        expr: sum(rate(otelcol_receiver_refused_spans[5m])) > 0
-        for: 5m
-        labels:
-          severity: warning
-          node: a100
-        annotations:
-          summary: "Collector refusing incoming spans"
-          description: >-
-            memory_limiter hit its 512 MiB soft limit and is rejecting spans at
-            the receiver. Raise the limit or widen the batch settings in
-            otel/collector.yaml.
-
-  # ---------------------------------------------------------------------------
   # Storage (ClickHouse)
   #
   # Added after an audit found ~1.0 GB of untenanted system log tables and an
@@ -220,6 +167,36 @@ groups:
   # ---------------------------------------------------------------------------
   - name: storage
     rules:
+      # The exact usage record stopped growing while the engine kept serving:
+      # Vector, the exporter files or ClickHouse is broken, and every usage and
+      # cost number the bot shows is going stale.
+      - alert: EngineUsageRecordsStale
+        expr: >-
+          (time() - max(engine_usage_last_record_timestamp_seconds{source="engine"}) > 900)
+            and on() (sum(increase(sglang:num_requests_total[15m])) > 0)
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "No engine usage record for {{ $value | humanizeDuration }} while serving"
+          description: >-
+            engine.requests has stopped receiving rows although the engine is
+            finishing requests. Check the Vector engine_request_files source,
+            logs/<replica>/request-metrics/ and the ClickHouse sink.
+
+      - alert: EngineUsageScrapeDown
+        expr: up{job="engine-usage"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Exact usage endpoint unreachable"
+          description: >-
+            Prometheus cannot read /engine_usage_metrics from ClickHouse, so the
+            bot's usage and cost screens have no exact data.
+
       - alert: ClickHouseDiskFilling
         expr: >-
           ClickHouseAsyncMetrics_DiskUsed_default
@@ -231,7 +208,7 @@ groups:
           node: a100
         annotations:
           summary: "ClickHouse data disk {{ $value | humanizePercentage }} used"
-          description: "Trace storage is running out of room. Check retention with deploy/apply-clickhouse-retention.sh."
+          description: "The usage store is running out of room. Check retention with deploy/apply-clickhouse-retention.sh."
 
       - alert: ClickHouseSelfObservationDominates
         expr: >-
@@ -256,4 +233,4 @@ groups:
           node: a100
         annotations:
           summary: "ClickHouse failing {{ $value | printf \"%.2f\" }} queries/s"
-          description: "Langfuse surfaces ingestion errors slowly; this catches them at the database."
+          description: "Vector inserts or the engine-usage scrape are failing at the database; usage numbers stop updating."

@@ -223,13 +223,13 @@ quotes itself.
    credential, contradicting the docs page that calls it client auth. The
    inference path was untouched and every client kept working.
 
-## Attribution already works without any of this
+## Attribution
 
-Per-consumer token attribution does **not** depend on this gateway. SGLang's
-own engine spans carry token counts and reach Langfuse today. What they lack is
-client identity, because the sglang-router discards inbound W3C trace context
-(workers honour it; the router roots its own trace and there is no flag for
-it). The router does record an inbound request id from `--request-id-headers`
-as `attributes.request_id` on the root span of the engine trace, which is an
-exact join key against whatever the edge logs. That path was proven end-to-end.
-If Higress is adopted, it should set that header; if it isn't, any edge can.
+*Superseded 2026-09-15.* This section described attributing tokens through
+Langfuse engine spans and the router's `attributes.request_id`; tracing has
+been removed. Per-consumer attribution now comes from the gateway: it sets
+`x-request-id-labels {"consumer": ...}` from the authenticated key, SGLang
+writes that consumer into its per-request records (`engine.requests`), and a
+gateway request joins its engine row exactly on the response id (gateway
+`chat_id` = engine `rid`).
+See `qwen3.6-27b-2-A100/docs/METRICS-ECOSYSTEM.md`.

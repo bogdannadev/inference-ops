@@ -20,13 +20,13 @@ The deployment is assembled from **four compose files** in one project:
 |---|---|
 | `docker-compose.yml` | inference tier: 2 workers, router, Caddy |
 | `docker-compose.metrics.yml` | observability: Prometheus, Grafana, node-exporter, DCGM |
-| `docker-compose.langfuse.yml` | LLM trace observability: Langfuse v4 + Postgres/ClickHouse/MinIO/Redis + OTel Collector |
+| `docker-compose.clickhouse.yml` | ClickHouse: per-request usage records (`engine.requests`, `gateway.requests`) and the exact usage aggregates |
 | `docker-compose.embedder.yml` | **separate project** — TEI CPU embedding co-tenant |
 
 > **Compose rule — always pass the project files together:**
 > ```bash
 > docker compose -f docker-compose.yml -f docker-compose.metrics.yml <cmd>
-> # + -f docker-compose.langfuse.yml for the Langfuse services
+> # + -f docker-compose.clickhouse.yml for ClickHouse
 > ```
 > The overlays share the project network and volumes; running compose with a
 > single file lets them be treated as orphans.
@@ -80,23 +80,24 @@ timescales and feeds back into the settings the other two obey.
 │   DFlash2 (fewer bytes per step) won and host-side tweaks did not.    │    │
 └───────────────────────────────────────────────────────────────────────┼────┘
                                                                         │
-        metrics (pull, 5-30s)          traces (push, async) ────────────┘
+        metrics (pull, 5-30s)    per-request records (file, async) ─────┘
               │                              │
               ▼                              ▼
 ┌─ LAYER 3 ─ OBSERVABILITY ─────────────── the loop that changes things ─────┐
 │                                                                            │
 │   prometheus ◄── scrapes ── workers · router · caddy · dcgm · node         │
-│      │                      clickhouse · otel-collector · self             │
+│      │                      clickhouse · redis ledger · quota-bot · self   │
 │      │                                                                     │
-│      │              otel-collector ◄── OTLP/gRPC ── engine + router spans  │
-│      │                    │  protocol bridge + buffer                      │
-│      │                    ▼  OTLP/HTTP + Basic auth                        │
-│      │              langfuse ──► clickhouse   per-request span timings     │
-│      ▼                    │                                                │
-│   grafana ◄───────────────┘                                                │
-│      │   7 dashboards: overview · sglang · router · gpu · host             │
-│      │                 edge · pipeline                                     │
-│      │   17 prometheus alerts + 7 grafana SLO rules                        │
+│      │              vector ◄── engine request files + gateway access log   │
+│      │                │                                                    │
+│      │                ▼                                                    │
+│      │              clickhouse   engine.requests · gateway.requests        │
+│      │                │  exact per-consumer sums, scraped as gauges        │
+│      ◄────────────────┘                                                    │
+│      ▼                                                                     │
+│   grafana · quota-bot · alertmanager                                       │
+│      │   dashboards: overview · sglang · router · gpu · host · edge ·      │
+│      │               usage & quota · gateway                               │
 │      ▼                                                                     │
 │   a human reads a regression                                               │
 │      │                                                                     │
@@ -129,22 +130,26 @@ all three are instrumented separately:
   wrong edge key. On the engine dashboards those look like *silence*.
 - **The engine** sees queueing, prefill, decode and cache behaviour per
   request, which no edge metric can decompose.
-- **The trace pipeline** stitches router and worker spans into one distributed
-  trace via `traceparent`, answering "where did those 400 ms go" across a hop
-  neither side can see alone.
+- **The per-request records** — one row per request from the engine and one
+  from the gateway, joined exactly on the response id — answer "where
+  did those 400 ms go" (queue, prefill, decode, cache split) for one request,
+  and give exact per-key usage. See `docs/METRICS-ECOSYSTEM.md`.
 
 ## Quick start
 
 ```bash
 # 1. secrets — create .env with at minimum:
 #    SGLANG_API_KEY, EDGE_API_KEY, HF_TOKEN (and GRAFANA_ADMIN_USER/PASSWORD)
-#    (full var list in docs/ARCHITECTURE.md; Langfuse secrets are generated below)
+#    (full var list in docs/ARCHITECTURE.md)
 
-# 2. one-shot Langfuse setup (generates its secrets, data dirs, starts everything)
-./deploy/init-langfuse.sh
+# 2. start the stack, then create the usage tables and the scrape secret
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml -f docker-compose.clickhouse.yml up -d
+./deploy/apply-gateway-schema.sh && ./deploy/apply-engine-schema.sh
+./deploy/render-prometheus-secrets.sh
 
 # 3. verify
-docker compose -f docker-compose.yml -f docker-compose.metrics.yml ps
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml -f docker-compose.clickhouse.yml ps
+./deploy/test-usage-sql.sh
 ```
 
 ## Documentation
@@ -158,8 +163,8 @@ The in-repo `docs/` directory is the operational manual for this node:
   SSH-tunnel access
 - **[docs/OPERATIONS.md](docs/OPERATIONS.md)** — daily ops: health checks,
   rolling a replica, logs, rollback, troubleshooting
-- **[docs/LANGFUSE.md](docs/LANGFUSE.md)** — Langfuse trace overlay: services,
-  secrets, headless init, SDK access
+- **[docs/METRICS-ECOSYSTEM.md](docs/METRICS-ECOSYSTEM.md)** — which store
+  answers which question: ledger, per-request records, exact usage gauges
 
 - **[tuning/docs/UPGRADE_QWEN3.8.md](tuning/docs/UPGRADE_QWEN3.8.md)** —
   2026-08-15 Qwen3.6 → Qwen3.8 weights swap: why no engine change, why the
@@ -175,27 +180,31 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 .
 ├── docker-compose.yml            # inference tier (workers, router, Caddy)
 ├── docker-compose.metrics.yml    # Prometheus + Grafana + exporters
-├── docker-compose.langfuse.yml   # Langfuse trace observability
+├── docker-compose.clickhouse.yml # ClickHouse: per-request records, exact usage
 ├── docker-compose.embedder.yml   # TEI CPU embedding (separate project)
 ├── Caddyfile                     # edge gateway: TLS, auth, no body cap
 ├── deploy/
 │   ├── roll-replica.sh           # zero-downtime single-replica roll
-│   ├── init-langfuse.sh          # one-shot Langfuse bootstrap
+│   ├── apply-engine-schema.sh    # engine.requests table
+│   ├── render-engine-metrics-handler.sh  # SQL -> ClickHouse HTTP handler
+│   ├── test-usage-sql.sh         # SQL regression cases
 │   └── apply-clickhouse-retention.sh   # one-time system-log TTLs
 ├── grafana/
 │   └── provisioning/             # datasource, dashboards, alert rules
 ├── prometheus/
 │   ├── prometheus.yml            # scrape config
 │   └── alerts.yml                # Prometheus-native alert rules
-├── otel/
-│   └── collector.yaml            # OTLP gRPC -> Langfuse HTTP bridge
+├── vector/                       # access log + engine records -> ClickHouse
 ├── clickhouse/
-│   └── config.d/                 # log rotation, system-log TTLs, :9363 metrics
+│   ├── engine-requests.sql       # per-request engine records
+│   ├── engine-usage-metrics.sql  # exact per-consumer aggregates (Prometheus format)
+│   ├── users.d/                  # read-only scrape and admin-mcp users
+│   └── config.d/                 # log rotation, TTLs, :9363 metrics, usage handler
 ├── docs/                         # this node's operational manual
 ├── benchmarks/                   # latency/throughput harnesses
 ├── tuning/                       # kernel/flag tuning campaign
 ├── logs/                         # runtime log bind mounts (gitignored)
-└── langfuse-data/                # Langfuse DB object storage (gitignored)
+└── langfuse-data/clickhouse/     # ClickHouse data (gitignored; path kept from the Langfuse era)
 ```
 
 ## Service inventory (one line each)
@@ -208,8 +217,8 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 - `grafana` — 7 dashboards (overview/sglang/router/gpu/host/edge/pipeline), SLO rules
 - `node-exporter` — host CPU/RAM/disk/network
 - `dcgm-exporter` — per-GPU utilisation/memory/power/occupancy
-- `qwen36-27b-langfuse-*` — Postgres, Redis, ClickHouse, MinIO, web, worker
-- `qwen36-27b-otel-collector` — OTLP bridge: SGLang gRPC spans → Langfuse HTTP
+- `qwen36-27b-langfuse-clickhouse` — ClickHouse (name kept from the Langfuse era): `engine.requests`, `gateway.requests`, `/engine_usage_metrics`
+- `qwen36-27b-vector` — ships the gateway access log and the engine's per-request files to ClickHouse
 - `qwen3-emb` — TEI CPU embeddings (separate project, joins `edge` only)
 
 ## Current optimization state (2026-09-13)
@@ -226,8 +235,8 @@ prefix caching              radix tree, mamba extra_buffer
 router policy               cache_aware --balance-abs-threshold 2
 only host ports             80/443     Caddy; everything else loopback-only
 HiCache                     ratio 3    ~52 GB pinned host RAM / replica
-request tracing             OTLP -> collector -> Langfuse, level 3
-trace cost                  ~410 B/span, ~24 MB/day — measured, not assumed
+request records             --export-metrics-to-file -> Vector -> ClickHouse (no prompt text)
+tracing                     off (Langfuse and OTLP removed 2026-09-14)
 clickhouse retention        3d diagnostics / 7d audit, logs capped at ~130 MB
 ```
 
