@@ -16,17 +16,18 @@ than sequenced. Each one below was tested, not assumed.
 
 | Dependency | If it is not ready yet | Verified |
 |---|---|---|
-| SGLang replicas → otel-collector | No effect. `process_tracing_init` returns in 0.01s against a dead endpoint — the gRPC exporter is lazy | measured against the pinned image |
+| SGLang replicas → Vector / ClickHouse | No effect. Replicas append request records to a local file; Vector reads it with checkpoints and deletes a file only 3 days after reading it | by design |
 | Vector → ClickHouse | Buffers to disk and replays. Killed CH for 123s with 6 requests in flight: 15 rows, 15 unique ids, no gap, no duplicates | fault-injected |
 | redis-exporter → higress-redis | Stays running, reports `redis_up 0` | fault-injected |
 | Prometheus → any target | Target shows down; scraping is pull and retries forever | by design |
 | Alertmanager → Prometheus | Prometheus pushes with retry; a late Alertmanager loses only that window | by design |
-| langfuse-web → postgres/CH/redis/minio | Restarts until they are healthy; `unless-stopped` converges | observed during this session's recreates |
+| Prometheus `engine-usage` scrape → ClickHouse | Target down until ClickHouse is healthy; usage screens in the bot say "usage data unavailable" rather than showing zero | fault-injected 2026-09-15 (ClickHouse recreate) |
 | controller, plugin-server → prepare | **Was a landmine.** `prepare` 403'd against the apiserver from the day `--auth-enabled` landed, and both gate on `service_completed_successfully`. Fixed; `prepare` exits 0 | fixed and verified |
 | Replicas → GPU | `nvidia-persistenced` enabled, persistence mode Enabled on both GPUs | checked |
 
-The one genuinely unsequenced risk left is cosmetic: langfuse-web may restart a
-few times before its four data stores are healthy. It converges on its own.
+Nothing unsequenced is left that does not converge on its own. (Until
+2026-09-14 langfuse-web restarted a few times while its four data stores came
+up; Langfuse is gone.)
 
 ## Fault behaviour that is deliberate, not a bug
 
@@ -53,6 +54,7 @@ rebuild on a fresh clone, not for the restart itself.
 | `.env` | nothing starts | restore from backup — no other source |
 | `alertmanager/webhook_secret` | Alertmanager crash-loops at config load | `grep '^ALERT_WEBHOOK_SECRET=' .env \| cut -d= -f2- > alertmanager/webhook_secret && chmod 644 $_` |
 | `vector/secrets.json` | Vector 403s against ClickHouse | `./deploy/render-vector-secrets.sh` |
+| `prometheus/secrets/engine_metrics_clickhouse.pass` | `engine-usage` scrape 401s; bot usage screens go empty | `./deploy/render-prometheus-secrets.sh` |
 | `higress-standalone/consumers.conf` | no consumer can authenticate | restore from backup |
 | `quota-bot/.env` | bot will not start | restore from backup |
 
@@ -68,17 +70,17 @@ risk from `docker network prune` while everything is down.
 | `higress_higress-net` | higress project | |
 | `qwen36-27b-backend` | this project | |
 
-**A coupling added on 2026-09-04:** the langfuse overlay now declares
-`higressint` as external, because the otel-collector joined it so the gateway
-could push spans. If `higressint` disappears, the metrics/langfuse stack no
-longer starts — previously only the gateway cared.
+**Coupling:** the metrics overlay declares `higressint` as external, because
+Prometheus and the redis-exporter reach the quota ledger on it. If `higressint`
+disappears, the metrics stack no longer starts. (The ClickHouse overlay dropped
+its own reference with the OTel collector on 2026-09-15.)
 
 ## Before rebooting
 
 ```bash
 # 1. no drift: compose should want to recreate nothing
 docker compose -f docker-compose.yml -f docker-compose.metrics.yml \
-               -f docker-compose.langfuse.yml up -d --dry-run 2>&1 | grep -c Recreate
+               -f docker-compose.clickhouse.yml up -d --dry-run 2>&1 | grep -c Recreate
 # expect: 0
 
 # 2. nothing in flight
@@ -95,7 +97,7 @@ another project.
 # every container up, none unhealthy or restarting
 docker ps --format '{{.Names}}\t{{.Status}}' | grep -iE 'unhealthy|Restarting'   # expect empty
 
-# 14/14 scrape targets
+# 14/14 scrape targets (engine-usage included)
 curl -s localhost:9090/api/v1/targets | python3 -c "import json,sys; \
 ts=json.load(sys.stdin)['data']['activeTargets']; \
 print(len([t for t in ts if t['health']=='up']),'/',len(ts))"
@@ -110,13 +112,13 @@ docker exec higress-redis redis-cli --scan --pattern 'chat_tier:*'  | wc -l   # 
 # fact table still growing, and no gap across the reboot
 docker exec qwen36-27b-langfuse-clickhouse clickhouse-client --password "$PW" \
   -q "SELECT count(), max(ts) FROM gateway.requests FINAL"
-# trace ingest alive
+# engine request records still arriving (after the first real request below)
 docker exec qwen36-27b-langfuse-clickhouse clickhouse-client --password "$PW" \
-  -q "SELECT max(modification_time) FROM system.parts WHERE active AND database='default' AND table='events_core'"
+  -q "SELECT count(), max(finished_at) FROM engine.requests FINAL WHERE source='engine'"
 ```
 
 Then one real request end to end, which exercises auth, quota, routing, the
-engine, the access log and both trace paths at once:
+engine, the access log and the engine's request records at once:
 
 ```bash
 curl -H "Authorization: $ADMIN" -H 'Content-Type: application/json' \
@@ -124,12 +126,12 @@ curl -H "Authorization: $ADMIN" -H 'Content-Type: application/json' \
   https://qw38-27b-gw.duckdns.org/v1/chat/completions
 ```
 
-It should return 200, add one row to `gateway.requests` with the right consumer,
-and decrement that consumer's balance by exactly the token count.
+It should return 200, add one row to `gateway.requests` and one to
+`engine.requests` with the right consumer and identical token counts, and
+decrement that consumer's balance by exactly that count.
 
 ## Expected noise, so it is not mistaken for damage
 
-- **langfuse-web restarting a few times** while its data stores come up.
 - **A burst of alerts then silence.** `PrometheusTargetDown` will fire for
   whatever is slowest to return and resolve itself. Both directions deliver to
   Telegram.

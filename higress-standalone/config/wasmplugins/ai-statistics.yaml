@@ -77,11 +77,3 @@ spec:
             apply_to_log: false
             default_value: unauthenticated
 
-          # The same value under the key Langfuse maps to its own user field,
-          # so per-user views populate without a query being written by hand.
-          - key: langfuse.user.id
-            value_source: request_header
-            value: x-mse-consumer
-            apply_to_span: true
-            apply_to_log: false
-            default_value: unauthenticated

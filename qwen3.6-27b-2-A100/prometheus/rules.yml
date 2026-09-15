@@ -38,44 +38,35 @@ groups:
           )
 
       # -----------------------------------------------------------------------
-      # Spend over the last day.
+      # Spend over the last day, exact.
       #
-      # CAVEAT, and it is the reason Stage B exists: these are Envoy counters,
-      # which are process-lifetime. A gateway restart inside the 24h window
-      # resets them to zero and `increase()` under-reports the spend — silently,
-      # and always in the optimistic direction.
+      # Since 2026-09-14 these read the engine's per-request records
+      # (engine.requests, summed in ClickHouse and scraped as gauges by job
+      # `engine-usage`), not Envoy counters. increase() over the counters lost
+      # the first request after every restart and extrapolated to the window
+      # edges; these are plain sums over the requests SGLang finished in the
+      # last 24h. Aborted requests are excluded, as the ledger charged them
+      # nothing. The engine says `consumer`; the ledger side says ai_consumer.
       #
-      # That makes this good enough for "roughly how fast is this consumer
-      # burning" and unfit for an invoice. Billing reads the balance above.
-      # -----------------------------------------------------------------------
-      - record: consumer:quota_spend:tokens24h
-        expr: |
-          sum by (ai_consumer) (
-            increase(route_upstream_model_consumer_metric_total_token[24h])
-          )
-
-      # -----------------------------------------------------------------------
-      # The same spend, split by direction.
-      #
-      # The ledger cannot tell these apart — ai-quota deducts input+output 1:1
-      # and v2.2.4 has no weighting field — but they are not the same cost. An
-      # output token is a forward pass; an input token is prefilled once and, on
-      # a multi-turn agent re-sending its context, usually a radix-cache hit.
-      #
-      # Recorded so the bot, the dashboard and any future pricing conversation
-      # all read the same numbers rather than three re-derivations.
+      # The ledger cannot tell input from output — ai-quota deducts both 1:1 —
+      # but they are not the same cost: an input token on an agent re-sending
+      # its context is usually a prefix-cache hit.
       # -----------------------------------------------------------------------
       - record: consumer:quota_spend:input24h
         expr: |
           sum by (ai_consumer) (
-            increase(route_upstream_model_consumer_metric_input_token[24h])
+            label_replace(engine_usage_prompt_tokens{window="24h",consumer!=""}, "ai_consumer", "$1", "consumer", "(.+)")
           )
 
       - record: consumer:quota_spend:output24h
         expr: |
           sum by (ai_consumer) (
-            increase(route_upstream_model_consumer_metric_output_token[24h])
+            label_replace(engine_usage_completion_tokens{window="24h",consumer!=""}, "ai_consumer", "$1", "consumer", "(.+)")
           )
+
+      - record: consumer:quota_spend:tokens24h
+        expr: |
+          consumer:quota_spend:input24h + consumer:quota_spend:output24h
 
       # Input tokens charged per output token produced. A consumer near 1 is
       # doing generative work; one in the tens is paying mostly to re-send
@@ -117,27 +108,22 @@ groups:
               )
 
       # -----------------------------------------------------------------------
-      # Share of the node's tokens, per consumer.
+      # Share of the node's tokens, per consumer, last hour, exact.
       #
-      # The fair answer to "who is using the box". Token counts alone flatter
-      # whoever sends many small requests; this is the fraction of everything
-      # the engine actually produced and consumed.
-      #
-      # Denominator is the ENGINE's own totals, not the sum of gateway counters,
-      # so traffic on the direct (unmetered) hostname is included in the whole.
-      # A consumer's share therefore says "of everything this node did", and the
-      # shares deliberately do not sum to 1 — the gap is the unattributed 87%.
+      # The denominator is every request the engine finished, including traffic
+      # on the direct (unmetered) hostname, which carries no consumer label. A
+      # consumer's share therefore says "of everything this node did", and the
+      # shares need not sum to 1.
       # -----------------------------------------------------------------------
       - record: consumer:token_share:ratio1h
         expr: |
-          sum by (ai_consumer) (rate(route_upstream_model_consumer_metric_total_token[1h]))
-            / scalar(
-                clamp_min(
-                  sum(rate(sglang:generation_tokens_total[1h]))
-                  + sum(rate(sglang:prompt_tokens_total[1h])),
-                  1
-                )
-              )
+          sum by (ai_consumer) (
+            label_replace(
+              engine_usage_prompt_tokens{window="1h",consumer!=""} + engine_usage_completion_tokens{window="1h",consumer!=""},
+              "ai_consumer", "$1", "consumer", "(.+)")
+          )
+            / scalar(clamp_min(
+                sum(engine_usage_prompt_tokens{window="1h"}) + sum(engine_usage_completion_tokens{window="1h"}), 1))
 
   - name: quota
     rules:
@@ -165,6 +151,9 @@ groups:
       # -----------------------------------------------------------------------
       # Exhausted, and gated on the consumer being real.
       #
+      # Activity = any gateway request in 7 days, 403s included: an exhausted
+      # consumer never reaches the engine, so engine records cannot show it.
+      #
       # The activity guard matters: a seeded-but-parked consumer sitting at 0 is
       # not an incident, and would otherwise fire forever — the exact failure
       # that made GpuMemoryPressure and the apiserver job worthless.
@@ -177,7 +166,10 @@ groups:
         expr: |
           sum by (ai_consumer) (consumer:quota_balance:tokens) <= 0
           and on(ai_consumer)
-          sum by (ai_consumer) (increase(route_upstream_model_consumer_metric_llm_duration_count[7d])) > 0
+          sum by (ai_consumer) (
+            label_replace(gateway_usage_requests{window="7d",consumer!="unauthenticated"},
+                          "ai_consumer", "$1", "consumer", "(.+)")
+          ) > 0
         for: 5m
         labels:
           severity: warning
@@ -205,5 +197,5 @@ groups:
           summary: "{{ $labels.ai_consumer }} has under a day of quota left"
           description: >-
             At the last 24h burn rate this consumer runs out within a day.
-            Note the burn rate is derived from Envoy counters, which reset on a
-            gateway restart, so it under-reports rather than over-reports.
+            The burn rate is the exact sum of tokens the engine processed for
+            this consumer in the last 24 hours.

@@ -2,23 +2,10 @@ apiVersion: v1
 data:
   higress: |-
     tracing:
-      enable: true
-      # 100% — every request produces a gateway span. Volume here is a few
-      # hundred requests a day and the collector has already moved 2.9M spans
-      # without complaint, so head-based sampling would only lose the one trace
-      # someone actually wants to look at.
-      sampling: 100
-      timeout: 500
-      opentelemetry:
-        # The collector was backend-only until 2026-09-04 and the gateway has
-        # no route to that network. It now also sits on higressint, which the
-        # gateway is on. The name must contain a dot: Higress's DNS handling
-        # rejects single-label hosts, which is the same trap that made
-        # `qwen36-27b-router` fail and `qwen36-27b-router.edge` work.
-        # <registry-name>.<registry-type>, NOT a hostname — see the
-        # otel-collector entry in config/mcpbridges/default.yaml.
-        service: otel-collector.dns
-        port: "4317"
+      # OFF since 2026-09-14: Langfuse and the OTel collector were removed.
+      # Per-request facts are the access log (ClickHouse gateway.requests) and
+      # the engine's own records (engine.requests).
+      enable: false
     mcpServer:
       enable: false
       sse_path_suffix: /sse

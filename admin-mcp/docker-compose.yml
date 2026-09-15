@@ -18,13 +18,12 @@
 #      validation per the MCP transport spec.
 #   3. Its ClickHouse credential is readonly=2 with capped settings
 #      (see qwen3.6-27b-2-A100/clickhouse/users.d/mcp-readonly.xml). It cannot
-#      write to the trace store even if everything above is bypassed.
+#      write to ClickHouse even if everything above is bypassed.
 #   4. It cannot create or revoke keys at all — see the header of mcp.cs. The
 #      only writes are balance changes through the gateway's quota API.
 #
-# The same dual-homing already exists for langfuse-web, and it carries the same
-# trap: a container on two networks must bind 0.0.0.0 or it listens on one and
-# silently refuses the other. ASPNETCORE_URLS below is that binding.
+# Dual-homing carries a trap: a container on two networks must bind 0.0.0.0 or
+# it listens on one and silently refuses the other. ASPNETCORE_URLS below is that binding.
 # =============================================================================
 
 services:
@@ -93,7 +92,7 @@ services:
 
     networks:
       # edge      -> Caddy reaches this container; Prometheus lives here too.
-      # backend   -> ClickHouse (the fact table and the span store).
+      # backend   -> ClickHouse (gateway.requests and engine.requests).
       # higress   -> the gateway's quota API, for balance writes.
       edge:
       backend:

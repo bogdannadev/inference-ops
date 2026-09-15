@@ -81,6 +81,34 @@ sources:
     acknowledgements:
       enabled: true
 
+  # ---------------------------------------------------------------------------
+  # SGLang per-request usage records (2026-09-14) -> engine.requests.
+  #
+  # One JSON line per request the engine finished, written by
+  # --export-metrics-to-file into logs/<replica>/request-metrics/, one file per
+  # hour. This is the EXACT usage record: Prometheus counters derived from the
+  # same engine lose each consumer's first request after a replica start and
+  # extrapolate at window edges, which on a cost-sensitive customer view is not
+  # acceptable. Same guarantees as gateway_access: checkpointed, acknowledged
+  # end to end, disk-buffered sink.
+  #
+  # remove_after_secs: a file is deleted 3 days after Vector has read it to EOF
+  # and nothing new was written, so the directory does not grow forever. The
+  # data is durable in ClickHouse by then (acknowledgements + disk buffer).
+  # ---------------------------------------------------------------------------
+  engine_request_files:
+    type: file
+    include:
+      - /var/log/sglang/r0/sglang-request-metrics-*.log
+      - /var/log/sglang/r1/sglang-request-metrics-*.log
+    fingerprint:
+      strategy: checksum
+      lines: 1
+    read_from: beginning
+    remove_after_secs: 259200
+    acknowledgements:
+      enabled: true
+
 transforms:
   # ---------------------------------------------------------------------------
   # Shape the Envoy line into the table's columns.
@@ -126,8 +154,7 @@ transforms:
 
       . = {
         # STAGE D — deployment identity, the same pair Prometheus stamps via
-        # global.external_labels and the otel-collector stamps as span resource
-        # attributes. The columns carry DEFAULTs so an older Vector that omits
+        # global.external_labels. The columns carry DEFAULTs so an older Vector that omits
         # them still inserts correctly; writing them explicitly is what makes a
         # SECOND node stamp its own identity instead of inheriting this one's.
         "node":           "a100",
@@ -152,148 +179,109 @@ transforms:
       }
 
   # ---------------------------------------------------------------------------
-  # Metric branch. Same events, second consumer.
+  # Shape an SGLang request record into engine.requests.
   #
-  # This exists to close a real gap rather than to duplicate the table:
-  # ai-statistics emits seven counters and NONE of them carries a status code or
-  # a latency histogram, so "which consumer is getting 422s" and "what is p95 for
-  # this consumer" were unanswerable from Prometheus. They are answerable from
-  # ClickHouse, but quota-bot cannot reach ClickHouse — it lives on edge and the
-  # trace store is backend-only, and putting an internet-reachable bot on the
-  # backend would hand it a route to the worker ports.
-  #
-  # So the aggregates go where the bot already looks. ClickHouse stays the
-  # durable per-request record; these are rates and distributions, and like every
-  # other counter here they reset when their process does. Billing still reads
-  # the ledger.
+  # The record is meta_info from the response plus the request object as a JSON
+  # STRING (request_parameters). Timestamps are wall-clock epoch seconds. The
+  # consumer is custom_labels.consumer, set by the gateway header
+  # x-request-id-labels; empty for traffic that bypassed the gateway.
+  # Prompt text is not in the record (--log-requests-level 1 skips it).
   # ---------------------------------------------------------------------------
-  gateway_metric_fields:
+  engine_rows:
     type: remap
-    inputs: [gateway_rows]
+    inputs: [engine_request_files]
+    drop_on_error: true
+    drop_on_abort: true
+    reroute_dropped: true
     source: |
-      # Bucketed, not raw. A per-status label would put every distinct code in
-      # the label set; the operator question is "2xx or not", and the exact code
-      # is one ClickHouse query away.
-      code = int!(.status)
-      .status_class = if code >= 500 { "5xx" }
-        else if code >= 400 { "4xx" }
-        else if code >= 300 { "3xx" }
-        else if code >= 200 { "2xx" }
-        else { "other" }
-      # Empty consumer means the request never authenticated. Naming it makes
-      # the 401 path visible in the same breakdown instead of vanishing.
-      if .consumer == "" { .consumer = "unauthenticated" }
+      r = object!(parse_json!(string!(.message)))
+      params = object(parse_json(string(r.request_parameters) ?? "{}") ?? {}) ?? {}
+      labels = object(params.custom_labels) ?? {}
+      file = string(.file) ?? ""
+      replica = if contains(file, "/r0/") { "r0" } else if contains(file, "/r1/") { "r1" } else { "unknown" }
 
-      # SECONDS, not milliseconds, and this is not cosmetic. The exporter's
-      # default histogram buckets run 0.005 -> 10, which are calibrated for a
-      # latency in seconds. Fed milliseconds, every real request (~200) lands in
-      # +Inf and histogram_quantile returns nonsense — observed exactly that:
-      # 4 observations, all of them above the top finite bucket.
-      #
-      # Base units are also the Prometheus convention, so the metric is named
-      # _seconds and reads correctly in Grafana without a unit override.
-      .duration_s = to_float!(.duration_ms) / 1000.0
+      # to_float(null) is 0.0, not an error, so `??` never falls through: an
+      # aborted request has no request_finished_ts, only the response-sent time.
+      fin = to_float(r.request_finished_ts) ?? 0.0
+      if fin <= 0.0 { fin = to_float(r.response_sent_to_client_ts) ?? 0.0 }
+      if fin <= 0.0 { abort }
+      recv = to_float(r.request_received_ts) ?? 0.0
+      if recv <= 0.0 { recv = fin }
+      fwd = to_float(r.forward_entry_time) ?? 0.0
+      pf = to_float(r.prefill_finished_time) ?? 0.0
 
-      # UNBILLED CUTS. ai-quota charges from the final usage frame, so a request
-      # that ends before it — client disconnect (DC), stream idle timeout (SI),
-      # upstream reset, protocol error or timeout (UC, UPE, UT) — is charged
-      # nothing, and SGLang's token counters skip aborted requests too. Measured
-      # 2026-09-13 with deliberate cuts: 0 charged, 0 on the engine counters.
-      # One consumer had 24 of 666 chat requests end that way, 2,303 s of wall
-      # time. Nothing else in the stack counts them.
-      #
-      # Set on EVERY event, 0 unless it is a cut, and both halves of that are
-      # load-bearing:
-      #   - Prometheus sees no increase in a counter whose first sample is
-      #     already 1, so a series that only appeared on a cut would read as
-      #     zero forever;
-      #   - log_to_metric drops the WHOLE event when any metric's field is
-      #     missing (caught by the unit test), so leaving it unset on ai-models
-      #     would silently cost those requests their requests_total as well.
-      billable = includes(["ai-chat", "ai-completions"], .route)
-      flags = string(.response_flags) ?? ""
-      cut = billable && (int(.total_tokens) ?? 0) == 0 && match(flags, r'(^|,)(DC|SI|UC|UPE|UT)(,|$)')
-      .unbilled_cut = if cut { 1 } else { 0 }
-      .unbilled_cut_s = if cut { .duration_s } else { 0.0 }
+      det = object(r.cached_tokens_details) ?? {}
+      # A scheduler-side abort's record (_handle_abort_req) carries no prompt or
+      # cache fields at all: its cache split is unknown, not zero, and stays
+      # NULL so it never dilutes a hit rate. (A client disconnect writes no
+      # record: SGLang raises before the exporter runs.)
+      # Without a details object SGLang still reports the total; count it as
+      # device, which is where it came from on a node without L3 storage.
+      # to_int(null) is 0, not an error, so absence has to be tested explicitly.
+      cached = null
+      device = null
+      host = null
+      storage = null
+      if r.cached_tokens != null {
+        cached = to_int(r.cached_tokens) ?? 0
+        device = if det.device != null { to_int(det.device) ?? cached } else { cached }
+        host = if det.host != null { to_int(det.host) ?? 0 } else { 0 }
+        storage = if det.storage != null { to_int(det.storage) ?? 0 } else { 0 }
+      }
+      reasoning = if r.reasoning_tokens != null { to_int(r.reasoning_tokens) ?? null } else { null }
+      queue = if r.queue_time != null { to_float(r.queue_time) ?? null } else { null }
+      e2e = if r.e2e_latency != null { to_float(r.e2e_latency) ?? null } else { null }
 
-  gateway_metrics:
-    type: log_to_metric
-    inputs: [gateway_metric_fields]
-    metrics:
-      - type: counter
-        field: status
-        name: requests_total
-        namespace: gateway
-        tags:
-          consumer: "{{consumer}}"
-          route: "{{route}}"
-          status_class: "{{status_class}}"
+      # TWO CLOCKS. request_received_ts, api_server_dispatch_finish_ts and
+      # request_finished_ts are stamped by the tokenizer process;
+      # forward_entry_time and prefill_finished_time by the scheduler process.
+      # Each turns its monotonic clock into wall time with its own anchor, and
+      # the anchors drift apart: on r0 on 2026-09-15 the scheduler ran 1.03 s
+      # ahead, so pf - recv gave a 1.1 s TTFT on a 0.12 s request. Only
+      # same-process differences and SGLang's own durations are used:
+      #   prefill = pf - fwd                         (scheduler clock)
+      #   ttft    = (dispatch - recv) + queue_time + prefill
+      #   decode  = e2e_latency - ttft
+      # ttft misses only the tokenizer->scheduler hop: 2.6 ms median, 35 ms p95
+      # against pf - recv on a replica whose clocks agree (r1, 105 requests).
+      disp = to_float(r.api_server_dispatch_finish_ts) ?? 0.0
+      ttft = null
+      prefill = null
+      decode = null
+      if pf > 0.0 && fwd > 0.0 {
+        prefill = round(pf - fwd, precision: 6)
+        if disp > 0.0 && queue != null {
+          ttft = round((disp - recv) + to_float(queue) + (pf - fwd), precision: 6)
+          if e2e != null { decode = round(to_float(e2e) - to_float(ttft), precision: 6) }
+        }
+      }
 
-      # SPLIT BY DIRECTION, not a single total.
-      #
-      # ai-quota deducts input+output 1:1 and cannot be configured otherwise —
-      # in v2.2.4 that is literally `totalToken := int(inputToken + outputToken)`
-      # followed by a DECRBY, with no weighting field on QuotaConfig. Whether
-      # that is the right price is a business decision, but it cannot even be
-      # discussed while the metric reports one undifferentiated number.
-      #
-      # It matters here because the two are not remotely alike in cost. Output
-      # tokens each cost a forward pass, and decode on this node is
-      # bandwidth-bound at ~50ms. Input tokens are prefilled in one pass and,
-      # on a multi-turn agent conversation that re-sends its context, mostly hit
-      # the radix cache — node-wide, 190.6M of 224.7M prompt tokens have been
-      # cache hits, 84.8%.
-      #
-      # First real consumer measured 97.9% input: 334,210 in against 7,293 out.
-      - type: counter
-        field: input_tokens
-        name: tokens_total
-        namespace: gateway
-        increment_by_value: true
-        tags:
-          consumer: "{{consumer}}"
-          model: "{{model}}"
-          direction: input
+      fr = r.finish_reason
+      finish = if is_object(fr) { string(fr.type) ?? "unknown" } else { string(fr) ?? "unknown" }
 
-      - type: counter
-        field: output_tokens
-        name: tokens_total
-        namespace: gateway
-        increment_by_value: true
-        tags:
-          consumer: "{{consumer}}"
-          model: "{{model}}"
-          direction: output
-
-      # Requests cut off before their usage frame, and their wall time. See
-      # unbilled_cut in gateway_metric_fields.
-      - type: counter
-        field: unbilled_cut
-        name: unbilled_requests_total
-        namespace: gateway
-        increment_by_value: true
-        tags:
-          consumer: "{{consumer}}"
-          route: "{{route}}"
-
-      - type: counter
-        field: unbilled_cut_s
-        name: unbilled_seconds_total
-        namespace: gateway
-        increment_by_value: true
-        tags:
-          consumer: "{{consumer}}"
-          route: "{{route}}"
-
-      # The distribution ai-statistics cannot give us. Percentiles are computed
-      # by the exporter below, so p95 per consumer becomes a real query.
-      - type: histogram
-        field: duration_s
-        name: request_duration_seconds
-        namespace: gateway
-        tags:
-          consumer: "{{consumer}}"
-          route: "{{route}}"
+      . = {
+        "finished_at":       format_timestamp!(from_unix_timestamp!(to_int(fin * 1000.0), unit: "milliseconds"), "%Y-%m-%d %H:%M:%S%.3f"),
+        "received_at":       format_timestamp!(from_unix_timestamp!(to_int(recv * 1000.0), unit: "milliseconds"), "%Y-%m-%d %H:%M:%S%.3f"),
+        "rid":               string(r.id) ?? string(params.rid) ?? "",
+        "consumer":          string(labels.consumer) ?? "",
+        "replica":           replica,
+        "is_streaming":      bool(params.stream) ?? false,
+        "prompt_tokens":     to_int(r.prompt_tokens) ?? 0,
+        "completion_tokens": to_int(r.completion_tokens) ?? 0,
+        "reasoning_tokens":  reasoning,
+        "cached_tokens":     cached,
+        "cached_device":     device,
+        "cached_host":       host,
+        "cached_storage":    storage,
+        "queue_s":           queue,
+        "ttft_s":            ttft,
+        "prefill_s":         prefill,
+        "decode_s":          decode,
+        "e2e_s":             e2e,
+        "finish_type":       finish,
+        "num_retractions":   to_int(r.num_retractions) ?? 0,
+        "source":            "engine"
+      }
 
 sinks:
   clickhouse:
@@ -340,38 +328,36 @@ sinks:
       retry_initial_backoff_secs: 1
       retry_max_duration_secs: 300
 
+  clickhouse_engine:
+    type: clickhouse
+    inputs: [engine_rows]
+    endpoint: http://qwen36-27b-langfuse-clickhouse:8123
+    database: engine
+    table: requests
+    auth:
+      strategy: basic
+      user: clickhouse
+      password: "SECRET[ch.clickhouse_password]"
+    skip_unknown_fields: false
+    # Same reasoning as the gateway sink: an outage is a delay, never a hole.
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
+    batch:
+      max_events: 1000
+      timeout_secs: 5
+    request:
+      retry_attempts: 10
+      retry_initial_backoff_secs: 1
+      retry_max_duration_secs: 300
+
 # The parse failures rerouted above. Written to the container log rather than
 # dropped, so a format change shows up as visible noise instead of a table that
 # quietly stops growing.
-  # Scraped by Prometheus (job: vector) on the backend network.
-  metrics:
-    type: prometheus_exporter
-    inputs: [gateway_metrics]
-    address: 0.0.0.0:9598
-    # Without this, a consumer who stops sending traffic keeps reporting its last
-    # value forever and the board shows phantom activity. 10 minutes is longer
-    # than any plausible scrape gap and short enough that a revoked consumer
-    # disappears the same day.
-    flush_period_secs: 600
-    quantiles: [0.5, 0.95, 0.99]
-
-    # BUCKETS FOR LLM LATENCY, not web latency.
-    #
-    # The exporter's defaults stop at le="10", which is right for an HTTP API
-    # and wrong here. Caught on the first real agent traffic: a consumer whose
-    # exact p95 was 16.7s and whose slowest request took 35.7s reported a
-    # Prometheus p95 of exactly 10.00s — histogram_quantile cannot interpolate
-    # past the highest finite bucket, so a saturated histogram silently pins to
-    # its top edge and reads like a healthy number.
-    #
-    # A 36k-token prompt legitimately takes tens of seconds on this node, and
-    # --context-length is 169000, so the tail is genuinely long. These run to
-    # 300s so the ceiling is the request timeout rather than the bucket set.
-    buckets: [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0]
-
   dead_letter:
     type: console
-    inputs: [gateway_rows.dropped]
+    inputs: [gateway_rows.dropped, engine_rows.dropped]
     encoding:
       codec: json
 

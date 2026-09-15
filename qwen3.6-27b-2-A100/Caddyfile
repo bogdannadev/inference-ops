@@ -322,27 +322,6 @@ qw38-27b-grafana.duckdns.org {
 	}
 }
 
-# Langfuse — LLM trace explorer. Note .org, not .com: DuckDNS is duckdns.org,
-# and qw38-27b-langfuse.duckdns.com resolves to an unrelated third party's
-# server (212.32.254.36, checked 2026-09-04). Pointing a site block at the .com
-# would fail ACME and send traffic to a stranger.
-#
-# Two things had to change in docker-compose.langfuse.yml before this hostname
-# could be served safely, and both are load-bearing:
-#   NEXTAUTH_URL       must be this public URL, or the login round-trip
-#                      redirects to localhost:3001 and auth silently fails.
-#   AUTH_DISABLE_SIGNUP  Langfuse allows registration by default. Acceptable on
-#                      loopback, not on a public hostname.
-qw38-27b-langfuse.duckdns.org {
-	tls contact@bogdanna.dev
-
-	reverse_proxy qwen36-27b-langfuse-web:3000 {
-		# Traces stream in; keep responses unbuffered for the same reason as
-		# Grafana above.
-		flush_interval -1
-	}
-}
-
 # -----------------------------------------------------------------------------
 # Metrics exposition — internal only
 #

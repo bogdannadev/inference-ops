@@ -5,9 +5,10 @@ An MCP server for operating this inference node from an admin's Claude client.
 ## Why it exists
 
 `quota-bot` already answers "what is happening" from Telegram, and it is
-deliberately blind to the two stores that matter most for tracing: it runs on
-`edge`, the fact table and the span store are backend-only, and so `/trace`
-prints SQL for a human to run rather than running it. That was the right call
+deliberately blind to the per-request tables: it runs on `edge`, ClickHouse
+(`gateway.requests`, the access log; `engine.requests`, SGLang's own record of
+every finished request) is backend-only, and so `/trace` prints SQL for a human
+to run rather than running it. That was the right call
 for a bot reachable from a public Telegram webhook.
 
 This process is the one allowed to cross that line. What it buys is not another
@@ -42,7 +43,8 @@ Four layers, and the design assumes any one of them can fail.
 Beyond the front door:
 
 - Its ClickHouse identity is `readonly=2` with capped settings — it cannot write
-  to the trace store or the fact table even if everything above is bypassed.
+  to either per-request table even if everything above is bypassed, and it can
+  read only the `gateway` and `engine` databases.
   See `qwen3.6-27b-2-A100/clickhouse/users.d/mcp-readonly.xml`, which also
   explains why `readonly=2` and not `1`.
 - Every SQL statement is a literal in this file with **bound parameters**.
@@ -80,11 +82,11 @@ Read:
 
 ```
 list_consumers                     names, balances, runway
-consumer_stats <name> <window>     gateway AND engine view of one consumer, reference cost
-consumer_requests <name> ...       individual requests from the fact table
-request_detail <request_id>        one request end to end, the two-hop join
-top_consumers <window>             ranking by tokens
-node_health                        targets, alerts, throughput, KV pressure
+consumer_stats <name> <window>     exact usage, cache split, engine and gateway latency, refusals, cuts, reference cost
+consumer_requests <name> ...       individual requests from both per-request tables
+request_detail <request_id>        one request: gateway row joined to its engine row
+top_consumers <window>             ranking by tokens charged (exact)
+node_health                        targets, alerts, throughput, KV pressure, cache, usage-records freshness
 prometheus_query <promql>          arbitrary instant query, read-only by nature
 list_tiers                         the tier table, for choosing one
 get_policy <name>                  a consumer's settings, and which follow its tier

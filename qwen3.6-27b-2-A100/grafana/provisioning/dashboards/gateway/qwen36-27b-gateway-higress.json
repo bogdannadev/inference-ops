@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Per-consumer usage and health for the paid Higress gateway. Billing truth is the Redis ledger, which ai-quota decrements by input+output tokens 1:1 (hardcoded in v2.2.4 \u2014 there is no weighting option). Per-request detail lives in the gateway.requests fact table. NOTE: an earlier version of this text claimed the access log carries cached_tokens; it does not \u2014 SGLang returns prompt_tokens_details: null, so ai-statistics' input_token_details is always empty.",
+  "description": "Per-consumer usage and health for the paid Higress gateway. Billing truth is the Redis ledger, which ai-quota decrements by input+output tokens 1:1 (hardcoded in v2.2.4 — there is no weighting option). Per-request detail lives in the gateway.requests fact table. NOTE: an earlier version of this text claimed the access log carries cached_tokens; it does not — SGLang returns prompt_tokens_details: null, so ai-statistics' input_token_details is always empty.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -20,7 +20,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**Paid gateway \u2014 `qw38-27b-gw.duckdns.org`.** Series come from the `ai-statistics` wasm plugin, scraped from Envoy on `higress:15090`. Verified against the ledger: a request reporting 54/16/70 tokens moved these counters by exactly 54/16/70 and the Redis balance by 70.\n\nThese are **counters that reset when the gateway container restarts** \u2014 always read them through `rate()` or `increase()`, which handle resets. Raw totals are not a billing figure.\n\n**Not here: each consumer's REMAINING quota.** That lives in `higress-redis` (RESP, not HTTP) and would need a `redis_exporter`. Read it with `curl -H \"Authorization: $ADMIN\" 'https://qw38-27b-gw.duckdns.org/v1/chat/completions/quota?consumer=<name>'`."
+        "content": "**Paid gateway — `qw38-27b-gw.duckdns.org`.** Series come from the `ai-statistics` wasm plugin, scraped from Envoy on `higress:15090`. Verified against the ledger: a request reporting 54/16/70 tokens moved these counters by exactly 54/16/70 and the Redis balance by 70.\n\nThese are **counters that reset when the gateway container restarts** — always read them through `rate()` or `increase()`, which handle resets. Raw totals are not a billing figure.\n\n**Not here: each consumer's REMAINING quota.** That lives in `higress-redis` (RESP, not HTTP) and would need a `redis_exporter`. Read it with `curl -H \"Authorization: $ADMIN\" 'https://qw38-27b-gw.duckdns.org/v1/chat/completions/quota?consumer=<name>'`."
       }
     },
     {
@@ -153,7 +153,7 @@
     },
     {
       "type": "table",
-      "title": "Billing view \u2014 tokens over the selected range",
+      "title": "Envoy token counters over the selected range (approximate)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -164,7 +164,7 @@
         "w": 12,
         "h": 9
       },
-      "description": "increase() over the dashboard time range, so it is correct across gateway restarts. Set the range to your billing period. cached_tokens is NOT here \u2014 it is per-request and lives in the gateway access log; use it to price cache reads lower than fresh input.",
+      "description": "Higress ai-statistics counters with increase(): they reset when the gateway restarts, extrapolate to the range edges and can miss the first request of a series. Not the billing record and not exact usage — for exact per-consumer tokens use Usage & Quota → 'Exact usage by consumer' (SGLang's per-request records); the ledger balance is what bills.",
       "fieldConfig": {
         "defaults": {
           "unit": "short"
