@@ -23,12 +23,9 @@ global:
   # metrics to a shared target, without editing every rule again.
   external_labels:
     node: a100
-    # STAGE D: the same pair the otel-collector stamps on every span
-    # (`otel/collector.yaml`, processor `resource/identity`) and the same pair
-    # Vector writes into `gateway.requests`. Metrics, traces and the fact table
-    # now agree on what identifies this deployment, so a query can carry the
-    # same predicate across all three stores.
-    stack: qwen36-27b
+    # STAGE D: the same pair Vector writes into `gateway.requests`, so metrics
+    # and the access log agree on what identifies this deployment and a query
+    # can carry the same predicate across both.
     stack: qwen36-27b
 
 # Prometheus-native alerting rules (infra-level: endpoint up, GPU health).
@@ -253,24 +250,7 @@ scrape_configs:
           node: a100
 
   # ---------------------------------------------------------------------------
-  # OpenTelemetry Collector — trace pipeline self-telemetry
-  #
-  # Watch `otelcol_exporter_send_failed_spans` and `otelcol_exporter_queue_size`
-  # here: a Langfuse outage or a stale LANGFUSE_OTEL_AUTH shows up as failed
-  # spans and a filling queue long before anyone notices the UI is empty.
-  # Dropped spans are also the signal that the batch settings need widening.
-  # ---------------------------------------------------------------------------
-  - job_name: otel-collector
-    scrape_interval: 15s
-    static_configs:
-      - targets:
-          - otel-collector:8888
-        labels:
-          node: a100
-
-  # ---------------------------------------------------------------------------
-  # ClickHouse — Langfuse's trace store, and the largest disk consumer on the
-  # node by a wide margin.
+  # ClickHouse — the per-request usage store (engine.requests, gateway.requests).
   #
   # Added after an audit found 1.0 GB of untenanted system log tables plus an
   # 830 MB unrotated server log backing 396 KiB of actual traces. Nothing
@@ -328,33 +308,6 @@ scrape_configs:
           node: a100
 
   # ---------------------------------------------------------------------------
-  # Vector — per-consumer aggregates derived from the access log.
-  #
-  # These exist because ai-statistics cannot produce them: its seven counters
-  # carry no status code and no latency histogram, so "which consumer is getting
-  # 422s" and "what is p95 for this consumer" were unanswerable from Prometheus.
-  # The per-request rows in ClickHouse can answer both, but quota-bot cannot
-  # reach ClickHouse — it lives on `edge`, the trace store is backend-only, and
-  # putting an internet-reachable bot on the backend would hand it a route to
-  # the worker ports. So the aggregates come to where the bot already looks.
-  #
-  #   gateway_requests_total{consumer,route,status_class}
-  #   gateway_tokens_total{consumer,model}
-  #   gateway_request_duration_ms{consumer,route,quantile}
-  #
-  # Same contract as every other counter here: process-lifetime, resets when
-  # Vector restarts. Rates and distributions only. The ClickHouse table is the
-  # durable per-request record and the Redis ledger is still what bills.
-  # ---------------------------------------------------------------------------
-  - job_name: vector
-    scrape_interval: 30s
-    static_configs:
-      - targets:
-          - qwen36-27b-vector:9598
-        labels:
-          node: a100
-
-  # ---------------------------------------------------------------------------
   # Alertmanager — the delivery path itself.
   #
   # Worth scraping for exactly one reason: alertmanager_notifications_failed_total.
@@ -372,6 +325,61 @@ scrape_configs:
     static_configs:
       - targets:
           - qwen36-27b-alertmanager:9093
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # engine-usage — EXACT per-consumer usage (2026-09-14).
+  #
+  # ClickHouse answers GET /engine_usage_metrics by aggregating engine.requests,
+  # one row per request SGLang finished (clickhouse/engine-usage-metrics.sql).
+  # Every value is a sum or an exact quantile over request rows for the last
+  # 1h/24h/7d/30d, labelled {consumer, window}. They are GAUGES: read the latest
+  # sample; never rate() or increase() them.
+  #
+  # This is what customer-facing usage and cost come from. The engine's own
+  # Prometheus counters (sglang:prompt_tokens_total etc.) stay for live views and
+  # alerts only: a consumer's counter is created by its first request after a
+  # replica start, so increase() never sees that request, and increase()
+  # extrapolates at window edges (measured: 11,194 reported for 29,079 real).
+  #
+  # Read-only ClickHouse user `engine_metrics` (users.d/engine-metrics.xml),
+  # password rendered from .env by deploy/render-prometheus-secrets.sh.
+  # ---------------------------------------------------------------------------
+  - job_name: engine-usage
+    scrape_interval: 60s
+    scrape_timeout: 20s
+    metrics_path: /engine_usage_metrics
+    basic_auth:
+      username: engine_metrics
+      password_file: /etc/prometheus/secrets/engine_metrics_clickhouse.pass
+    static_configs:
+      - targets:
+          - qwen36-27b-langfuse-clickhouse:8123
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # quota-bot — per-key POLICY (2026-09-14). The ledger job above exports only
+  # the balance; a key's quota, daily/per-minute limits, live daily counter and
+  # next refill lived only in the bot, so "12.4M" could not be read against
+  # anything on a dashboard.
+  #
+  #   quota_bot_consumer_info{ai_consumer,tier,refill,limited}   1
+  #   quota_bot_consumer_quota_tokens{ai_consumer}   refill TARGET, not balance
+  #   quota_bot_consumer_next_refill_timestamp_seconds{ai_consumer}
+  #   quota_bot_consumer_daily_limit_tokens / _daily_used_tokens / _tpm_limit_tokens
+  #   quota_bot_consumer_daily_window_reset_seconds{ai_consumer}
+  #
+  # A limit series is ABSENT when the key has no such limit. Same `ai_consumer`
+  # label as consumer:quota_balance:tokens, so the two join directly. The port
+  # is not published: Caddy forwards only the Telegram webhook path.
+  # ---------------------------------------------------------------------------
+  - job_name: quota-bot
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - quota-bot:8080
         labels:
           node: a100
 

@@ -1,0 +1,108 @@
+# =============================================================================
+# CLICKHOUSE — per-request usage records
+#
+# Holds the two tables every exact number comes from:
+#   engine.requests   one row per request SGLang finished (tokens, cache split
+#                     GPU/host, timings, consumer). Fed by Vector from
+#                     --export-metrics-to-file. clickhouse/engine-requests.sql
+#   gateway.requests  one row per gateway request (status, cut-offs, 401/429).
+#                     Fed by Vector from the Envoy access log.
+# plus GET /engine_usage_metrics, the exact per-consumer aggregates Prometheus
+# scrapes (clickhouse/engine-usage-metrics.sql).
+#
+# Until 2026-09-14 this file was docker-compose.langfuse.yml and also ran
+# Langfuse (web, worker, Postgres, Redis, MinIO) and the OTel collector. Those
+# were removed with tracing. The service key and container name keep their old
+# `langfuse-` prefix on purpose: renaming them changes the hostname Vector,
+# Prometheus and admin-mcp use, for no functional gain. Same choice as the
+# stale `qwen36-27b` names.
+#
+# Usage — one compose project across the three files:
+#   docker compose -f docker-compose.yml -f docker-compose.metrics.yml \
+#                  -f docker-compose.clickhouse.yml up -d
+# =============================================================================
+
+services:
+  # ClickHouse. Local-only: 127.0.0.1 ports, backend network.
+  langfuse-clickhouse:
+    # Pinned 2026-09-04 to the exact build. `25.12` floats within the series.
+    image: docker.io/clickhouse/clickhouse-server:25.12.11.4@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
+    container_name: qwen36-27b-langfuse-clickhouse
+
+    cpuset: "48-55"
+
+    user: "101:101"
+
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+      # Consumed by users.d/mcp-readonly.xml through from_env. Absent means the
+      # mcp user simply has no password entry and cannot authenticate, which is
+      # the right failure: admin-mcp stops working, ClickHouse stays closed.
+      MCP_CLICKHOUSE_PASSWORD_SHA256: ${MCP_CLICKHOUSE_PASSWORD_SHA256:-}
+      # users.d/engine-metrics.xml: read-only user Prometheus scrapes exact
+      # per-consumer usage with. Absent means that user cannot authenticate.
+      ENGINE_METRICS_CLICKHOUSE_PASSWORD_SHA256: ${ENGINE_METRICS_CLICKHOUSE_PASSWORD_SHA256:-}
+      TZ: UTC
+
+    volumes:
+      - ./langfuse-data/clickhouse:/var/lib/clickhouse
+      - ./langfuse-data/clickhouse-logs:/var/log/clickhouse-server
+
+      # Overrides are mounted FILE BY FILE, never as a directory.
+      #
+      # The image ships /etc/clickhouse-server/config.d/docker_related_config.xml,
+      # which is what sets `listen_host` to the wildcards. Bind-mounting our own
+      # directory onto config.d masks it, ClickHouse falls back to listening on
+      # 127.0.0.1 inside its own namespace, and Vector and Prometheus lose the
+      # database with a connection error that points nowhere near this file.
+      - ./clickhouse/config.d/logging.xml:/etc/clickhouse-server/config.d/logging.xml:ro
+      - ./clickhouse/config.d/system-log-ttl.xml:/etc/clickhouse-server/config.d/system-log-ttl.xml:ro
+      - ./clickhouse/config.d/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
+      # A read-only identity for admin-mcp. Its password is NOT in this file or
+      # in the XML: the XML reads the sha256 from the environment below, so the
+      # committed config carries no secret. See the file for why readonly=2
+      # rather than 1.
+      - ./clickhouse/users.d/mcp-readonly.xml:/etc/clickhouse-server/users.d/mcp-readonly.xml:ro
+      # engine.requests usage aggregates for Prometheus (2026-09-14): the
+      # read-only user and the GET /engine_usage_metrics query handler, which
+      # is rendered from clickhouse/engine-usage-metrics.sql.
+      - ./clickhouse/users.d/engine-metrics.xml:/etc/clickhouse-server/users.d/engine-metrics.xml:ro
+      - ./clickhouse/config.d/engine-metrics-handler.xml:/etc/clickhouse-server/config.d/engine-metrics-handler.xml:ro
+
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+
+    # Prometheus exposition, enabled by config.d/prometheus.xml. Internal only —
+    # `expose`, not `ports`, so it exists on qwen36-27b-backend and nowhere else.
+    expose:
+      - "9363"
+
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    networks:
+      - qwen36-27b-backend
+
+networks:
+  # References the existing backend network from docker-compose.yml.
+  # Do NOT set external: true — compose will create it if it doesn't exist,
+  # but it already exists from the main stack.
+  qwen36-27b-backend:
+    name: qwen36-27b-backend
+    external: false
+

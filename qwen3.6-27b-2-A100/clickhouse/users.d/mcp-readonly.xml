@@ -52,11 +52,11 @@
       <quota>default</quota>
       <!-- Only reachable on the backend network; there is no published port. -->
       <networks><ip>::/0</ip></networks>
-      <!-- `gateway` holds the request fact table, `default` holds the Langfuse
-           span tables (events_core / events_full). Nothing else is needed. -->
+      <!-- `gateway` holds the access log (gateway.requests), `engine` SGLang's
+           per-request records (engine.requests). Nothing else is needed. -->
       <allow_databases>
         <database>gateway</database>
-        <database>default</database>
+        <database>engine</database>
       </allow_databases>
     </mcp>
   </users>

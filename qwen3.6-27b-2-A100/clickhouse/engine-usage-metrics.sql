@@ -1,0 +1,161 @@
+-- Exact per-consumer usage over the last 1h / 24h / 7d / 30d, from
+-- engine.requests (and gateway facts from gateway.requests), in Prometheus exposition format. Served at
+-- GET /engine_usage_metrics (config.d/engine-metrics-handler.xml) and scraped
+-- by Prometheus job `engine-usage`. Every value is a SUM or an exact quantile
+-- over request rows: no rates, no extrapolation, no lost first request.
+--
+-- A window is "the N seconds before this query ran". Values are gauges: read
+-- the latest sample, never rate()/increase() them.
+--
+-- consumer="" (traffic that did not pass the gateway) comes out without a
+-- consumer label, because Prometheus drops empty labels.
+-- Prometheus text format needs each metric family contiguous, hence the outer ORDER BY.
+SELECT name, type, help, labels, value FROM (
+WITH
+    w AS (
+        SELECT arrayJoin([('1h', 3600), ('24h', 86400), ('7d', 604800), ('30d', 2592000)]) AS win
+    ),
+    agg AS (
+        SELECT
+            win.1 AS window,
+            consumer,
+            count()                                                            AS requests,
+            -- Charged work: an aborted request never reached its usage frame, so
+            -- the ledger deducted nothing for it. Its output is counted apart.
+            -- A client disconnect writes no record at all (v0.5.19 raises out of
+            -- _wait_one_response before the exporter runs), so those requests
+            -- are visible only as gateway cuts.
+            sumIf(prompt_tokens, finish_type != 'abort')                       AS prompt,
+            sumIf(completion_tokens, finish_type != 'abort')                   AS completion,
+            sumIf(completion_tokens, finish_type = 'abort')                    AS aborted_completion,
+            sumIf(prompt_tokens, cached_tokens IS NOT NULL)                    AS cache_known_prompt,
+            sum(ifNull(cached_device, 0))                                      AS s_cached_device,
+            sum(ifNull(cached_host, 0))                                        AS s_cached_host,
+            countIf(finish_type = 'abort')                                     AS aborted,
+            sum(ifNull(prefill_s, 0))                                          AS s_prefill,
+            sum(ifNull(decode_s, 0))                                           AS s_decode,
+            countIf(source = 'engine')                                         AS engine_rows,
+            -- Engine timings from engine rows only: backfilled rows carry the
+            -- GATEWAY duration in e2e_s. A quantile over no rows is 0 in
+            -- ClickHouse, so an empty set is turned into NaN (no sample).
+            if(countIf(source = 'engine' AND ttft_s IS NOT NULL) = 0, nan,
+               quantileExactIf(0.5)(ttft_s, source = 'engine' AND ttft_s IS NOT NULL))   AS ttft_p50,
+            if(countIf(source = 'engine' AND ttft_s IS NOT NULL) = 0, nan,
+               quantileExactIf(0.95)(ttft_s, source = 'engine' AND ttft_s IS NOT NULL))  AS ttft_p95,
+            if(countIf(source = 'engine' AND e2e_s IS NOT NULL) = 0, nan,
+               quantileExactIf(0.5)(e2e_s, source = 'engine' AND e2e_s IS NOT NULL))     AS e2e_p50,
+            if(countIf(source = 'engine' AND e2e_s IS NOT NULL) = 0, nan,
+               quantileExactIf(0.95)(e2e_s, source = 'engine' AND e2e_s IS NOT NULL))    AS e2e_p95,
+            if(countIf(source = 'engine' AND queue_s IS NOT NULL) = 0, nan,
+               quantileExactIf(0.95)(queue_s, source = 'engine' AND queue_s IS NOT NULL)) AS queue_p95,
+            if(countIf(source = 'engine' AND decode_s > 0 AND completion_tokens > 1) = 0, nan,
+               quantileExactIf(0.5)(completion_tokens / decode_s,
+                                    source = 'engine' AND decode_s > 0 AND completion_tokens > 1)) AS decode_tok_s_p50
+        FROM engine.requests FINAL, w
+        WHERE finished_at >= now64(3) - toIntervalSecond(win.2)
+        GROUP BY window, consumer
+    ),
+    rows AS (
+        SELECT
+            arrayJoin([
+                ('engine_usage_requests',             'Requests finished by the engine in the window.', toFloat64(ifNull(requests, nan)), ''),
+                ('engine_usage_prompt_tokens',        'Prompt tokens of finished, non-aborted requests, cached ones included (what the ledger charges as input).', toFloat64(ifNull(prompt, nan)), ''),
+                ('engine_usage_completion_tokens',    'Output tokens of non-aborted requests, thinking included.', toFloat64(ifNull(completion, nan)), ''),
+                ('engine_usage_cache_known_prompt_tokens', 'Prompt tokens of requests whose cache split is known (denominator for hit rates).', toFloat64(ifNull(cache_known_prompt, nan)), ''),
+                ('engine_usage_cached_device_tokens', 'Prompt tokens served from the GPU prefix cache.', toFloat64(ifNull(s_cached_device, nan)), ''),
+                ('engine_usage_cached_host_tokens',   'Prompt tokens reloaded from host RAM (HiCache).', toFloat64(ifNull(s_cached_host, nan)), ''),
+                ('engine_usage_aborted_requests',     'Requests the scheduler ended with finish_reason abort (timeout, error): charged nothing. Client disconnects leave no engine record; see gateway_usage_cut_requests.', toFloat64(ifNull(aborted, nan)), ''),
+                ('engine_usage_aborted_completion_tokens', 'Output tokens generated for aborted requests: engine work the ledger did not charge.', toFloat64(ifNull(aborted_completion, nan)), ''),
+                ('engine_usage_prefill_seconds',      'Engine seconds spent in prefill (first forward to first token), summed.', toFloat64(ifNull(s_prefill, nan)), ''),
+                ('engine_usage_decode_seconds',       'Engine seconds spent decoding, summed.', toFloat64(ifNull(s_decode, nan)), ''),
+                ('engine_usage_engine_rows',          'Rows from the engine exporter (the rest are gateway backfill without cache or timing).', toFloat64(ifNull(engine_rows, nan)), ''),
+                ('engine_usage_ttft_seconds',         'Exact time-to-first-token quantile.', toFloat64(ifNull(ttft_p50, nan)), '50'),
+                ('engine_usage_ttft_seconds',         'Exact time-to-first-token quantile.', toFloat64(ifNull(ttft_p95, nan)), '95'),
+                ('engine_usage_e2e_seconds',          'Exact end-to-end latency quantile.', toFloat64(ifNull(e2e_p50, nan)), '50'),
+                ('engine_usage_e2e_seconds',          'Exact end-to-end latency quantile.', toFloat64(ifNull(e2e_p95, nan)), '95'),
+                ('engine_usage_queue_seconds',        'Exact queue-wait quantile.', toFloat64(ifNull(queue_p95, nan)), '95'),
+                ('engine_usage_decode_tokens_per_second', 'Median per-request decode speed.', toFloat64(ifNull(decode_tok_s_p50, nan)), '50')
+            ]) AS r,
+            window,
+            consumer
+        FROM agg
+    )
+SELECT
+    r.1 AS name,
+    'gauge' AS type,
+    r.2 AS help,
+    if(r.4 = '', map('window', window, 'consumer', consumer),
+                 map('window', window, 'consumer', consumer, 'p', r.4)) AS labels,
+    assumeNotNull(r.3) AS value
+FROM rows
+WHERE isFinite(r.3)
+UNION ALL
+SELECT 'engine_usage_last_record_timestamp_seconds', 'gauge',
+       'Finish time of the newest row, per source. A stale value means the pipeline stopped.',
+       map('source', source), toFloat64(toUnixTimestamp64Milli(max(finished_at))) / 1000
+FROM engine.requests GROUP BY source
+UNION ALL
+SELECT 'engine_usage_first_record_timestamp_seconds', 'gauge',
+       'Finish time of the oldest row, per source. Windows reaching further back are incomplete.',
+       map('source', source), toFloat64(toUnixTimestamp64Milli(min(finished_at))) / 1000
+FROM engine.requests GROUP BY source
+UNION ALL
+-- Per-replica split of output tokens, engine rows only.
+SELECT 'engine_usage_replica_completion_tokens', 'gauge',
+       'Output tokens per replica (engine rows; backfill has no replica).',
+       map('window', win.1, 'consumer', consumer, 'replica', replica),
+       toFloat64(sum(completion_tokens))
+FROM engine.requests FINAL,
+     (SELECT arrayJoin([('1h', 3600), ('24h', 86400), ('7d', 604800), ('30d', 2592000)]) AS win) AS w2
+WHERE source = 'engine' AND finish_type != 'abort' AND finished_at >= now64(3) - toIntervalSecond(win.2)
+GROUP BY win.1, consumer, replica
+UNION ALL
+-- ---------------------------------------------------------------------------
+-- Gateway facts the engine cannot see, from gateway.requests (access log):
+-- rejections before the engine (401/403/422/429), cut-off requests charged
+-- nothing, and whole-request latency as the client saw it. Windows are by
+-- request start (ts). consumer "" (never authenticated) becomes
+-- "unauthenticated".
+-- ---------------------------------------------------------------------------
+SELECT name, 'gauge', help,
+       multiIf(p != '', map('window', window, 'consumer', consumer, 'p', p),
+               sc != '', map('window', window, 'consumer', consumer, 'status_class', sc),
+               map('window', window, 'consumer', consumer)),
+       value
+FROM (
+    SELECT
+        win.1 AS window,
+        if(consumer = '', 'unauthenticated', consumer) AS consumer,
+        arrayJoin([
+            ('gateway_usage_requests', 'Gateway requests by status class.', '2xx', '', toFloat64(countIf(status >= 200 AND status < 300))),
+            ('gateway_usage_requests', 'Gateway requests by status class.', '4xx', '', toFloat64(countIf(status >= 400 AND status < 500))),
+            ('gateway_usage_requests', 'Gateway requests by status class.', '5xx', '', toFloat64(countIf(status >= 500))),
+            ('gateway_usage_requests', 'Gateway requests by status class.', 'none', '', toFloat64(countIf(status < 200))),
+            ('gateway_usage_rate_limited_requests', 'Requests refused with 429 (daily or per-minute token limit).', '', '', toFloat64(countIf(status = 429))),
+            ('gateway_usage_unauthorized_requests', 'Requests refused with 401.', '', '', toFloat64(countIf(status = 401))),
+            ('gateway_usage_quota_denied_requests', 'Requests refused with 403 (balance exhausted).', '', '', toFloat64(countIf(status = 403))),
+            ('gateway_usage_cut_requests', 'Billable requests that ended before their usage frame and were charged nothing.', '', '',
+                toFloat64(countIf(route IN ('ai-chat', 'ai-completions') AND total_tokens = 0 AND match(response_flags, '(^|,)(DC|SI|UC|UPE|UT)(,|$)')))),
+            ('gateway_usage_cut_seconds', 'Wall seconds of those cut-off requests.', '', '',
+                sumIf(duration_ms, route IN ('ai-chat', 'ai-completions') AND total_tokens = 0 AND match(response_flags, '(^|,)(DC|SI|UC|UPE|UT)(,|$)')) / 1000.0),
+            ('gateway_usage_duration_seconds', 'Exact gateway latency quantile, successful (2xx) chat and completions requests.', '', '50',
+                if(countIf(route IN ('ai-chat', 'ai-completions') AND status >= 200 AND status < 300) = 0, nan, toFloat64(quantileExactIf(0.5)(duration_ms, route IN ('ai-chat', 'ai-completions') AND status >= 200 AND status < 300) / 1000.0))),
+            ('gateway_usage_duration_seconds', 'Exact gateway latency quantile, successful (2xx) chat and completions requests.', '', '95',
+                if(countIf(route IN ('ai-chat', 'ai-completions') AND status >= 200 AND status < 300) = 0, nan, toFloat64(quantileExactIf(0.95)(duration_ms, route IN ('ai-chat', 'ai-completions') AND status >= 200 AND status < 300) / 1000.0))),
+            ('gateway_usage_duration_seconds', 'Exact gateway latency quantile, successful (2xx) chat and completions requests.', '', '99',
+                if(countIf(route IN ('ai-chat', 'ai-completions') AND status >= 200 AND status < 300) = 0, nan, toFloat64(quantileExactIf(0.99)(duration_ms, route IN ('ai-chat', 'ai-completions') AND status >= 200 AND status < 300) / 1000.0)))
+        ]) AS m,
+        m.1 AS name, m.2 AS help, m.3 AS sc, m.4 AS p, m.5 AS value
+    FROM gateway.requests FINAL,
+         (SELECT arrayJoin([('1h', 3600), ('24h', 86400), ('7d', 604800), ('30d', 2592000)]) AS win) AS w3
+    WHERE ts >= now64(3) - toIntervalSecond(win.2)
+    GROUP BY window, consumer
+)
+WHERE isFinite(value) AND (sc != 'none' OR value > 0) AND (name != 'gateway_usage_requests' OR value > 0)
+UNION ALL
+SELECT 'gateway_usage_last_record_timestamp_seconds', 'gauge',
+       'Start time of the newest gateway.requests row.', map(), toFloat64(toUnixTimestamp64Milli(max(ts))) / 1000
+FROM gateway.requests
+)
+ORDER BY name
+FORMAT Prometheus

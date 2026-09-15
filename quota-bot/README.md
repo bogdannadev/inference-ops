@@ -48,19 +48,18 @@ from it. This block is a copy and can go stale — the bot cannot.
 ```
 /keys                       every key, its balance and tier
 /balance [name]             left of quota, burn, limits and refill
-/key                        one key: numbers, settings, traces
+/key                        one key: numbers, settings, requests
 /tiers                      tier defaults and what they enforce
 /tier <name> <tier>         record a consumer's tier
 /policy <name>              one key's limits, with buttons
 /set <name> <setting> <value|default>   change one setting by typing it
 
 /usage [1h|24h|7d|30d]      tokens and reference cost per key
-/top [1h|24h|7d]            busiest keys, share and errors
+/top [1h|24h|7d|30d]        busiest keys, share and errors
 /p95 [name] [window]        latency per key, gateway and engine (default 24h)
 /prices                     OpenRouter and Alibaba price table
-/errors [1h|24h|7d]         error answers per key
-/trace <request-id>         find one request, end to end
-/langfuse                   what Langfuse is good for
+/errors [1h|24h|7d|30d]     error answers per key
+/trace <name|request-id>    one key's or one request's records
 
 /status                     can I operate the gateway
 /health                     is the stack healthy
@@ -163,11 +162,13 @@ limiter's Redis was pointed at a host that does not exist.
 
 ai-quota charges from the final usage frame. A request that ends before it —
 client disconnect, stream idle timeout, upstream error — is charged zero, and
-SGLang's own token counters skip aborted requests too. Measured 2026-09-13 with
-deliberate cuts; one consumer had 24 of 666 chat requests end that way. Vector
-counts them as `gateway_unbilled_{requests,seconds}_total` (see
-`vector/vector.yaml`, tests in `vector/vector_test.yaml`), and the key card,
-the written report and admin-mcp's `consumer_stats` show them.
+SGLang writes no per-request record for a client disconnect either. Measured
+2026-09-13 and 2026-09-15 with deliberate cuts; one consumer had 24 of 666 chat
+requests end that way. They are counted from the gateway access log as
+`gateway_usage_cut_requests` / `_cut_seconds` (the predicate is in
+`clickhouse/engine-usage-metrics.sql`, regression cases in
+`clickhouse/engine-usage-metrics_test.sql`), and `/top`, `/errors`, the key
+card, the written report and admin-mcp's `consumer_stats` show them.
 
 ## Usage in money: reference prices
 
@@ -178,7 +179,7 @@ monitoring, never a bill**, and labelled that way everywhere:
 | reference | source | refreshed |
 |---|---|---|
 | OpenRouter, list | `GET /api/v1/models`, headline price for `PRICE_OPENROUTER_MODEL` (default `qwen/qwen3.8-27b`) | daily, snapshot until the first fetch, last good price on failure |
-| OpenRouter, cache-aware | the same, with the key's measured prefix-cache hit share priced at `input_cache_read` | — |
+| OpenRouter, cache-aware | the same, with the key's cached input (GPU and HiCache hits, exact per request) priced at `input_cache_read`; input whose cache split is unknown is priced as uncached | — |
 | Alibaba Cloud Singapore / Beijing | Model Studio price page, Qwen3.8-27B | **by hand** in `PriceBook`, no API exists; dated 2026-09-12 |
 
 The provider spread is reported next to the OpenRouter price because it is wide
@@ -188,10 +189,31 @@ admin-mcp's `consumer_stats` prices with them rather than a second copy. The
 report's caption carries the costs computed by the bot, so the monitored number
 does not depend on the model copying it.
 
-Token counts for pricing come from ai-statistics (Envoy), not Vector's
-`gateway_tokens_total`: Vector expires idle series after ten minutes, and
-Prometheus then loses the first request of each burst (measured 986 vs 1,520
-input tokens for a sparse consumer). Cut-off requests are not in any price.
+## Where the usage numbers come from
+
+Every token, request, cache and engine-latency number is an exact sum or exact
+quantile over SGLang's own per-request records (`engine.requests`), and every
+refusal, cut-off and gateway latency over the access log (`gateway.requests`),
+computed in ClickHouse and scraped as `engine_usage_*` / `gateway_usage_*`
+gauges for the preceding 1h, 24h, 7d and 30d — hence those four windows on
+every screen. Since 2026-09-14; before that the bot used `increase()` over
+Envoy, Vector and engine counters, which lost the first request after each
+restart and extrapolated to the window edges (three controlled requests of
+29,079 prompt tokens: engine `increase()` 11,194, gateway `increase()` 29,825,
+records 29,079). Details: `docs/METRICS-ECOSYSTEM.md`.
+
+- Tokens are what the ledger charged: cut-off and aborted requests are not in
+  them, and verified equal to the ledger on 2026-09-15.
+- **Cache hit** = prompt tokens the engine did not recompute ÷ prompt tokens of
+  requests whose split was recorded; **HiCache** is the part reloaded from host
+  RAM. Cached input is still deducted in full from the balance; what a hit saves
+  is engine time (GPU hit nearly free, HiCache reload ~1.2 s per 45K tokens
+  against ~14 s to recompute). "Prefill avoided" uses the prefill speed measured
+  on the same requests.
+- Rows before 2026-09-13 19:46 UTC were copied from the gateway log and carry
+  tokens only; screens say so where it matters.
+- If the scrape is down, usage screens say "usage data unavailable" instead of
+  showing zeros; `/health` shows the pipeline state.
 
 ## Quota is one total-token number
 
@@ -209,7 +231,8 @@ consumer doing generative work sits near 1:1 and pays the same rate.
 `/status` probes the four things this bot talks to and answers *can I still
 operate the gateway*. `/health` reads Prometheus and answers *is the stack
 healthy, and can I believe what it is telling me* — scrape coverage, firing
-alerts, trace-export backlog, ledger reachability, throughput, TTFT, KV pool.
+alerts, ledger reachability, whether usage records are arriving, throughput,
+TTFT, KV pool, prefix cache (GPU / HiCache) and HiCache host RAM.
 
 Both matter. For roughly fourteen hours in September 2026 the second was false
 while the first was true: Langfuse ingest was dead, the correct alert was
@@ -334,23 +357,21 @@ Verify through the admin API, not the reload exit code.
 
 ## /key — the no-arguments path
 
-Every other per-consumer command needs a name typed correctly, and `/trace`
-needed a request id the operator had to go and find first. `/key` takes no
+Every other per-consumer command needs a name typed correctly. `/key` takes no
 arguments: the consumer list *is* the interface. Tap a name, get its numbers;
-tap again for where its traces live, or for a written report.
+tap again for its per-request records, or for a written report.
 `/trace` with no argument lands on the same picker.
 
 The card reads Prometheus only. That is a limit, not an oversight — this bot
-runs on `edge`, and the per-request fact table and the span store are
-backend-only, because an internet-reachable bot with a route to the worker
-ports is a worse trade than an operator pasting one SQL query. So *statistics*
-are answered here in full, and *the trace of one request* is answered with a
-Langfuse link and the query.
+runs on `edge`, and ClickHouse is backend-only, because an internet-reachable
+bot with a route to the worker ports is a worse trade than an operator pasting
+one SQL query. So *statistics* are answered here in full, and *one request* is
+answered with the query (`/trace <request-id>` joins the gateway row to the
+engine row on `chat_id = rid`); admin-mcp runs the same queries.
 
-Balance and runway come from the ledger; requests, tokens and gateway p95 from
-the access log; ttft, itl, e2e, prefix-cache hit and the replica split from the
-engine itself. The engine block exists only because the tokenizer metrics carry
-a `consumer` label — see `docs/METRICS-ECOSYSTEM.md`.
+Balance and runway come from the ledger; requests, tokens, engine p95, first
+token, decode speed, cache split and the replica split from the engine's
+per-request records; gateway p95, not-2xx and cut-offs from the access log.
 
 ### The report is written by the node
 

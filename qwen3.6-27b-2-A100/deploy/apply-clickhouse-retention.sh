@@ -81,7 +81,7 @@ ch() { curl -sS --fail-with-body "$CH_URL" -u "${CH_USER}:${CH_PW}" --data-binar
 say "Preflight"
 if ! ch "SELECT 1" >/dev/null 2>&1; then
   echo "ERROR: cannot reach ClickHouse at $CH_URL as $CH_USER." >&2
-  echo "       Is the langfuse overlay up? Is the password in $ENV_FILE current?" >&2
+  echo "       Is docker-compose.clickhouse.yml up? Is the password in $ENV_FILE current?" >&2
   exit 1
 fi
 echo "ClickHouse reachable: $(ch "SELECT version()")"

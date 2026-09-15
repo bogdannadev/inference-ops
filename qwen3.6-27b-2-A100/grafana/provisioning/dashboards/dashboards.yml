@@ -13,7 +13,6 @@
 #       gpu/       GPU Hardware      — DCGM telemetry
 #       host/      Host Hardware     — node-exporter
 #       edge/      Edge Gateway      — Caddy: the tier in front of everything
-#       pipeline/  Trace Pipeline    — OTel Collector -> Langfuse ingest health
 #       gateway/   AI Gateway        — Higress: per-consumer tokens, quotas, denials
 #       usage/     Usage & Quota     — the ledger: balances, burn, days-left, share of node
 #

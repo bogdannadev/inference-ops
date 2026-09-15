@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  Read-only identity for Prometheus to scrape the exact per-consumer usage
+  aggregates (config.d/engine-metrics-handler.xml, /engine_usage_metrics).
+
+  It can read engine.requests and gateway.requests and nothing else, cannot change settings beyond
+  the caps below, and the password is never in this file: the sha256 comes
+  from the environment (ENGINE_METRICS_CLICKHOUSE_PASSWORD_SHA256). Prometheus
+  reads the clear password from prometheus/secrets/, rendered from .env by
+  deploy/render-prometheus-secrets.sh and gitignored.
+-->
+<clickhouse>
+  <profiles>
+    <engine_metrics_readonly>
+      <readonly>2</readonly>
+      <allow_ddl>0</allow_ddl>
+      <max_execution_time>20</max_execution_time>
+      <max_memory_usage>1000000000</max_memory_usage>
+      <constraints>
+        <max_execution_time><max>20</max></max_execution_time>
+        <max_memory_usage><max>1000000000</max></max_memory_usage>
+        <readonly><max>2</max></readonly>
+      </constraints>
+    </engine_metrics_readonly>
+  </profiles>
+
+  <users>
+    <engine_metrics>
+      <password_sha256_hex from_env="ENGINE_METRICS_CLICKHOUSE_PASSWORD_SHA256"/>
+      <profile>engine_metrics_readonly</profile>
+      <quota>default</quota>
+      <networks><ip>::/0</ip></networks>
+      <allow_databases>
+        <database>engine</database>
+        <database>gateway</database>
+      </allow_databases>
+    </engine_metrics>
+  </users>
+</clickhouse>

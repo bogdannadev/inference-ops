@@ -11,8 +11,8 @@
 # is covered in about a second and stays covered when someone edits the
 # expressions later.
 #
-# Interval is 10m rather than the 30s the rules evaluate at, purely so that a
-# 24-hour `increase()` window needs 144 samples instead of 2880.
+# Interval is 10m rather than the 30s the rules evaluate at, purely to keep
+# the 25-hour series short.
 # =============================================================================
 
 rule_files:
@@ -29,29 +29,29 @@ tests:
       # alice — spending hard, half a day of headroom. Should trip
       # ConsumerQuotaLow.
       #
-      # 7,200,000 against a 24h increase of 14,400,000 gives days_left of
-      # exactly 0.5. Chosen to divide cleanly: the first draft used 1000, and
-      # the assertion failed on the last bit of a repeating decimal
-      # (…445 vs …443). Test inputs that produce exact binary fractions are
-      # worth more than a tolerance this framework does not offer.
+      # 7,200,000 against 24h spend of 14,400,000 gives days_left of exactly
+      # 0.5. Spend is the exact gauge scraped from ClickHouse (job
+      # engine-usage), so no increase() extrapolation is involved.
       - series: 'redis_key_value{key="chat_quota:alice",db="db0",job="redis-ledger",instance="qwen36-27b-redis-exporter:9121"}'
         values: '7200000x200'
-      - series: 'route_upstream_model_consumer_metric_total_token{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
-        values: '0+100000x200'
-      # 96k input / 4k output per step: a 24:1 ratio, the shape real agent
+      # 13.824M input / 576k output: a 24:1 ratio, the shape real agent
       # traffic showed (45.8:1 on the first live consumer).
-      - series: 'route_upstream_model_consumer_metric_input_token{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
-        values: '0+96000x200'
-      - series: 'route_upstream_model_consumer_metric_output_token{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
-        values: '0+4000x200'
-      - series: 'route_upstream_model_consumer_metric_llm_duration_count{ai_consumer="alice",ai_route="ai-chat",job="higress"}'
-        values: '0+10x200'
+      - series: 'engine_usage_prompt_tokens{window="24h",consumer="alice",job="engine-usage"}'
+        values: '13824000x200'
+      - series: 'engine_usage_completion_tokens{window="24h",consumer="alice",job="engine-usage"}'
+        values: '576000x200'
+      - series: 'gateway_usage_requests{window="7d",consumer="alice",status_class="2xx",job="engine-usage"}'
+        values: '2000x200'
+      # Traffic that did not pass the gateway: no consumer label. Must not
+      # produce a nameless row.
+      - series: 'engine_usage_prompt_tokens{window="24h",job="engine-usage"}'
+        values: '5000x200'
 
       # bob — at zero and still being used. Should trip ConsumerQuotaExhausted.
       - series: 'redis_key_value{key="chat_quota:bob",db="db0",job="redis-ledger",instance="qwen36-27b-redis-exporter:9121"}'
         values: '0x200'
-      - series: 'route_upstream_model_consumer_metric_llm_duration_count{ai_consumer="bob",ai_route="ai-chat",job="higress"}'
-        values: '0+5x200'
+      - series: 'gateway_usage_requests{window="7d",consumer="bob",status_class="4xx",job="engine-usage"}'
+        values: '5x200'
 
       # carol — well funded, completely idle. Must appear in days_left (this is
       # the 1:1-match bug that dropped acme and legacy-shared) and must NOT
@@ -59,15 +59,21 @@ tests:
       - series: 'redis_key_value{key="chat_quota:carol",db="db0",job="redis-ledger",instance="qwen36-27b-redis-exporter:9121"}'
         values: '5000000x200'
 
-      # dave — revoked: gateway counters linger, no ledger key. Must not alert,
+      # dave — revoked: usage records linger, no ledger key. Must not alert,
       # because there is no balance to be exhausted.
-      - series: 'route_upstream_model_consumer_metric_llm_duration_count{ai_consumer="dave",ai_route="ai-chat",job="higress"}'
-        values: '0+7x200'
+      - series: 'gateway_usage_requests{window="7d",consumer="dave",status_class="2xx",job="engine-usage"}'
+        values: '7x200'
 
       - series: 'redis_up{job="redis-ledger",instance="qwen36-27b-redis-exporter:9121"}'
         values: '1x200'
 
     promql_expr_test:
+      # Exact spend per consumer, and nothing for unlabeled engine traffic.
+      - expr: 'consumer:quota_spend:tokens24h'
+        eval_time: 25h
+        exp_samples:
+          - labels: '{__name__="consumer:quota_spend:tokens24h", ai_consumer="alice"}'
+            value: 14400000
       # The join that makes everything else possible: consumer name lifted out
       # of the Redis key and into ai_consumer.
       - expr: 'sum by (ai_consumer) (consumer:quota_balance:tokens)'
@@ -83,11 +89,8 @@ tests:
       # carol must be present. Before the `or ... * 0` fix she was absent
       # entirely, which on a dashboard reads as "no quota record".
       #
-      # Only the consumers with no spend are asserted by value, because those
-      # divide by the clamped 1 and are therefore exact. alice's quotient runs
-      # through increase(), which extrapolates and lands a bit under 0.5
-      # (0.49999999999999994) — no choice of inputs makes that exact, and this
-      # framework has no tolerance option.
+      # Only the consumers with no spend are asserted by value here; alice is
+      # asserted on the property that matters (under a day) further down.
       - expr: 'consumer:quota_days_left{ai_consumer=~"bob|carol"}'
         eval_time: 25h
         exp_samples:
@@ -99,13 +102,8 @@ tests:
           - labels: '{__name__="consumer:quota_days_left", ai_consumer="carol"}'
             value: 5000000
 
-      # The direction split, and the ratio derived from it. 96000/4000 = 24
-      # exactly at every step, so unlike the days-left quotient this one is
-      # clean under increase()'s extrapolation.
-      # round(), because increase() extrapolates: the raw quotient comes back as
-      # 24.000000000000004 and this framework has no tolerance option. Same
-      # lesson as the days-left assertion above — assert the property, not the
-      # float. round() also strips __name__, hence the bare label set.
+      # The direction split, and the ratio derived from it: 13,824,000 / 576,000
+      # = 24. round() strips __name__, hence the bare label set.
       - expr: 'round(consumer:token_ratio:in_per_out24h{ai_consumer="alice"})'
         eval_time: 25h
         exp_samples:
@@ -133,8 +131,8 @@ tests:
               summary: "alice has under a day of quota left"
               description: >-
                 At the last 24h burn rate this consumer runs out within a day.
-                Note the burn rate is derived from Envoy counters, which reset on a
-                gateway restart, so it under-reports rather than over-reports.
+                The burn rate is the exact sum of tokens the engine processed for
+                this consumer in the last 24 hours.
 
       - eval_time: 25h
         alertname: ConsumerQuotaExhausted
