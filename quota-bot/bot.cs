@@ -1013,6 +1013,7 @@ sealed class Worker(
             || data.StartsWith("kr:", StringComparison.Ordinal)
             || data.StartsWith("kp:", StringComparison.Ordinal)
             || data.StartsWith("kx:", StringComparison.Ordinal)
+            || data.StartsWith("ko:", StringComparison.Ordinal)
             || data == "kl:")
         {
             var reply = await KeyCallbackAsync(data, chatId.Value, ct);
@@ -1111,7 +1112,9 @@ sealed class Worker(
                                  ? new Reply(Usage("/set &lt;name&gt; &lt;quota|refill|daily|tpm|max_tokens&gt; &lt;value|default&gt;",
                                                    "/set acme daily 2M"))
                                  : await SetPolicyAsync(a1, a2, parts[3], ct),
-            "/opencode"   => a1 is null ? await KeyPickerAsync(ct) : await OpenCodeAsync(a1, chatId, ct),
+            "/opencode"   => a1 is null
+                                 ? await KeyPickerAsync(ct, "ko:", "Tap one to get its OpenCode config.")
+                                 : await OpenCodeAsync(a1, chatId, ct),
             "/connect"    => a1 is null ? await KeyPickerAsync(ct) : await ConnectAsync(a1, ct),
             // No name: ask for one. Name only: tier buttons, one tap creates.
             // Name and a number: the original untiered form, kept for scripts
@@ -2439,7 +2442,12 @@ sealed class Worker(
         n.Length is > 0 and <= 40
         && n.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
-    private async Task<Reply> KeyPickerAsync(CancellationToken ct)
+    // `prefix` is the callback a name button fires. The default is the key card,
+    // but a command that named no consumer should land on ITS OWN screen after
+    // the tap, not on the card with its screen one more tap away: /opencode with
+    // no name asks which consumer, then sends that consumer's config.
+    private async Task<Reply> KeyPickerAsync(
+        CancellationToken ct, string prefix = "kc:24h:", string? ask = null)
     {
         var consumers = await keys.ReadConsumersAsync(ct);
         var names = consumers.Keys.Where(SafeName)
@@ -2448,14 +2456,16 @@ sealed class Worker(
             return new Reply("No consumers yet.\n\nCreate one with <code>/newkey &lt;name&gt;</code>.");
 
         return new Reply(
-            $"\U0001f511 <b>Which consumer?</b> \u00b7 {names.Length}\n\nTap one for its numbers, settings, traces and report.",
-            KeyPickerKeyboard(names));
+            $"\U0001f511 <b>Which consumer?</b> \u00b7 {names.Length}\n\n"
+          + (ask ?? "Tap one for its numbers, settings, traces and report."),
+            KeyPickerKeyboard(names, prefix));
     }
 
     // A name button per consumer. Two per row only while both names are short:
     // Telegram truncates a label to half the width, and "vkondratpev-demo2-c…"
     // is not a name anyone can tap with confidence.
-    private static InlineKeyboardMarkup KeyPickerKeyboard(IEnumerable<string> consumers)
+    private static InlineKeyboardMarkup KeyPickerKeyboard(
+        IEnumerable<string> consumers, string prefix = "kc:24h:")
     {
         var names = consumers.Where(SafeName).OrderBy(k => k, StringComparer.Ordinal).ToArray();
         var rows = new List<InlineKeyboardButton[]>();
@@ -2468,7 +2478,7 @@ sealed class Worker(
         }
         return new InlineKeyboardMarkup(rows.ToArray());
 
-        static InlineKeyboardButton Pick(string n) => new(n, "kc:24h:" + n);
+        InlineKeyboardButton Pick(string n) => new(n, prefix + n);
     }
 
     private async Task<Reply> KeyCallbackAsync(string data, long chatId, CancellationToken ct)
@@ -2735,6 +2745,7 @@ sealed class Worker(
              new InlineKeyboardButton("\U0001f50e Requests", $"kt:{name}"),
              new InlineKeyboardButton("\U0001f4c4 Report", $"kr:{name}")],
             [new InlineKeyboardButton("\U0001f50c Connect", $"kx:{name}"),
+             new InlineKeyboardButton("\U0001f9e9 OpenCode", $"ko:{name}"),
              new InlineKeyboardButton("← All keys", "kl:")]
         ]);
         return new Reply(sb.ToString(), keyboard);
