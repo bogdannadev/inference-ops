@@ -67,7 +67,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 
 /newkey [name]              create a key, one tap per tier
 /connect <name>             endpoint, model, API key and limits for any client
-/opencode <name>            re-send a key's config
+/opencode <name>            opencode.json tuned to this node, as a file
 /topup <name> <tokens>      add to a balance
 
 /setquota <name> <tokens>   replaces a balance
@@ -157,6 +157,56 @@ that found the counter over (144 of 150 allowed, 169 refused), daily refusal
 with `Retry-After: 86295`, Caddy's OpenAI-shaped 429 (matched on the limiter's
 reset header, so router 429s pass untouched), and requests ALLOWED while the
 limiter's Redis was pointed at a host that does not exist.
+
+## `/opencode` — a config tuned to this node, not a template
+
+`/opencode <name>` sends two messages to forward to the key's owner:
+
+1. `opencode.json` as a **file**, not a message. It is ~2.4 KB, Telegram
+   truncates a message at 4096 characters and `SendAsync` chunks on line
+   boundaries, which would cut a `<pre>` in half and get the whole message
+   refused. `/newkey` no longer inlines it either — the credential is the thing
+   shown once, so that is what the message holds.
+2. A **setup prompt** to paste into a freshly installed OpenCode. A fresh
+   install starts on a free model that can already run commands, so the owner
+   does not have to find a config directory or merge JSON by hand: the prompt
+   has the agent install the file globally, back up and merge an existing
+   config, `chmod 600` it, confirm the provider loaded with `opencode models
+   qwen-gw`, and run one real `opencode run -m qwen-gw/<model>` request. It
+   forbids editing any value in the file, and tells the agent that a first
+   token minutes away is normal rather than a hang. Text and reasoning:
+   `../qwen3.6-27b-2-A100/docs/OPENCODE_SETUP_PROMPT.md`.
+
+Every number in it comes from `BotConfig` (`MODEL_CONTEXT`, `MODEL_OUTPUT`,
+`MAX_BODY_BYTES`, `PUBLIC_BASE_URL`, `MODEL_ID`) or from a limit measured on the
+serving node. What is in it and why:
+
+| setting | value | why |
+|---|---|---|
+| `limit.input` | context − 32,000 | prompt and output share one window. OpenCode clamps `max_tokens` to its own `OUTPUT_TOKEN_MAX` of 32,000 whatever `limit.output` says (`provider/transform.ts`), and reads `limit.input` as the prompt ceiling (`session/overflow.ts::usable`). Declaring the gateway's 70,000 here would only misstate that arithmetic and earn a 400 *Input length exceeds the maximum allowed length* at long context. |
+| `attachment` + `modalities.input` | `["text","image"]` | the weights are `Qwen3_5ForConditionalGeneration` with a vision tower (`language_model_only: false`), but `/v1/models` advertises no capabilities, so OpenCode will not offer an image unless the config says so. |
+| `attachment.image` | 1280×1280, `MAX_BODY_BYTES / 2` of base64 | Caddy caps a request body at 1 MB on the paid hostname. OpenCode's default image budget is 5 MB — refused every time. It resizes and re-encodes until the base64 fits (`image/image.ts`), so a large screenshot still gets through. The vision tower is patch 16 with `spatial_merge 2`, one token per 32×32 block, so 1280×1280 is ~1,600 charged input tokens. |
+| `interleaved` | `false` | turning it on makes OpenCode send each turn's reasoning back as `reasoning_content` on the *next* request. Paid input tokens for text the chat template discards. |
+| `temperature` | `false` | the client then sends none, and SGLang's `--sampling-defaults` (default `model`) applies the checkpoint's own `generation_config.json`. Sending OpenCode's default instead would override the model's recommended sampling. |
+| `options.reasoningEffort` | `high`, per-agent | `@ai-sdk/openai-compatible` maps it to a top-level `reasoning_effort`, and SGLang honours it over `--default-chat-template-kwargs` (`serving_chat.py` merges the server default with `setdefault`). The server thinks at `xhigh`; thinking tokens are billed output at ~60 tokens/s. Agent options override model options (`session/llm/request.ts`). |
+| `small_model` | second entry, `reasoningEffort: none` | both entries carry the same `id`, so they are one served model. A session title should not cost a round of deep reasoning. |
+| `compaction.reserved` / `prune` | 20,000 / `false` | both compaction and pruning rewrite history, and rewritten history misses this node's prefix cache: the next turn pays a cold prefill (~3,200 tokens/s) instead of a cached one (1–2 s). So compact as late as the window safely allows, and never prune. |
+| `timeout` / `headerTimeout` / `chunkTimeout` | 900 s / 600 s / 600 s | the engine allows 900 s. A queued request waits up to 300 s at the router and a cold 160K prefill then runs 80–130 s, so OpenCode's 5-minute defaults would abort requests the node is still serving. |
+| `subagent_depth` | 1 | subagents are the only thing that opens a second stream to the node. Depth 1 lets a primary agent fan out and stops a subagent from fanning out again. |
+| `experimental.batch_tool` | `true` | independent tool calls go out together. Every turn re-sends the whole conversation, so fewer turns is fewer prefills. |
+| `share` | `disabled` | a private endpoint; sharing uploads the conversation elsewhere. |
+
+The parallelism ceiling the reply quotes is the deployment's, not OpenCode's:
+two replicas × `--max-running-requests 4` = 8 requests decoding at once **across
+all consumers**, then `--queue-size 64` and `--queue-timeout-secs 300` at the
+router. Three or four parallel subagents is the useful range; past that they
+queue behind each other and each decodes slower, because decode on this node is
+bound by memory bandwidth the streams share.
+
+Validated against `https://opencode.ai/config.json` — the live schema, fetched,
+not remembered. The only rejections are `model` and `small_model`, which the
+schema constrains to the models.dev catalog and therefore cannot know a custom
+provider's ids; OpenCode resolves them at runtime.
 
 ## Requests cut off are charged nothing
 

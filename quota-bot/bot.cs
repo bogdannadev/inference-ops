@@ -125,6 +125,11 @@ var cfg = new BotConfig(
     ModelId:         Opt("MODEL_ID", "qwen3.8-27b"),
     ContextLimit:    int.Parse(Opt("MODEL_CONTEXT", "169000"), CultureInfo.InvariantCulture),
     OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture),
+    // Caddy's `request_body { max_size 1MB }` on the paid hostname. Caddy parses
+    // that with go-humanize, where MB is 10^6 — not 2^20 — so the real ceiling
+    // is 1,000,000 bytes. It is the only limit that bounds an INLINE IMAGE, so
+    // the generated OpenCode config sizes its attachment budget from it.
+    BodyLimit:       int.Parse(Opt("MAX_BODY_BYTES", "1000000"), CultureInfo.InvariantCulture),
     AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
     // Shared with admin-mcp, which is the only caller of /admin/*. Optional:
     // unset means those endpoints are not mapped at all, which is the right
@@ -1068,7 +1073,7 @@ sealed class Worker(
         await SendAsync(chatId.Value, result, ct);
     }
 
-    private async Task<Reply> DispatchAsync(long userId, string text, CancellationToken ct)
+    private async Task<Reply> DispatchAsync(long userId, long chatId, string text, CancellationToken ct)
     {
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var cmd = parts[0].Split('@')[0].ToLowerInvariant();
@@ -1106,7 +1111,7 @@ sealed class Worker(
                                  ? new Reply(Usage("/set &lt;name&gt; &lt;quota|refill|daily|tpm|max_tokens&gt; &lt;value|default&gt;",
                                                    "/set acme daily 2M"))
                                  : await SetPolicyAsync(a1, a2, parts[3], ct),
-            "/opencode"   => new Reply(a1 is null ? Usage("/opencode &lt;name&gt;", "/opencode acme") : await OpenCodeAsync(a1, ct)),
+            "/opencode"   => a1 is null ? await KeyPickerAsync(ct) : await OpenCodeAsync(a1, chatId, ct),
             "/connect"    => a1 is null ? await KeyPickerAsync(ct) : await ConnectAsync(a1, ct),
             // No name: ask for one. Name only: tier buttons, one tap creates.
             // Name and a number: the original untiered form, kept for scripts
@@ -1200,8 +1205,8 @@ sealed class Worker(
             "endpoint, model and API key to paste into any client",
             "A consumer's endpoint, model and API key"),
         new("opencode", "Grant", "&lt;name&gt;",
-            "re-send a key's config",
-            "Re-send a consumer's OpenCode config"),
+            "opencode.json tuned to this node, as a file",
+            "Send a consumer's OpenCode config"),
         new("topup", "Grant", "&lt;name&gt; &lt;tokens&gt;", "add to a balance",
             "Add tokens to a consumer"),
         new("setquota", "Destructive — these ask first",
@@ -1825,13 +1830,20 @@ sealed class Worker(
         // on a phone.
         var keyboard = new InlineKeyboardMarkup([
             [new InlineKeyboardButton("Settings", $"kp:{name}"),
-             new InlineKeyboardButton("Key card", $"kc:24h:{name}")]
+             new InlineKeyboardButton("Key card", $"kc:24h:{name}")],
+            [new InlineKeyboardButton("\U0001f50c Connect", $"kx:{name}"),
+             new InlineKeyboardButton("\U0001f9e9 OpenCode config", $"ko:{name}")]
         ]);
+        // The KEY is the thing shown once, so it is the thing in the message \u2014
+        // one <code> block, one tap to copy on a phone. The config that wraps it
+        // is regenerated on demand by /opencode, and inlining 2.4 KB of JSON
+        // here only pushed the credential below the fold.
         return new Reply(
             $"Created <b>{Esc(name)}</b>{(tier is null ? "" : $" on <b>{Esc(tier)}</b>")} with <code>{quota:N0}</code> tokens.\n\n"
-          + "\u26a0\ufe0f <b>This credential is shown once.</b> Tap the block to copy it.\n\n"
-          + $"<pre>{Esc(OpenCodeJson(credential))}</pre>\n"
-          + $"Save as <code>~/.config/opencode/opencode.json</code>.\n\n"
+          + "\u26a0\ufe0f <b>This credential is shown once.</b> Tap it to copy.\n\n"
+          + $"<code>{Esc(credential["Bearer ".Length..])}</code>\n\n"
+          + "<b>Connect</b> is the endpoint, model and key for any client.\n"
+          + "<b>OpenCode config</b> sends <code>opencode.json</code> tuned to this node.\n\n"
           + "<i>Settings changes any value for this key.</i>",
             keyboard);
     }
@@ -1897,7 +1909,7 @@ sealed class Worker(
           + "<b>Request limits</b>\n"
           + $"Context {cfg.ContextLimit:N0} tokens, prompt + output\n"
           + $"Output at most {cfg.OutputLimit:N0} tokens per request\n"
-          + "Body at most 1 MB of JSON\n\n"
+          + $"Body at most {Fmt.Num(cfg.BodyLimit)} bytes of JSON\n\n"
           + $"<b>This key</b> \u00b7 {Esc(plan.Tier ?? "no tier")}\n"
           + (hasBal ? $"Spendable now {Fmt.Num(b)} \u00b7 {RefillText(plan, b, false, DateTimeOffset.UtcNow)}\n" : "Balance not seeded\n")
           + $"Daily limit {Lim(plan.Daily)} \u00b7 per minute {Lim(plan.Tpm)}"
@@ -1914,18 +1926,154 @@ sealed class Worker(
 
         return new Reply(text, new InlineKeyboardMarkup([
             [new InlineKeyboardButton("\U0001f511 Key card", $"kc:24h:{name}"),
-             new InlineKeyboardButton("\u2699\ufe0f Settings", $"kp:{name}")]]));
+             new InlineKeyboardButton("\u2699\ufe0f Settings", $"kp:{name}")],
+            [new InlineKeyboardButton("\U0001f9e9 OpenCode config", $"ko:{name}")]]));
     }
 
-    private async Task<string> OpenCodeAsync(string name, CancellationToken ct)
+    // Sent as a FILE, not a message. The config is ~2.5 KB; Telegram truncates a
+    // message at 4096 characters and SendAsync chunks on line boundaries, which
+    // would cut a <pre> block in half and get the whole message refused. A file
+    // is also what the user actually needs: it lands at the documented path with
+    // one tap. Audited, like /connect \u2014 it carries a live credential.
+    private async Task<Reply> OpenCodeAsync(string name, long chatId, CancellationToken ct)
     {
+        if (!SafeName(name)) return new Reply("That is not a consumer name this bot recognises.");
         var consumers = await keys.ReadConsumersAsync(ct);
         if (!consumers.TryGetValue(name, out var credential))
-            return $"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.";
+            return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
         await AuditAsync($"opencode name={name}", ct);
-        return $"<b>{Esc(name)}</b> \u2014 OpenCode config\n\n<pre>{Esc(OpenCodeJson(credential))}</pre>\n"
-             + $"Save as <code>~/.config/opencode/opencode.json</code>.";
+
+        await SendDocumentAsync(chatId, "opencode.json",
+            Encoding.UTF8.GetBytes(OpenCodeJson(credential)), "application/json",
+            $"\U0001f9e9 <b>{Esc(name)}</b> \u2014 OpenCode config for this node.\n"
+          + "Save as <code>~/.config/opencode/opencode.json</code> (or <code>opencode.json</code> "
+          + "in a project, which wins over it).\n"
+          + "\u26a0\ufe0f Holds a live API key.", ct);
+
+        // Second message, and the other half of what the operator forwards: a
+        // fresh OpenCode install starts on a free model that can already run
+        // commands, so the customer does not have to find a config directory or
+        // merge JSON by hand \u2014 they paste this and the agent installs the file.
+        await SendAsync(chatId, new Reply(
+            "\U0001f4cb <b>Setup prompt</b> \u2014 paste into a freshly installed OpenCode, "
+          + "running on whatever free model it starts with, once the file above is downloaded. "
+          + "It installs the file and tests it.\n\n"
+          + $"<pre>{Esc(OpenCodeSetupPrompt())}</pre>"), ct);
+
+        return new Reply(
+            $"\U0001f9e9 <b>{Esc(name)}</b> \u00b7 OpenCode\n\n"
+          + "<b>Parallel work</b>\n"
+          + "Subagents are what run in parallel \u2014 <code>@general</code> for a unit of work, "
+          + "<code>@explore</code> to search. Each one is its own request to this node.\n"
+          + $"The node decodes <b>{Replicas * RunningPerReplica} requests at once</b> across ALL customers "
+          + $"({Replicas} replicas \u00d7 {RunningPerReplica}); beyond that the router queues up to "
+          + $"{RouterQueue}, and a queued request waits up to {RouterQueueTimeout / 60} minutes before it is "
+          + "refused. Three or four parallel subagents is the useful range \u2014 past that they queue behind "
+          + "each other and each one decodes slower, because decode here is bound by memory bandwidth the "
+          + "streams share.\n"
+          + "<code>subagent_depth: 1</code> keeps a subagent from starting its own, which is what turns a "
+          + "fan-out into a stampede.\n\n"
+          + "<b>Images</b>\n"
+          + "The model reads them \u2014 paste or drag a screenshot in. The config resizes every image to "
+          + $"{ImageEdge}\u00d7{ImageEdge} and {Fmt.Num(ImageBudget(cfg.BodyLimit))} bytes of base64 first, "
+          + $"because the gateway refuses a request body over {Fmt.Num(cfg.BodyLimit)} bytes and OpenCode's "
+          + "own default (5 MB) would be refused every time.\n"
+          + $"An image costs about one token per 32\u00d732 pixels: at {ImageEdge}\u00d7{ImageEdge} that is "
+          + $"~{ImageEdge / 32 * (ImageEdge / 32):N0} tokens, charged like any other input.\n\n"
+          + "<b>Thinking</b>\n"
+          + "The server thinks at <code>xhigh</code> by default and thinking tokens are billed output at "
+          + "~60 tokens/s. The config asks for <code>high</code> for normal work, <code>xhigh</code> only in "
+          + "plan mode, less for search, and <code>none</code> for titles and summaries."
+          + Fmt.Note(
+              "Two model entries, one served model: the second sets "
+            + "<code>reasoningEffort: none</code> and is wired to <code>small_model</code>, so a session "
+            + "title never costs a round of deep reasoning.\n"
+            + $"<code>limit.input</code> is {Fmt.Num(cfg.ContextLimit - OpenCodeOutput(cfg.OutputLimit))}, not the "
+            + $"{Fmt.Num(cfg.ContextLimit)} window: prompt and output share it, so the prompt ceiling is the "
+            + $"window minus the {Fmt.Num(OpenCodeOutput(cfg.OutputLimit))} OpenCode asks for. Getting this "
+            + "wrong is the 400 \"Input length exceeds the maximum allowed length\".\n"
+            + "Compaction is left LATE and <code>prune</code> off on purpose: both rewrite history, and "
+            + "rewritten history misses this node's prefix cache, turning a 1-2 s prefill back into a cold "
+            + "one.\n"
+            + "Forward the file and the setup prompt together: a fresh OpenCode starts on a free model "
+            + "that can already run commands, so the owner pastes the prompt and it installs the file, "
+            + "checks the provider loaded and runs one real request. The prompt tells it not to edit any "
+            + "value \u2014 every number is matched to a limit of this node.\n"
+            + "\u26a0\ufe0f The file holds a live credential: forward it only to the key's owner."),
+            new InlineKeyboardMarkup([
+                [new InlineKeyboardButton("\U0001f50c Connect", $"kx:{name}"),
+                 new InlineKeyboardButton("\u2699\ufe0f Settings", $"kp:{name}")]]));
     }
+
+    // Kept in step with ../qwen3.6-27b-2-A100/docs/OPENCODE_SETUP_PROMPT.md,
+    // which explains each instruction. Lines stay under ~60 characters: this is
+    // read inside a <pre> block, and a wider one scrolls sideways on a phone.
+    //
+    // It forbids editing the file for a reason. Every number in the config is
+    // matched to a measured limit of this node, and a model that helpfully
+    // raises limit.output to the gateway's advertised ceiling, or restores
+    // OpenCode's default timeouts, produces failed requests: a 400 at long
+    // context, or an abort in the middle of a cold prefill the node is serving.
+    private string OpenCodeSetupPrompt() =>
+        """
+        Set me up to use my own model endpoint in opencode. Do the
+        work yourself, then tell me what to do next.
+
+        I have a file called opencode.json from the people who run
+        the endpoint. It is already tuned to their server.
+
+        1. Find it: look in ~/Downloads, ~/Desktop, /tmp and the
+           current directory. If it is not there, stop and ask me
+           to paste its contents.
+        2. Do not change any value inside it. Every number is
+           matched to that server's limits, and "correcting" one
+           causes failed requests.
+        3. It holds a live API key. Do not print it, do not copy
+           it into a project directory or anything tracked by git,
+           and do not pass it on a shell command line.
+        4. Install it globally, not per project:
+           - mkdir -p ~/.config/opencode
+           - if ~/.config/opencode/opencode.json already exists,
+             copy it to opencode.json.bak first, then merge: keep
+             my own settings, take every key from the new file,
+             and tell me which ones collided.
+           - otherwise move the file there.
+           - chmod 600 ~/.config/opencode/opencode.json
+        5. Check it parses: jq . ~/.config/opencode/opencode.json
+           (or python3 -m json.tool < that file).
+        6. Check opencode loaded it: opencode models qwen-gw
+        7. Test it for real:
+           opencode run -m qwen-gw/MODEL "Reply with: OK"
+           Allow up to 15 minutes and do not kill it early. The
+           first token can take a couple of minutes when the
+           server is busy; that is normal, not a hang. Report the
+           exit status and the reply.
+        8. Then tell me to restart opencode and select
+           qwen-gw/MODEL with /models. Change none of my other
+           settings.
+
+        If a step fails, stop and show me the exact error instead
+        of working around it.
+        """.Replace("MODEL", cfg.ModelId, StringComparison.Ordinal);
+
+    // Deployment shape, quoted to the user and used for nothing else. Two TP=1
+    // replicas at --max-running-requests 4, behind a router at --queue-size 64
+    // / --queue-timeout-secs 300 (../qwen3.6-27b-2-A100/docker-compose.yml).
+    private const int Replicas = 2, RunningPerReplica = 4, RouterQueue = 64, RouterQueueTimeout = 300;
+
+    // Longest edge an image is resized to before sending. The vision tower is
+    // patch 16 with spatial_merge 2, so one token covers a 32x32 block: 1280 is
+    // 1,600 tokens for a full-square image and keeps a screenshot legible.
+    private const int ImageEdge = 1280;
+
+    // Half the body budget for the image, half for the conversation around it.
+    private static int ImageBudget(int bodyLimit) => bodyLimit / 2;
+
+    // What OpenCode will actually put in max_tokens. It clamps to its own
+    // OUTPUT_TOKEN_MAX (32,000, provider/transform.ts) whatever the config says,
+    // so declaring the gateway's 70,000 ceiling here would only misstate the
+    // arithmetic that limit.input depends on.
+    private static int OpenCodeOutput(int gatewayCeiling) => Math.Min(gatewayCeiling, 32_000);
 
     private string OpenCodeJson(string credential)
     {
@@ -1937,6 +2085,41 @@ sealed class Worker(
             ? credential["Bearer ".Length..]
             : credential;
 
+        // prompt + output share one window, so the prompt ceiling is the window
+        // minus what the client will ask to generate. OpenCode reads limit.input
+        // as exactly that ceiling (session/overflow.ts::usable).
+        var output = OpenCodeOutput(cfg.OutputLimit);
+        var input = cfg.ContextLimit - output;
+
+        // Both entries point at the same served model through `id`; only the
+        // effort differs. `attachment` + `modalities.input` are what let OpenCode
+        // offer an image at all \u2014 /v1/models advertises neither.
+        JsonObject Model(string label, string effort, bool reasoning) => new()
+        {
+            ["id"]          = cfg.ModelId,
+            ["name"]        = label,
+            ["attachment"]  = true,
+            ["reasoning"]   = reasoning,
+            ["tool_call"]   = true,
+            // Explicitly off. Turning it on makes OpenCode send each turn's
+            // reasoning back as reasoning_content on the NEXT request: paid
+            // input tokens for text this model's chat template discards.
+            ["interleaved"] = false,
+            ["temperature"] = false,
+            ["modalities"]  = new JsonObject
+            {
+                ["input"]  = new JsonArray("text", "image"),
+                ["output"] = new JsonArray("text")
+            },
+            ["limit"] = new JsonObject
+            {
+                ["context"] = cfg.ContextLimit,
+                ["input"]   = input,
+                ["output"]  = output
+            },
+            ["options"] = new JsonObject { ["reasoningEffort"] = effort }
+        };
+
         var doc = new JsonObject
         {
             ["$schema"] = "https://opencode.ai/config.json",
@@ -1944,28 +2127,79 @@ sealed class Worker(
             {
                 ["qwen-gw"] = new JsonObject
                 {
-                    ["npm"] = "@ai-sdk/openai-compatible",
+                    ["npm"]  = "@ai-sdk/openai-compatible",
                     ["name"] = "Qwen3.8-27B (A100 gateway)",
                     ["options"] = new JsonObject
                     {
                         ["baseURL"] = $"{cfg.PublicBaseUrl}/v1",
-                        ["apiKey"] = apiKey
+                        ["apiKey"]  = apiKey,
+                        // Sized against the engine's --request-timeout-secs 900.
+                        // The first byte can legitimately be minutes away: a
+                        // queued request waits up to 300 s at the router and a
+                        // cold 160K prefill then runs ~80-130 s, so OpenCode's
+                        // 5-minute defaults for headers and for the gap between
+                        // SSE chunks would abort requests the node is serving.
+                        ["timeout"]       = 900_000,
+                        ["headerTimeout"] = 600_000,
+                        ["chunkTimeout"]  = 600_000
                     },
                     ["models"] = new JsonObject
                     {
-                        [cfg.ModelId] = new JsonObject
-                        {
-                            ["name"] = cfg.ModelId,
-                            ["limit"] = new JsonObject
-                            {
-                                ["context"] = cfg.ContextLimit,
-                                ["output"] = cfg.OutputLimit
-                            }
-                        }
+                        [cfg.ModelId]           = Model(cfg.ModelId, "high", true),
+                        [$"{cfg.ModelId}-fast"] = Model($"{cfg.ModelId} (no thinking)", "none", false)
                     }
                 }
             },
-            ["model"] = $"qwen-gw/{cfg.ModelId}"
+            ["model"]       = $"qwen-gw/{cfg.ModelId}",
+            // Titles and summaries are side requests on every session. At the
+            // server's default xhigh they would each spend hundreds of output
+            // tokens deliberating over a six-word title.
+            ["small_model"] = $"qwen-gw/{cfg.ModelId}-fast",
+            // Subagents are the only thing here that opens a second stream to
+            // the node. Depth 1 lets a primary agent fan out and stops a
+            // subagent from fanning out again, which is how a handful of
+            // parallel requests becomes more than the node can decode.
+            ["subagent_depth"] = 1,
+            // A private endpoint. Sharing uploads the conversation elsewhere.
+            ["share"] = "disabled",
+            // Independent tool calls go out together instead of one per turn.
+            // Every turn re-sends the whole conversation, so fewer turns is
+            // fewer prefills \u2014 the dominant cost on a long session here.
+            ["experimental"] = new JsonObject { ["batch_tool"] = true },
+            ["compaction"] = new JsonObject
+            {
+                ["auto"] = true,
+                // Both of these rewrite history, and rewritten history no longer
+                // matches the prefix this node has cached: the next turn pays a
+                // cold prefill (~3,200 tokens/s) instead of a cached one (1-2 s).
+                // So compact as late as the window safely allows, and never
+                // prune. 20,000 is the slack between the trigger and the
+                // limit.input ceiling, for tool output that lands after it.
+                ["prune"]    = false,
+                ["reserved"] = 20_000
+            },
+            ["attachment"] = new JsonObject
+            {
+                ["image"] = new JsonObject
+                {
+                    // Resize rather than reject: OpenCode shrinks and re-encodes
+                    // until the base64 fits, so an oversized screenshot still
+                    // gets through instead of erroring at the gateway.
+                    ["auto_resize"]      = true,
+                    ["max_width"]        = ImageEdge,
+                    ["max_height"]       = ImageEdge,
+                    ["max_base64_bytes"] = ImageBudget(cfg.BodyLimit)
+                }
+            },
+            // Effort per built-in agent. Subagents run in parallel and share the
+            // node's decode bandwidth, so the ones doing legwork think less.
+            ["agent"] = new JsonObject
+            {
+                ["plan"]    = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "xhigh" } },
+                ["build"]   = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "high" } },
+                ["general"] = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "medium" } },
+                ["explore"] = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "low" } }
+            }
         };
         return doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
@@ -2264,6 +2498,7 @@ sealed class Worker(
             "kr:" => KeyReportStart(rest, chatId, ct),
             "kp:" => await PolicyCardAsync(rest, null, ct),
             "kx:" => await ConnectAsync(rest, ct),
+            "ko:" => await OpenCodeAsync(rest, chatId, ct),
             _     => new Reply("Unknown selection. Run /key again.")
         };
     }
@@ -2626,7 +2861,7 @@ sealed class Worker(
                 + $"Alibaba SG {PriceBook.Usd(PriceBook.Cost(prices.AlibabaSg, i, o))} · "
                 + $"BJ {PriceBook.Usd(PriceBook.Cost(prices.AlibabaBj, i, o))}\n"
                 : "";
-        await SendDocumentAsync(chatId, $"{name}-{stamp}.html", Encoding.UTF8.GetBytes(html),
+        await SendDocumentAsync(chatId, $"{name}-{stamp}.html", Encoding.UTF8.GetBytes(html), "text/html",
             $"<b>{Esc(name)}</b> — written by the node, {stamp} UTC.\n"
           + "At reference prices, not a bill:\n" + Line("24h", day) + Line("7d", week)
           + "<i>Numbers are measured; the reading of them is the model's.</i>", ct);
@@ -2799,14 +3034,14 @@ sealed class Worker(
     // the exception: a report is a file an operator keeps, forwards and opens
     // in a browser, and Telegram truncates a message at 4096 characters.
     private async Task SendDocumentAsync(
-        long chatId, string filename, byte[] bytes, string caption, CancellationToken ct)
+        long chatId, string filename, byte[] bytes, string mime, string caption, CancellationToken ct)
     {
         using var form = new MultipartFormDataContent();
         form.Add(new StringContent(chatId.ToString(CultureInfo.InvariantCulture)), "chat_id");
         form.Add(new StringContent(caption), "caption");
         form.Add(new StringContent("HTML"), "parse_mode");
         var file = new ByteArrayContent(bytes);
-        file.Headers.ContentType = new MediaTypeHeaderValue("text/html");
+        file.Headers.ContentType = new MediaTypeHeaderValue(mime);
         form.Add(file, "document", filename);
 
         using var r = await http.CreateClient("telegram").PostAsync("sendDocument", form, ct);
@@ -3552,7 +3787,7 @@ sealed class Worker(
 
     private async Task<Reply> DispatchWithTypingAsync(long chatId, long userId, string text, CancellationToken ct)
     {
-        var work = DispatchAsync(userId, text, ct);
+        var work = DispatchAsync(userId, chatId, text, ct);
         using var settled = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var late = Task.Delay(TypingAfter, settled.Token);
 
@@ -5313,7 +5548,7 @@ sealed record BotConfig(
     string AdminCredential, string GatewayUrl, string ApiServerUrl, string KubeConfigPath,
     string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
-    string ModelId, int ContextLimit, int OutputLimit,
+    string ModelId, int ContextLimit, int OutputLimit, int BodyLimit,
     string AlertSecret, string AdminApiSecret, string RecordsUrl, string RecordsSecret,
     string AlertmanagerUrl, HashSet<long> AlertChatIds);
 
