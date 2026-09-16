@@ -1321,6 +1321,17 @@ sealed class Worker(
         // token_usage is used / pool size. The old used/available ratio divided
         // by FREE tokens and read 187% on 2026-09-13.
         var kvT     = PromScalarAsync("max(sglang:token_usage) * 100", ct);
+        // Waiting inside the engines. The router's own queue (--queue-size) has
+        // no gauge, but it only fills past --max-concurrent-requests 16, and
+        // everything it admits lands here first.
+        var queueT  = PromScalarAsync("sum(sglang:num_queue_reqs)", ct);
+        var runT    = PromScalarAsync("sum(sglang:num_running_reqs)", ct);
+        // Replicas holding a queue while admitting nothing from it. Normal
+        // traffic admits ~20 per replica per 10 min; zero with a non-empty
+        // queue is a long prompt waiting for KV room, or a wedged scheduler.
+        var stuckT  = PromScalarAsync(
+            "count((sum by (instance) (sglang:num_queue_reqs) > 0) and on (instance) "
+          + "(sum by (instance) (increase(sglang:queue_time_seconds_count[5m])) == 0)) or vector(0)", ct);
         // Prefix cache over the last hour, exact: sums over every request the
         // engine finished (engine.requests), gateway traffic or not. The
         // sglang:cache_hit_rate gauge reads 0 on v0.5.19 regardless of traffic.
@@ -1337,7 +1348,7 @@ sealed class Worker(
         var ageT    = PromScalarAsync("time() - max(engine_usage_last_record_timestamp_seconds{source=\"engine\"})", ct);
         var staleT  = PromScalarAsync("count(ALERTS{alertname=\"EngineUsageRecordsStale\",alertstate=\"firing\"}) or vector(0)", ct);
 
-        await Task.WhenAll(upT, totalT, alertsT, ledgerT, genT, ttftT, kvT, cacheT,
+        await Task.WhenAll(upT, totalT, alertsT, ledgerT, genT, ttftT, kvT, queueT, runT, stuckT, cacheT,
                            hUsedT, hTotT, lbTokT, lbSecT, scrapeT, ageT, staleT);
 
         static string N(double? v, string fmt = "N0") =>
@@ -1348,6 +1359,7 @@ sealed class Worker(
         var scrapeUp = scrapeT.Result is > 0;
         var stale = staleT.Result is > 0;
         var cache = cacheT.Result;
+        var stuck = stuckT.Result;
 
         static string Ok(bool good) => good ? "✅" : "⚠️";
         var targetsOk = up is not null && total is not null && up >= total;
@@ -1362,6 +1374,7 @@ sealed class Worker(
             $"\U0001f4c8 Throughput <b>{N(genT.Result)}</b> tok/s",
             $"⏱ First token p95 <b>{Fmt.Secs(ttftT.Result)}</b>",
             $"\U0001f9e0 KV pool <b>{N(kvT.Result, "N1")}%</b>",
+            $"\U0001f6a6 Queue <b>{N(queueT.Result)}</b> waiting · {N(runT.Result)}/{Replicas * RunningPerReplica} running",
         };
         if (cache.Hit is { } hit)
             lines.Add($"♻️ Cache hit <b>{hit * 100:0.#}%</b> · GPU {(hit - (cache.HostShare ?? 0)) * 100:0.#}% · HiCache {(cache.HostShare ?? 0) * 100:0.#}%");
@@ -1386,6 +1399,8 @@ sealed class Worker(
             warn.Add("Usage records are not reaching Prometheus — /usage, /top, /key, /p95 and burn rates go stale, then empty.");
         if (stale)
             warn.Add("The engine is serving but no new usage records arrived for 15 min — Vector or ClickHouse stopped ingesting.");
+        if (stuck is > 0)
+            warn.Add($"{N(stuck)} replica(s) have requests queued but admitted none in 5 min — a long prompt waiting for KV room, or a stalled scheduler.");
         if (alerts is > 0)
             warn.Add($"{N(alerts)} alert(s) firing — see /alerts.");
 
@@ -1395,7 +1410,8 @@ sealed class Worker(
             body += "\n\n✅ <i>Nothing firing, every target reporting.</i>";
 
         return body + Fmt.Note(
-            "Throughput, first token and KV pool are node-wide right now (KV pool: the fuller replica).\n"
+            "Throughput, first token, KV pool and queue are node-wide right now (KV pool: the fuller replica). "
+          + "Queue is requests waiting inside the engines; the router's own queue is not exported.\n"
           + "Cache hit is the share of prompt tokens the engine did not recompute over the last hour, summed from "
           + "its per-request records: GPU is a prefix still in GPU memory, HiCache one reloaded from host RAM after "
           + "the GPU evicted it. HiCache RAM is how much of that host tier is in use.\n"
