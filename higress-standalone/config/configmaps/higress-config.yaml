@@ -22,7 +22,13 @@ data:
         initialConnectionWindowSize: 1048576
         initialStreamWindowSize: 65535
         maxConcurrentStreams: 100
-      idleTimeout: 180
+      # Envoy applies this as BOTH idle_timeout and stream_idle_timeout. A
+      # response sends nothing until the request has left the router queue
+      # (--queue-timeout-secs 300) and finished prefill (a 169K prompt takes
+      # ~80-130 s); a non-streaming one sends nothing until it is done. At
+      # 180 s those were cut as 504 SI while the engine kept working. 900
+      # matches --request-timeout-secs on the router and engines.
+      idleTimeout: 900
       maxRequestHeadersKb: 60
       routeTimeout: 0
     upstream:
