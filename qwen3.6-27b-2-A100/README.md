@@ -165,6 +165,11 @@ The in-repo `docs/` directory is the operational manual for this node:
   rolling a replica, logs, rollback, troubleshooting
 - **[docs/METRICS-ECOSYSTEM.md](docs/METRICS-ECOSYSTEM.md)** — which store
   answers which question: ledger, per-request records, exact usage gauges
+- **[docs/OPENCODE_SETUP_PROMPT.md](docs/OPENCODE_SETUP_PROMPT.md)** and
+  **[docs/HERMES_SETUP_PROMPT.md](docs/HERMES_SETUP_PROMPT.md)** — what a
+  customer pastes into a fresh client so it configures itself against this
+  node's real limits. quota-bot `/opencode <name>` sends the OpenCode one with
+  the generated `opencode.json`
 
 - **[tuning/docs/UPGRADE_QWEN3.8.md](tuning/docs/UPGRADE_QWEN3.8.md)** —
   2026-08-15 Qwen3.6 → Qwen3.8 weights swap: why no engine change, why the
