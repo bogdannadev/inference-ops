@@ -251,6 +251,25 @@
 #   named. r0 and the router keep running v0.5.18 until something recreates
 #   them. That asymmetry IS the A/B window. Do not run a bare
 #   `docker compose up -d` during it.
+# ABORT-FIX BACKPORT (2026-09-16). This image is sglang 0.5.19 at 0bcd822377
+# (2026-09-03), one day before upstream f478b2bb2d (#35255). Without that fix, a
+# streaming request whose client cancels is never aborted in the scheduler:
+# handler cleanup deletes rid_to_state first, so abort_request() returns early
+# and the request decodes to completion for nobody ("Received output for
+# rid=... but the state was deleted in TokenizerManager"). Queued requests
+# whose clients have left are admitted later and run the same way. On
+# 2026-09-16 every long queue stall (5-20 min, 1 slot of 4 busy) ended 2-3 s
+# after such a request stopped: it held 60-70% of the KV pool, so nothing in
+# the queue fit.
+# patches/sglang-abort-fix/ holds the two patched files, bind-mounted into both
+# replicas, and the backport diff. It differs from upstream only in context:
+# _send_one_request/_send_batch_request are still sync at this pin. Upstream's
+# regression tests pass on it (26/26; 9 fail on the unpatched pin).
+#
+# --enable-priority-scheduling was considered and rejected: for this
+# workload it only re-scans the queue every step, and it honours a
+# client-supplied `priority`, which would let any API client preempt other
+# tenants.
 x-sglang-image: &sglang-image lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
 
 x-replica-common: &replica-common
@@ -532,6 +551,10 @@ services:
       - sglang_kernel_cache_r0:/root/.cache/sglang
       - ./logs/r0:/app/logs
       - /etc/localtime:/etc/localtime:ro
+      # Abort-fix backport, see the note above x-sglang-image. Drop both
+      # lines once the image is newer than upstream f478b2bb2d.
+      - ./patches/sglang-abort-fix/tokenizer_manager.py:/sgl-workspace/sglang/python/sglang/srt/managers/tokenizer_manager.py:ro
+      - ./patches/sglang-abort-fix/scheduler.py:/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:ro
 
     deploy:
       resources:
@@ -857,6 +880,9 @@ services:
       - sglang_kernel_cache_r1:/root/.cache/sglang
       - ./logs/r1:/app/logs
       - /etc/localtime:/etc/localtime:ro
+      # Same abort-fix backport as r0.
+      - ./patches/sglang-abort-fix/tokenizer_manager.py:/sgl-workspace/sglang/python/sglang/srt/managers/tokenizer_manager.py:ro
+      - ./patches/sglang-abort-fix/scheduler.py:/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:ro
 
     deploy:
       resources:
