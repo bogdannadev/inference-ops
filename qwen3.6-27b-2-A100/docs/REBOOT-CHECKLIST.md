@@ -52,7 +52,7 @@ rebuild on a fresh clone, not for the restart itself.
 | File | If missing | Regenerate |
 |---|---|---|
 | `.env` | nothing starts | restore from backup — no other source |
-| `alertmanager/webhook_secret` | Alertmanager crash-loops at config load | `grep '^ALERT_WEBHOOK_SECRET=' .env \| cut -d= -f2- > alertmanager/webhook_secret && chmod 644 $_` |
+| `alertmanager/webhook_secret` | Alertmanager crash-loops at config load | `./deploy/render-alertmanager-secret.sh` |
 | `vector/secrets.json` | Vector 403s against ClickHouse | `./deploy/render-vector-secrets.sh` |
 | `prometheus/secrets/engine_metrics_clickhouse.pass` | `engine-usage` scrape 401s; bot usage screens go empty | `./deploy/render-prometheus-secrets.sh` |
 | `higress-standalone/consumers.conf` | no consumer can authenticate | restore from backup |
