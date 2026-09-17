@@ -263,3 +263,94 @@ tokenizer. Workers activate and serve normally. Do not read this as a fault.
   `cache_aware` reached 97.7% with no client changes. Hold step 2 in reserve
   for many short unrelated sessions, or a shared prefix dominant enough to make
   the balance guard thrash.
+
+---
+
+# 2026-09-17 — the balance guard's blind spot, and which policy fits
+
+## What happened
+
+2026-09-16 14:20-14:28: r1 ran one vkondratyev-demo request (61K prompt, 32,000
+output tokens, 8 min) and held 1-2 more turns of the same session in its queue.
+r0 was idle. Four clients gave up after 155-240 s. The router counted r1 at 2
+in flight and r0 at 0; the guard needs a gap **greater than** 2, so every turn
+followed its cached prefix to r1.
+
+## How often (Prometheus, 2026-09-10..17, 15 s steps)
+
+76 minutes with a queue on one replica while the other had no queue and a free
+slot; 54 of them with the other replica fully idle. The router's own in-flight
+gap at those moments:
+
+| gap | minutes | fixed by `--balance-abs-threshold 1`? |
+|---|---|---|
+| 2 | 35 | yes |
+| 0-1 | ~22 | no: one huge request looks like one small one |
+| 3+ | ~19 | no: the guard should already have fired; not explained yet |
+
+This is now the recording rule `node:engine_queue_stranded:bool` and the alert
+`EngineQueueStrandedOnOneReplica` (docs/OBSERVABILITY.md → Serving alerts); the
+bot's `/errors` prints the minutes.
+
+## The mechanism, from source (gateway-v0.3.1; the image runs 0.3.2)
+
+- `cache_aware.rs`: `load()` is the router's in-flight **request counter**. If
+  the prefix match is over `--cache-threshold` (0.3), the tree's worker is
+  chosen with no load check; load is consulted only when the global guard
+  fires, or when nothing matches.
+- `LoadMonitor` (`core/worker_manager.rs`) polls each worker's `/get_load` —
+  `num_tokens`, `num_waiting_reqs`, `num_pending_tokens`, the numbers the guard
+  actually needs — but feeds them **only to `power_of_two`** policies, every
+  `--worker-startup-check-interval` (30 s default). Upstream `main` cache_aware
+  still does not read it (checked 2026-09-17).
+- The monitor authenticates with the router's `--api-key`, which we do not set.
+  Our engines answer `/get_load` with 401 without the key (checked), so even
+  `power_of_two` would silently fall back to request counts today.
+- `manual.rs`: a new routing key goes to a **random** worker ("TODO: use
+  load-aware selection later"); an existing key stays on its worker while that
+  worker is healthy. 0.3.2's `--assignment-mode min_load` changes only where a
+  *new* key lands, by request count.
+
+## Our traffic
+
+| who | shape | what routing must do |
+|---|---|---|
+| vkondratyev-demo | agent sessions, prompts 60-170K growing each turn, 93% cache hit, 2-3 parallel streams, occasional 32K-token answers, OpenAI SDK retries | keep a session on its replica (a miss costs a 49 s prefill on average for prompts over 60K, 65 s p90) but move it when that replica is blocked |
+| direct hostname | ~1,000 short requests per hour today (2K prompts, 200-3000 output), sequential | anything works; it pins to r0 under cache_aware, harmless while r0 has room |
+| tim, danila | occasional | anything works |
+
+## Policies against that
+
+| policy | verdict |
+|---|---|
+| `cache_aware`, abs 2 (live) | right shape, guard too coarse: 76 stranded min/week |
+| `cache_aware`, abs 1 | **do now.** Catches the gap-2 cases (35 of 76 min, including 14:20). Moves a session only while the replicas are imbalanced, so the cold-prefill cost is paid only when the alternative is waiting in a queue |
+| `power_of_two` | rejected for this traffic. Token-aware only after adding the router's `--api-key` (outbound credential), 30 s stale, and no affinity: shared-prefix cache hit falls to round_robin's 65% (measured 2026-09-05), i.e. a cold 100K prefill on half the agent turns |
+| `manual` + `x-smg-routing-key` | exact session affinity, but random placement and no escape hatch: strands worse than cache_aware. Keep for when affinity must be exact |
+| `round_robin` | 65% hit instead of 97.7% |
+| `consistent_hashing` | collapses onto one worker (shared Authorization) |
+| `prefix_hash` | still blocked by `model_id: "unknown"` |
+| `bucket` | splits by request length for prefill pools; not our problem |
+
+## What would close the rest (gap 0-1)
+
+The guard needs KV tokens and queue length, not request counts. None of the
+shipped policies combine that with affinity. In order of cost:
+
+1. **Make a move cheap instead of rare.** HiCache L3 (`--hicache-storage-backend`,
+   docs/advanced_features/hicache_design.md) is shared across instances: if
+   both replicas wrote to one host-side store, a session moved to the other
+   replica would load its prefix from host memory (~1.2 s per 45K tokens here)
+   instead of recomputing it (49 s). Then abs 1, or even token-aware
+   `power_of_two`, costs little. Unverified: the built-in `file` backend is
+   documented as a demonstration backend, and L3 support for this hybrid
+   GDN/Mamba model at our pinned image must be tested before anything else.
+2. **Put the direct-hostname traffic behind the gateway** (per-person keys,
+   already planned). Then the 70K `max_tokens` cap and per-key limits apply to
+   everyone, which bounds how long one answer can hold a replica.
+3. **Patch cache_aware to read LoadMonitor** (`num_tokens + num_pending_tokens`,
+   `num_waiting_reqs`). Small in Rust, but it is a fork of the router binary;
+   worth an upstream issue first.
+
+Applying abs 1 recreates the router and drops in-flight requests on both
+replicas; do it when both engines report 0 running and 0 queued.

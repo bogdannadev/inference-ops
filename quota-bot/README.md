@@ -58,7 +58,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 /top [1h|24h|7d|30d]        busiest keys, share and errors
 /p95 [name] [window]        latency per key, gateway and engine (default 24h)
 /prices                     OpenRouter and Alibaba price table
-/errors [1h|24h|7d|30d]     error answers per key
+/errors [name] [window]     why requests failed: all keys, or one key's failed requests
 /trace <name|request-id>    one key's or one request's records
 
 /status                     can I operate the gateway

@@ -141,6 +141,10 @@ var cfg = new BotConfig(
     RecordsUrl:      Opt("ADMIN_MCP_READ_URL", "http://admin-mcp:8081").TrimEnd('/'),
     RecordsSecret:   Opt("BOT_READ_SECRET", ""),
     AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
+    // The team's direct router hostname (Caddy, shared edge key, no gateway).
+    // Its traffic has no consumer and no access-log row, so /errors reads its
+    // status codes from Caddy's per-host counters instead.
+    DirectHost:      Opt("DIRECT_HOST", "model.example.com"),
     AlertChatIds:    alertChatIds);
 
 // Encoded once, not on every delivery — and validated here because the
@@ -1034,6 +1038,18 @@ sealed class Worker(
             return;
         }
 
+        // One key's errors, from /errors or the key card: re-renders in place.
+        if (data.StartsWith("ke:", StringComparison.Ordinal))
+        {
+            var parts = data.Split(':', 3);
+            var reply = parts.Length == 3 && ValidWindow(parts[1]) && SafeName(parts[2])
+                ? await KeyErrorsAsync(parts[2], parts[1], ct)
+                : new Reply("Malformed selection. Run /errors again.");
+            await AnswerCallbackAsync(cb.Id, ct);
+            await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            return;
+        }
+
         // Window buttons under /top, /usage and /errors: re-render in place.
         if (data.StartsWith("w:", StringComparison.Ordinal))
         {
@@ -1095,7 +1111,9 @@ sealed class Worker(
             "/p95"        => new Reply(await LatencyAsync(
                                  a1 is not null && !ValidWindow(a1) ? a1 : a2 is not null && !ValidWindow(a2) ? a2 : null,
                                  a1 is not null && ValidWindow(a1) ? a1 : a2 is not null && ValidWindow(a2) ? a2 : "24h", ct)),
-            "/errors"     => await ErrorsAsync(a1 ?? "24h", ct),
+            "/errors"     => a1 is not null && !ValidWindow(a1)
+                               ? await KeyErrorsAsync(a1, a2 ?? "24h", ct)
+                               : await ErrorsAsync(a1 ?? "24h", ct),
             "/tiers"      => new Reply(TiersHelp()),
             "/prices"     => new Reply(await PricesAsync(ct)),
             // No argument is the common case — an operator wants "show me
@@ -1187,8 +1205,8 @@ sealed class Worker(
         new("prices", "What they used", "",
             "OpenRouter and Alibaba price table",
             "Reference prices used for cost"),
-        new("errors", "What they used", "[1h|24h|7d|30d]",
-            "error answers per key", "Status mix per consumer"),
+        new("errors", "What they used", "[name] [1h|24h|7d|30d]",
+            "why requests failed, all keys or one", "Failed requests by cause"),
         new("tiers", "Who and how much", "", "tier defaults and what they enforce",
             "What each policy tier means"),
         new("trace", "What they used", "&lt;name|request-id&gt;",
@@ -2759,10 +2777,11 @@ sealed class Worker(
              new InlineKeyboardButton(W("7d"), $"kw:7d:{name}")],
             [new InlineKeyboardButton("⚙️ Settings", $"kp:{name}"),
              new InlineKeyboardButton("\U0001f50e Requests", $"kt:{name}"),
-             new InlineKeyboardButton("\U0001f4c4 Report", $"kr:{name}")],
-            [new InlineKeyboardButton("\U0001f50c Connect", $"kx:{name}"),
-             new InlineKeyboardButton("\U0001f9e9 OpenCode", $"ko:{name}"),
-             new InlineKeyboardButton("← All keys", "kl:")]
+             new InlineKeyboardButton("⚠️ Errors", $"ke:{window}:{name}")],
+            [new InlineKeyboardButton("\U0001f4c4 Report", $"kr:{name}"),
+             new InlineKeyboardButton("\U0001f50c Connect", $"kx:{name}"),
+             new InlineKeyboardButton("\U0001f9e9 OpenCode", $"ko:{name}")],
+            [new InlineKeyboardButton("← All keys", "kl:")]
         ]);
         return new Reply(sb.ToString(), keyboard);
     }
@@ -3497,64 +3516,247 @@ sealed class Worker(
         return new Reply(sb.ToString(), keyboard);
     }
 
-    // Status classes per consumer, worst first. Only non-zero classes are
-    // printed: "0 5xx" on every line is noise that hides the one that matters.
+    // ---- errors -------------------------------------------------------------
+    //
+    // Why requests did not end in a full answer, by NAMED cause rather than
+    // status class: "4xx" put a 400 from the engine next to a 429 from the
+    // limiter, and a 504 stream timeout, a client that gave up in the queue and
+    // one that left mid-answer were not errors at all to a status-class count.
+    // The causes are classified once, in SQL, and the same expression drives
+    // the gauge (gateway_usage_error_requests), admin-mcp's per-key rows and the
+    // alerts, so the three cannot disagree. Order here is display order: what
+    // the node did wrong first, then what the client did.
+    private static readonly (string Cause, string Glyph, string Label)[] ErrorCauses =
+    [
+        ("timeout",           "⏱",  "timed out at the gateway (504)"),
+        ("server_error",      "\U0001f534", "server error (5xx)"),
+        ("left_before_reply", "\U0001f6aa", "client left before any reply"),
+        ("left_mid_answer",   "✂️", "client left mid-answer"),
+        ("cut_mid_answer",    "✂️", "stream cut mid-answer"),
+        ("no_reply",          "⚫", "ended with no reply"),
+        ("bad_request",       "❌", "rejected by the engine (400)"),
+        ("max_tokens",        "\U0001f4cf", "max_tokens over the cap (422)"),
+        ("too_large",         "\U0001f4e6", "body over the size cap (413)"),
+        ("rate_limited",      "⏳", "limit reached (429)"),
+        ("no_balance",        "⛔", "no balance (403)"),
+        ("no_key",            "\U0001f6ab", "bad or missing key (401)"),
+        ("not_found",         "❓", "unknown path (404)"),
+        ("client_error",      "\U0001f7e0", "other 4xx"),
+    ];
+
+    private static (string Glyph, string Label) CauseText(string? cause)
+    {
+        foreach (var c in ErrorCauses)
+            if (c.Cause == cause) return (c.Glyph, c.Label);
+        return ("⚠️", Esc(cause ?? "unknown"));
+    }
+
+    private static readonly string ErrorCausesNote =
+        "<b>Causes</b>\n"
+      + "⏱ the gateway waited 900 s without a byte. \U0001f534 the router or engine failed.\n"
+      + "\U0001f6aa the client closed the connection before the first byte — on this node that means it "
+      + "gave up while queued or during a long prefill. ✂️ the answer had started and was cut, by the "
+      + "client or by an upstream reset. Both are charged nothing.\n"
+      + "❌ the engine refused the request before running it: usually a prompt plus max_tokens over the "
+      + "169K context, or a parameter it does not accept. The engine logs no reason.\n"
+      + "⏳ 429 is a key's token limit, or the router's queue being full. ⛔ \U0001f6ab \U0001f4cf are the "
+      + "gateway's own refusals.\n"
+      + "Counts are exact, from the gateway access log.";
+
+    private static int WindowHours(string window) => window switch
+    {
+        "1h" => 1, "24h" => 24, "7d" => 168, _ => 720,
+    };
+
+    // The general report: every key's failures by cause, then the traffic the
+    // access log cannot see (the direct hostname), then whether routing left a
+    // queue on one replica while the other had room.
     private async Task<Reply> ErrorsAsync(string window, CancellationToken ct)
     {
         if (!ValidWindow(window)) return new Reply(BadWindow(window));
-        var keyboard = WindowButtons("errors", window, "1h", "24h", "7d", "30d");
 
-        // Exact counts over the access log (gateway.requests), per window.
-        var seriesT = PromSeriesAsync($"sum by (consumer,status_class) (gateway_usage_requests{{window=\"{window}\"}})", ct);
-        var rlT = UsageByConsumerAsync("gateway_usage_rate_limited_requests", window, ct);
-        var qdT = UsageByConsumerAsync("gateway_usage_quota_denied_requests", window, ct);
+        var causesT = PromSeriesAsync(
+            $"sum by (consumer,cause) (gateway_usage_error_requests{{window=\"{window}\"}})", ct);
+        var totalsT = UsageByConsumerAsync("gateway_usage_requests", window, ct);
+        var abortsT = UsageByConsumerAsync("engine_usage_aborted_requests", window, ct);
+        var directAbortT = PromScalarAsync(
+            $"sum(engine_usage_aborted_requests{{window=\"{window}\",consumer=\"\"}})", ct);
+        // Caddy's per-host counters: approximate (increase() over a counter that
+        // resets when Caddy restarts), but the only record of the direct route.
+        var hostSel = $"host=\"{cfg.DirectHost}\"";
+        var directT = PromSeriesAsync(
+            $"sum by (code) (increase(caddy_http_request_duration_seconds_count{{{hostSel},code=~\"[45]..\"}}[{window}]))", ct);
+        var directTotalT = PromScalarAsync(
+            $"sum(increase(caddy_http_request_duration_seconds_count{{{hostSel}}}[{window}]))", ct);
+        var strandedT = PromScalarAsync($"sum_over_time(node:engine_queue_stranded:bool[{window}]) * 15 / 60", ct);
         var warnT = UsageDataWarningAsync(ct);
-        await Task.WhenAll(seriesT, rlT, qdT, warnT);
+        await Task.WhenAll(causesT, totalsT, abortsT, directAbortT, directT, directTotalT, strandedT, warnT);
 
         var by = new Dictionary<string, Dictionary<string, double>>(StringComparer.Ordinal);
-        foreach (var (labels, value) in seriesT.Result)
+        foreach (var (labels, value) in causesT.Result)
         {
-            if (!labels.TryGetValue("consumer", out var c)) continue;
-            var cls = labels.GetValueOrDefault("status_class", "none");
+            if (value < 0.5 || !labels.TryGetValue("consumer", out var c) || !labels.TryGetValue("cause", out var cause))
+                continue;
             if (!by.TryGetValue(c, out var m)) by[c] = m = new(StringComparer.Ordinal);
-            m[cls] = m.GetValueOrDefault(cls) + value;
+            m[cause] = m.GetValueOrDefault(cause) + value;
         }
-        by = by.Where(x => x.Value.Values.Sum() >= 0.5).ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
-        if (by.Count == 0)
-            return new Reply($"\U0001f6a6 <b>Status mix</b> · {window}\n{warnT.Result}\nNo gateway traffic in this window.", keyboard);
+        foreach (var (c, n) in abortsT.Result)
+            if (n >= 0.5 && !by.ContainsKey(c)) by[c] = new(StringComparer.Ordinal);
 
-        double Bad(Dictionary<string, double> m) => m.GetValueOrDefault("4xx") + m.GetValueOrDefault("5xx");
-        var totalBad = by.Values.Sum(Bad);
-        var sb = new StringBuilder($"\U0001f6a6 <b>Status mix</b> · {window}\n{warnT.Result}");
-        sb.Append(totalBad >= 0.5
-            ? $"⚠️ <b>{Fmt.Num(totalBad)}</b> error answers of {Fmt.Num(by.Values.Sum(m => m.Values.Sum()))}\n"
-            : $"✅ No errors in {Fmt.Num(by.Values.Sum(m => m.Values.Sum()))} requests\n");
+        var totals = totalsT.Result;
+        var failed = by.Values.Sum(m => m.Values.Sum());
+        var all = totals.Values.Sum();
+        var sb = new StringBuilder($"\U0001f6a6 <b>Errors</b> · {window}\n{warnT.Result}");
+        sb.Append(failed >= 0.5
+            ? $"⚠️ <b>{Fmt.Num(failed)}</b> of {Fmt.Num(all)} gateway requests did not finish\n"
+            : $"✅ Every one of {Fmt.Num(all)} gateway requests finished\n");
 
-        foreach (var (name, m) in by.OrderByDescending(x => Bad(x.Value)).ThenByDescending(x => x.Value.Values.Sum()))
+        var order = by.OrderByDescending(x => x.Value.Values.Sum())
+                      .ThenBy(x => x.Key, StringComparer.Ordinal).ToList();
+        foreach (var (name, m) in order)
         {
-            var parts = new List<string>();
-            if (m.GetValueOrDefault("2xx") is var ok and >= 0.5) parts.Add($"✅ {Fmt.Num(ok)}");
-            if (m.GetValueOrDefault("4xx") is var c4 and >= 0.5)
-            {
-                // The two refusals an operator acts on, named.
-                var why = new List<string>();
-                if (rlT.Result.GetValueOrDefault(name) is var rl and >= 0.5) why.Add($"{Fmt.Num(rl)} limit");
-                if (qdT.Result.GetValueOrDefault(name) is var qd and >= 0.5) why.Add($"{Fmt.Num(qd)} no balance");
-                parts.Add($"\U0001f7e0 {Fmt.Num(c4)} 4xx" + (why.Count > 0 ? $" ({string.Join(", ", why)})" : ""));
-            }
-            if (m.GetValueOrDefault("5xx") is var c5 and >= 0.5) parts.Add($"\U0001f534 {Fmt.Num(c5)} 5xx");
-            // "none" is status 0: the client closed the connection before any
-            // response was sent — usually an agent abandoning a slow request.
-            if (m.GetValueOrDefault("none") is var ot and >= 0.5) parts.Add($"✂️ {Fmt.Num(ot)} closed early");
-            sb.Append($"\n<b>{Esc(name)}</b>\n{string.Join(" · ", parts)}\n");
+            var n = m.Values.Sum();
+            var total = totals.GetValueOrDefault(name);
+            sb.Append($"\n<b>{Esc(name)}</b>");
+            if (total >= 0.5 && name != "unauthenticated")
+                sb.Append($" · {Fmt.Pct(n / total)} of {Fmt.Num(total)}");
+            sb.Append('\n');
+            foreach (var (cause, glyph, label) in ErrorCauses)
+                if (m.GetValueOrDefault(cause) is var v and >= 0.5)
+                    sb.Append($"{glyph} {Fmt.Num(v)} {label}\n");
+            if (abortsT.Result.GetValueOrDefault(name) is var ab and >= 0.5)
+                sb.Append($"\U0001f6d1 {Fmt.Num(ab)} ended by the engine (abort)\n");
         }
+
+        // The direct hostname: no key, no access-log row, no per-request list.
+        var direct = directT.Result
+            .Where(x => x.Value >= 0.5 && x.Labels.ContainsKey("code"))
+            .OrderBy(x => x.Labels["code"], StringComparer.Ordinal).ToList();
+        if (direct.Count > 0 || directAbortT.Result is >= 0.5)
+        {
+            sb.Append($"\n<b>{Esc(cfg.DirectHost)}</b> · direct, no key");
+            if (directTotalT.Result is >= 0.5 and var dt) sb.Append($" · ≈{Fmt.Num(dt)} req");
+            sb.Append('\n');
+            foreach (var (labels, value) in direct)
+            {
+                var code = labels["code"];
+                sb.Append(code == "401"
+                    ? $"\U0001f6ab ≈{Fmt.Num(value)} wrong edge key (401)\n"
+                    : $"{(code[0] == '5' ? "\U0001f534" : "\U0001f7e0")} ≈{Fmt.Num(value)} answered {Esc(code)}\n");
+            }
+            if (directAbortT.Result is >= 0.5 and var da)
+                sb.Append($"\U0001f6d1 {Fmt.Num(da)} ended by the engine (abort)\n");
+        }
+
+        if (strandedT.Result is >= 1 and var st)
+            sb.Append($"\n⏳ <b>{Fmt.Num(st)} min</b> queued on one replica, other had room\n");
+
+        // A drill-down per key, two to a row. ke: is 3 + window + name, well
+        // inside Telegram's 64-byte callback_data for a 40-character name.
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[] { "1h", "24h", "7d", "30d" }
+                .Select(w => new InlineKeyboardButton(w == window ? $"• {w}" : w, $"w:errors:{w}")).ToArray(),
+        };
+        rows.AddRange(order.Where(x => SafeName(x.Key)).Take(8)
+            .Select(x => new InlineKeyboardButton($"⚠️ {x.Key}", $"ke:{window}:{x.Key}"))
+            .Chunk(2));
 
         sb.Append(Fmt.Note(
-            "<b>unauthenticated</b> is the 401 path: a wrong or missing key, so there is no consumer to name. "
-          + "4xx from a known key is usually 429 (limit: a daily or per-minute token limit), 403 (no balance) "
-          + "or 422 (max_tokens over the gateway ceiling). Exact counts from the gateway access log; one "
-          + "request's record: /trace &lt;name&gt;."));
-        return new Reply(sb.ToString(), keyboard);
+            ErrorCausesNote + "\n\n"
+          + "\U0001f6d1 abort — the engine ended a request itself (timeout, error, or its client cancelled): "
+          + "from the engine's records.\n"
+          + $"<b>{Esc(cfg.DirectHost)}</b> skips the gateway, so it has no keys, causes or request list: its "
+          + "lines are Caddy's status counters, approximate (≈) and reset when Caddy restarts. A client that "
+          + "left early does not show there.\n"
+          + "⏳ minutes when one replica had a queue and the other had none and a free slot: routing kept "
+          + "sessions on the replica holding their cache. Counted since 2026-09-17.\n"
+          + "Tap a key for its failed requests."));
+        return new Reply(sb.ToString(), new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    // One key: its causes, then the latest failed requests with ids for /trace.
+    private async Task<Reply> KeyErrorsAsync(string name, string window, CancellationToken ct)
+    {
+        if (!ValidWindow(window)) return new Reply(BadWindow(window));
+        if (!SafeName(name))
+            return new Reply($"<code>{Esc(Head(name))}</code> is not a key name.\n\n"
+                           + Usage("/errors [name] [1h|24h|7d|30d]", "/errors tim 7d"));
+
+        var sel = $"window=\"{window}\",consumer=\"{name}\"";
+        var causesT = PromSeriesAsync($"sum by (cause) (gateway_usage_error_requests{{{sel}}})", ct);
+        var totalT = PromScalarAsync($"sum(gateway_usage_requests{{{sel}}})", ct);
+        var abortT = PromScalarAsync($"sum(engine_usage_aborted_requests{{{sel}}})", ct);
+        var rowsT = RecordsAsync(
+            $"bot/errors/{Uri.EscapeDataString(name)}?hours={WindowHours(window)}&limit=10", ct);
+        var warnT = UsageDataWarningAsync(ct);
+        await Task.WhenAll(causesT, totalT, abortT, rowsT, warnT);
+
+        string W(string w) => w == window ? $"• {w}" : w;
+        var keyboard = new InlineKeyboardMarkup([
+            new[] { "1h", "24h", "7d", "30d" }
+                .Select(w => new InlineKeyboardButton(W(w), $"ke:{w}:{name}")).ToArray(),
+            name == "unauthenticated"
+                ? [new InlineKeyboardButton("← All errors", $"w:errors:{window}")]
+                : [new InlineKeyboardButton("← Key card", $"kw:{window}:{name}"),
+                   new InlineKeyboardButton("← All errors", $"w:errors:{window}")],
+        ]);
+
+        var causes = causesT.Result
+            .Where(x => x.Value >= 0.5 && x.Labels.ContainsKey("cause"))
+            .ToDictionary(x => x.Labels["cause"], x => x.Value, StringComparer.Ordinal);
+        var failed = causes.Values.Sum();
+        var sb = new StringBuilder($"⚠️ <b>{Esc(name)}</b> · errors · {window}\n{warnT.Result}");
+        if (failed < 0.5)
+            sb.Append(totalT.Result is >= 0.5 and var t0
+                ? $"✅ All {Fmt.Num(t0)} requests finished\n"
+                : "No gateway requests in this window.\n");
+        else
+        {
+            sb.Append($"<b>{Fmt.Num(failed)}</b>");
+            if (totalT.Result is >= 0.5 and var t && name != "unauthenticated")
+                sb.Append($" of {Fmt.Num(t)} requests did not finish ({Fmt.Pct(failed / t)})\n\n");
+            else
+                sb.Append(" requests did not finish\n\n");
+            foreach (var (cause, glyph, label) in ErrorCauses)
+                if (causes.GetValueOrDefault(cause) is var v and >= 0.5)
+                    sb.Append($"{glyph} {Fmt.Num(v)} {label}\n");
+        }
+        if (abortT.Result is >= 0.5 and var ab)
+            sb.Append($"\U0001f6d1 {Fmt.Num(ab)} ended by the engine (abort)\n");
+
+        var (body, error) = rowsT.Result;
+        if (error is not null)
+            sb.Append($"\n⚠️ {Esc(error)}\n");
+        else if (body?["rows"] is JsonArray { Count: > 0 } rows)
+        {
+            sb.Append("\n<b>Latest</b>\n");
+            foreach (var row in rows)
+            {
+                var (glyph, label) = CauseText(Col(row, "cause"));
+                var status = (int)(ColNum(row, "status") ?? 0);
+                // user_agent is whatever the client sent: escaped and cut to
+                // a phone line, never trusted as markup.
+                var ua = Col(row, "user_agent") is { Length: > 0 } u && u != "-"
+                    ? u.Length > 28 ? u[..28] + "…" : u : null;
+                sb.Append($"\n<b>{When(Col(row, "ts"))}</b> · {glyph} {label}");
+                if (status > 0 && !label.Contains(status.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                    sb.Append($" · {status}");
+                sb.Append('\n')
+                  .Append(Fmt.Secs(ColNum(row, "duration_ms") / 1000));
+                if (ColNum(row, "input_tokens") is >= 1 and var inTok) sb.Append($" · {Fmt.Num(inTok)} in");
+                if (ua is not null) sb.Append($" · {Esc(ua)}");
+                sb.Append($"\n<code>{Esc(Col(row, "request_id") ?? "")}</code>\n");
+            }
+            sb.Append("\nTap an id to copy it, then /trace &lt;id&gt; for that request in full.");
+        }
+
+        return new Reply(sb.ToString() + Fmt.Note(
+            ErrorCausesNote + "\n\n"
+          + "\U0001f6d1 abort — the engine ended a request itself; from its own records.\n"
+          + $"<b>Latest</b> — newest first, up to 10, over the last {window}, times UTC. The time is the whole "
+          + "request at the gateway: a few milliseconds is a refusal, minutes is a wait that ended badly. "
+          + "Traffic on the direct hostname has no key and never appears here."), keyboard);
     }
 
     // Gateway and engine latency, per consumer, in one card each, so "is this
@@ -5577,7 +5779,7 @@ sealed record BotConfig(
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int OutputLimit, int BodyLimit,
     string AlertSecret, string AdminApiSecret, string RecordsUrl, string RecordsSecret,
-    string AlertmanagerUrl, HashSet<long> AlertChatIds);
+    string AlertmanagerUrl, string DirectHost, HashSet<long> AlertChatIds);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<Reply>> Run);

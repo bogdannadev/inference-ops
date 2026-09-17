@@ -199,3 +199,134 @@ groups:
             At the last 24h burn rate this consumer runs out within a day.
             The burn rate is the exact sum of tokens the engine processed for
             this consumer in the last 24 hours.
+
+  # ---------------------------------------------------------------------------
+  # Serving health — the two failures of 2026-09-16, made visible (2026-09-17).
+  #
+  # 11:11-11:58: both replicas held 3-7 queued requests behind one request whose
+  # client had already left (docs: orphaned-requests; fixed in 40bbd57).
+  # 14:20-14:28: r1 held a 61K+32K-token request plus 1-2 queued turns of the
+  # same session while r0 sat idle. cache_aware pins a session to the replica
+  # holding its prefix and only rebalances when the router's in-flight counts
+  # differ by MORE than --balance-abs-threshold (2), so a gap of 2 never moved
+  # anything. Four clients gave up after 155-240 s. tuning/docs/ROUTING.md has
+  # the measurement (76 min in the week before, 54 of them with the other
+  # replica fully idle).
+  #
+  # 15s, the default: the engine gauges are scraped every 5s and these
+  # episodes are minutes long, so a coarser interval would blur the minute
+  # count the bot reports.
+  # ---------------------------------------------------------------------------
+  - name: serving
+    interval: 15s
+    rules:
+      # 1 while at least one replica has a queue and another replica has no
+      # queue and a free running slot; 0 otherwise (always present, so
+      # sum_over_time(...[24h]) * 15 / 60 is "minutes stranded" in the bot).
+      #
+      # "Free slot" is num_running_reqs < 4, i.e. --max-running-requests in
+      # docker-compose.yml, which the engine does not export. KEEP IN STEP.
+      # It says nothing about KV room, so a stranded minute is "routing could
+      # have tried the other replica", not proof the request would have fit.
+      - record: node:engine_queue_stranded:bool
+        expr: |
+          clamp_max(
+            count(sglang:num_queue_reqs{job="sglang-workers"} > 0)
+            and on()
+            count(
+              (sglang:num_queue_reqs{job="sglang-workers"} == 0)
+              and on(instance)
+              (sglang:num_running_reqs{job="sglang-workers"} < 4)
+            ),
+            1)
+          or on() vector(0)
+
+      - alert: EngineQueueStrandedOnOneReplica
+        expr: node:engine_queue_stranded:bool == 1
+        for: 2m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Requests queued on one replica while the other has room"
+          description: >-
+            For 2 minutes one replica has had a queue while the other had no
+            queue and a free slot. This is cache_aware routing keeping a session
+            on the replica that holds its prefix: the router balances only on
+            its own in-flight request counts, not on KV use or queue length.
+            Queued clients may give up (see GatewayClientsLeavingBeforeReply).
+            The bot's /errors shows the minutes; tuning/docs/ROUTING.md has the
+            options.
+
+      # A queue that has not emptied once in 10 minutes. Under a genuine burst
+      # both replicas are full and it drains within minutes; on 2026-09-16 it
+      # did not drain for 5-20 minutes because the running request was an
+      # orphan. The 1m min_over_time sees every 5s scrape between two 15s
+      # evaluations, so one momentary empty sample resets `for`. (A 10m
+      # min_over_time with a short `for` fires a minute after a restart: the
+      # range holds only the samples that exist.)
+      - alert: EngineQueueNotDraining
+        expr: min_over_time(sglang:num_queue_reqs{job="sglang-workers"}[1m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.instance }} has had a queue for over 10 minutes"
+          description: >-
+            {{ $labels.instance }} has not had an empty queue for 10 minutes
+            (now {{ $value }} waiting at the low point). Check whether the
+            running requests still have clients: grep the replica log for
+            "but the state was deleted in TokenizerManager". /health shows the
+            queues.
+
+      # The gateway gauges below are exact counts over the LAST HOUR, refreshed
+      # every minute (job engine-usage). An alert therefore stays firing for up
+      # to an hour after the last bad request; that is the price of counting
+      # from the access log rather than from resettable counters.
+      #
+      # Threshold 8: the week before 2026-09-17 had 0-5 such requests in a
+      # normal hour and 8, 16 and 69 in the three bad ones.
+      - alert: GatewayClientsLeavingBeforeReply
+        expr: |
+          sum by (consumer) (gateway_usage_error_requests{window="1h",cause="left_before_reply"}) >= 8
+        for: 2m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.consumer }}: {{ $value }} requests abandoned before any reply in the last hour"
+          description: >-
+            The client closed the connection before the first byte, which on
+            this node means it waited in a queue or in a long prefill and gave
+            up. Look for EngineQueueStrandedOnOneReplica or
+            EngineQueueNotDraining at the same time. /errors {{ $labels.consumer }}
+            in the bot lists the requests.
+
+      - alert: GatewayTimeouts
+        expr: |
+          sum by (consumer) (gateway_usage_error_requests{window="1h",cause="timeout"}) > 0
+        for: 1m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.consumer }}: {{ $value }} gateway timeouts (504/408) in the last hour"
+          description: >-
+            The gateway gave up on a request. The stream idle timeout is 900 s
+            since 2026-09-16 (was 180 s), equal to the router's
+            --request-timeout-secs, so a timeout now means a request produced
+            nothing for 15 minutes.
+
+      - alert: GatewayServerErrors
+        expr: |
+          sum by (consumer) (gateway_usage_error_requests{window="1h",cause="server_error"}) >= 3
+        for: 1m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.consumer }}: {{ $value }} server errors (5xx) in the last hour"
+          description: >-
+            502/503 or another 5xx from the gateway, router or engine. /errors
+            {{ $labels.consumer }} lists them with request ids for /trace.

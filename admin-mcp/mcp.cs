@@ -52,7 +52,7 @@
 // quota-bot shows a key's latest requests and one request end to end. It cannot
 // query ClickHouse itself (edge-only, above), so it asks here, on a second
 // listener that Caddy never proxies (Caddy targets :8080). That port serves
-// exactly two fixed, parameterised reads under /bot/ and nothing else, behind
+// exactly three fixed, parameterised reads under /bot/ and nothing else, behind
 // BOT_READ_SECRET, which is a different secret from MCP_BEARER_TOKEN: a leaked
 // bot secret reads request metadata (ids, statuses, token counts, timings — no
 // prompts are stored anywhere) and cannot reach a single MCP tool. Unset, the
@@ -280,6 +280,22 @@ app.MapGet("/bot/requests/{consumer}", async (string consumer, int? limit, Backe
         : JsonText(new JsonObject { ["rows"] = RowsJson(rows) });
 });
 
+// A key's latest failed requests with their named cause. "unauthenticated" is
+// the 401 path, stored with an empty consumer.
+app.MapGet("/bot/errors/{consumer}", async (string consumer, int? hours, int? limit, Backends b,
+    IHttpClientFactory http, CancellationToken ct) =>
+{
+    if (!Backends.SafeName(consumer)) return Results.NotFound();
+    KeyValuePair<string, string>[] ps = [
+        new("consumer", consumer == "unauthenticated" ? "" : consumer),
+        new("hours", Math.Clamp(hours ?? 24, 1, 720).ToString(CultureInfo.InvariantCulture)),
+        new("lim", Math.Clamp(limit ?? 10, 1, 50).ToString(CultureInfo.InvariantCulture)),
+    ];
+    var (rows, error) = await b.ChRowsAsync(http, RequestSql.KeyErrors, ps, ct);
+    return error is not null ? ReadFailed(error)
+        : JsonText(new JsonObject { ["rows"] = RowsJson(rows) });
+});
+
 app.MapGet("/bot/request/{requestId}", async (string requestId, Backends b,
     IHttpClientFactory http, CancellationToken ct) =>
 {
@@ -337,6 +353,50 @@ static class RequestSql
               AND finished_at <= (SELECT max(ts) FROM gateway.requests WHERE request_id = {rid:String}) + INTERVAL 1 HOUR
         ) AS e ON e.rid = g.chat_id
         WHERE g.request_id = {rid:String} AND g.chat_id != ''
+        """;
+
+    // Why a request did not end in a full answer. KEEP IN STEP with
+    // gateway_usage_error_requests in
+    // qwen3.6-27b-2-A100/clickhouse/engine-usage-metrics.sql and with
+    // error-cause_test.sql next to it, which pins the cases. Status codes win
+    // over flags; the DC/SI causes are billable requests charged nothing,
+    // split by whether a response had started (status 0 = it had not).
+    const string ErrorCause = """
+        multiIf(
+            status = 401, 'no_key',
+            status = 403, 'no_balance',
+            status = 429, 'rate_limited',
+            status = 422, 'max_tokens',
+            status = 413, 'too_large',
+            status = 400, 'bad_request',
+            status = 404, 'not_found',
+            status IN (408, 504), 'timeout',
+            status >= 500, 'server_error',
+            status >= 400, 'client_error',
+            route NOT IN ('ai-chat', 'ai-completions') OR total_tokens > 0, '',
+            status < 200 AND match(response_flags, '(^|,)DC(,|$)'), 'left_before_reply',
+            status < 200, 'no_reply',
+            match(response_flags, '(^|,)DC(,|$)'), 'left_mid_answer',
+            match(response_flags, '(^|,)(SI|UC|UPE|UT)(,|$)'), 'cut_mid_answer',
+            '')
+        """;
+
+    // A key's latest failed requests, newest first.
+    public const string KeyErrors = """
+        SELECT ts, request_id, route, status, response_flags, duration_ms,
+               input_tokens, user_agent, cause
+        FROM (
+            SELECT ts, request_id, route, status, response_flags, duration_ms,
+                   input_tokens, user_agent,
+        """ + ErrorCause + """
+         AS cause
+            FROM gateway.requests FINAL
+            WHERE consumer = {consumer:String}
+              AND ts > now() - INTERVAL {hours:UInt32} HOUR
+        )
+        WHERE cause != ''
+        ORDER BY ts DESC
+        LIMIT {lim:UInt32}
         """;
 
     // A key's latest completion requests, each with its engine record when there

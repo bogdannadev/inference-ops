@@ -26,6 +26,11 @@ Two Docker networks:
 CVE-2026-3059/3060 lateral-movement hardening: Caddy can reach the router but
 **never** a worker port or ZMQ socket.
 
+> **Out of date since September 2026** — the router, Grafana and admin-mcp are
+> now on `edge` and the backend too, and more networks exist (`higressint`,
+> `higress_higress-net`). Check `docker network inspect` before relying on the
+> paragraph below.
+
 Prometheus is the one service on both networks. It joined `edge` to scrape
 Caddy's `:2020` metrics site, and that direction was chosen precisely to keep
 the hardening above intact — attaching Caddy to the backend network instead

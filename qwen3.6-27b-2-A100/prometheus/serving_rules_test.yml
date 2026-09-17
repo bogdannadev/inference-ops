@@ -1,0 +1,170 @@
+# =============================================================================
+# Unit tests for the `serving` group in rules.yml —
+#   promtool test rules prometheus/serving_rules_test.yml
+#
+# Separate from rules_test.yml because these need the real 15s evaluation
+# interval: the quota tests run at 10m, which would step straight over a
+# 2-minute `for:`.
+#
+# The shapes are 2026-09-16's: r1 with a queue while r0 is idle (14:20), both
+# replicas queued (a burst: must NOT count as stranded), and a queue that never
+# empties (11:11).
+# =============================================================================
+
+rule_files:
+  - rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ---------------------------------------------------------------------------
+  - interval: 15s
+    name: stranded queue fires, a both-sides burst does not
+
+    input_series:
+      # 0-5m: r1 queued, r0 idle          -> stranded
+      # 5-10m: both queued, both full     -> not stranded
+      # 10-15m: nothing queued            -> not stranded
+      - series: 'sglang:num_queue_reqs{job="sglang-workers",instance="qwen36-27b-r1:8002"}'
+        values: '2x19 2x19 0x20'
+      - series: 'sglang:num_running_reqs{job="sglang-workers",instance="qwen36-27b-r1:8002"}'
+        values: '1x19 4x19 1x20'
+      - series: 'sglang:num_queue_reqs{job="sglang-workers",instance="qwen36-27b-r0:8001"}'
+        values: '0x19 1x19 0x20'
+      - series: 'sglang:num_running_reqs{job="sglang-workers",instance="qwen36-27b-r0:8001"}'
+        values: '0x19 4x19 0x20'
+
+    promql_expr_test:
+      - expr: node:engine_queue_stranded:bool
+        eval_time: 1m
+        exp_samples:
+          - labels: 'node:engine_queue_stranded:bool'
+            value: 1
+      - expr: node:engine_queue_stranded:bool
+        eval_time: 7m
+        exp_samples:
+          - labels: 'node:engine_queue_stranded:bool'
+            value: 0
+      # Always present, so the bot's minute count has a denominator.
+      - expr: node:engine_queue_stranded:bool
+        eval_time: 12m
+        exp_samples:
+          - labels: 'node:engine_queue_stranded:bool'
+            value: 0
+
+    alert_rule_test:
+      # Not yet: `for: 2m` has not elapsed.
+      - eval_time: 1m
+        alertname: EngineQueueStrandedOnOneReplica
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: EngineQueueStrandedOnOneReplica
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+            exp_annotations:
+              summary: "Requests queued on one replica while the other has room"
+              description: >-
+                For 2 minutes one replica has had a queue while the other had no
+                queue and a free slot. This is cache_aware routing keeping a session
+                on the replica that holds its prefix: the router balances only on
+                its own in-flight request counts, not on KV use or queue length.
+                Queued clients may give up (see GatewayClientsLeavingBeforeReply).
+                The bot's /errors shows the minutes; tuning/docs/ROUTING.md has the
+                options.
+      # Both replicas busy is load, not routing.
+      - eval_time: 8m
+        alertname: EngineQueueStrandedOnOneReplica
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------------
+  - interval: 15s
+    name: a queue that never empties, and one that blinks empty
+
+    input_series:
+      # r0: 3 queued for 13 minutes straight.
+      - series: 'sglang:num_queue_reqs{job="sglang-workers",instance="qwen36-27b-r0:8001"}'
+        values: '3x52'
+      # r1: queued, but empty for one sample every 5 minutes.
+      - series: 'sglang:num_queue_reqs{job="sglang-workers",instance="qwen36-27b-r1:8002"}'
+        values: '2x19 0 2x19 0 2x12'
+      - series: 'sglang:num_running_reqs{job="sglang-workers",instance="qwen36-27b-r0:8001"}'
+        values: '1x52'
+      - series: 'sglang:num_running_reqs{job="sglang-workers",instance="qwen36-27b-r1:8002"}'
+        values: '1x52'
+
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: EngineQueueNotDraining
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: EngineQueueNotDraining
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              job: sglang-workers
+              instance: qwen36-27b-r0:8001
+            exp_annotations:
+              summary: "qwen36-27b-r0:8001 has had a queue for over 10 minutes"
+              description: >-
+                qwen36-27b-r0:8001 has not had an empty queue for 10 minutes
+                (now 3 waiting at the low point). Check whether the
+                running requests still have clients: grep the replica log for
+                "but the state was deleted in TokenizerManager". /health shows the
+                queues.
+
+  # ---------------------------------------------------------------------------
+  - interval: 15s
+    name: gateway error causes
+
+    input_series:
+      # 2026-09-16 11:00 for vkondratyev-demo: 69 left early, 12 timeouts.
+      - series: 'gateway_usage_error_requests{window="1h",consumer="vkondratyev-demo",cause="left_before_reply",job="engine-usage"}'
+        values: '69x20'
+      - series: 'gateway_usage_error_requests{window="1h",consumer="vkondratyev-demo",cause="timeout",job="engine-usage"}'
+        values: '12x20'
+      # A normal hour: 5 left early, no alert.
+      - series: 'gateway_usage_error_requests{window="1h",consumer="danila",cause="left_before_reply",job="engine-usage"}'
+        values: '5x20'
+      # Only the 1h window alerts; the 24h tail of yesterday must not.
+      - series: 'gateway_usage_error_requests{window="24h",consumer="tim",cause="timeout",job="engine-usage"}'
+        values: '3x20'
+      - series: 'gateway_usage_error_requests{window="1h",consumer="tim",cause="server_error",job="engine-usage"}'
+        values: '2x20'
+
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: GatewayClientsLeavingBeforeReply
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              consumer: vkondratyev-demo
+            exp_annotations:
+              summary: "vkondratyev-demo: 69 requests abandoned before any reply in the last hour"
+              description: >-
+                The client closed the connection before the first byte, which on
+                this node means it waited in a queue or in a long prefill and gave
+                up. Look for EngineQueueStrandedOnOneReplica or
+                EngineQueueNotDraining at the same time. /errors vkondratyev-demo
+                in the bot lists the requests.
+      - eval_time: 3m
+        alertname: GatewayTimeouts
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              consumer: vkondratyev-demo
+            exp_annotations:
+              summary: "vkondratyev-demo: 12 gateway timeouts (504/408) in the last hour"
+              description: >-
+                The gateway gave up on a request. The stream idle timeout is 900 s
+                since 2026-09-16 (was 180 s), equal to the router's
+                --request-timeout-secs, so a timeout now means a request produced
+                nothing for 15 minutes.
+      # Two 5xx is under the threshold of 3.
+      - eval_time: 3m
+        alertname: GatewayServerErrors
+        exp_alerts: []

@@ -78,14 +78,20 @@ takes `value`. Both cost a debugging round here.
 
 ### The bot's read port
 
-A second listener, `:8081`, exists only for quota-bot's **Requests** screen and
-`/trace`. Caddy proxies `admin-mcp:8080` and nothing else, and the port is not
+A second listener, `:8081`, exists only for quota-bot's **Requests** screen,
+`/trace` and `/errors <name>`. Caddy proxies `admin-mcp:8080` and nothing else, and the port is not
 published, so it is reachable only from `edge`.
 
-- Two routes, both GET, both fixed SQL with bound parameters (`RequestSql` in
+- Three routes, all GET, all fixed SQL with bound parameters (`RequestSql` in
   `mcp.cs`, shared with `request_detail` so the two cannot drift):
   `/bot/requests/{consumer}?limit=N` (latest completion requests over 7 days,
-  each LEFT JOINed to its engine record) and `/bot/request/{request_id}`.
+  each LEFT JOINed to its engine record), `/bot/request/{request_id}`, and
+  `/bot/errors/{consumer}?hours=H&limit=N` (latest failed requests with a named
+  cause; `unauthenticated` reads the 401 path).
+- The cause classifier (`RequestSql.ErrorCause`) is the same expression as the
+  `gateway_usage_error_requests` gauge in
+  `qwen3.6-27b-2-A100/clickhouse/engine-usage-metrics.sql`, pinned by
+  `clickhouse/error-cause_test.sql`. Change all three together.
 - Gated by `BOT_READ_SECRET`, deliberately **not** `MCP_BEARER_TOKEN`: a leaked
   bot secret reads request metadata — ids, statuses, token counts, timings; no
   prompts are stored anywhere — and cannot call a single MCP tool. Under 32
