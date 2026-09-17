@@ -10,7 +10,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 : "${ENGINE_METRICS_CLICKHOUSE_PASSWORD:?set ENGINE_METRICS_CLICKHOUSE_PASSWORD in .env}"
-install -d -m 755 prometheus/secrets
-umask 022   # the Prometheus container user must read it; the dir is not published
+install -d prometheus/secrets
+umask 077
 printf '%s' "$ENGINE_METRICS_CLICKHOUSE_PASSWORD" > prometheus/secrets/engine_metrics_clickhouse.pass
+# Prometheus runs as nobody.
+./deploy/grant-nobody-read.sh prometheus/secrets prometheus/secrets/engine_metrics_clickhouse.pass
 echo "wrote prometheus/secrets/engine_metrics_clickhouse.pass"

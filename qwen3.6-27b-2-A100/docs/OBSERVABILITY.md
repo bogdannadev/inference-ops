@@ -233,8 +233,7 @@ Routing choices worth knowing:
 derived from `.env`:
 
 ```bash
-grep '^ALERT_WEBHOOK_SECRET=' .env | cut -d= -f2- > alertmanager/webhook_secret
-chmod 644 alertmanager/webhook_secret   # the image runs as `nobody`
+./deploy/render-alertmanager-secret.sh   # 640, group nogroup: the image runs as `nobody`
 ```
 
 Two traps, both hit during the build:

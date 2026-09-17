@@ -561,10 +561,10 @@ services:
       # the inode trap this avoids. The gitignored `webhook_secret` lands in
       # the same directory and is read via credentials_file.
       #
-      # webhook_secret must be world-readable (644): this image runs as
-      # `nobody`, so a 600 file owned by the operator is unreadable and the
-      # container fails at config load. It is gitignored and lives on a
-      # single-operator host.
+      # webhook_secret is 640, group nogroup: this image runs as `nobody`, so
+      # a 600 file owned by the operator is unreadable and the container fails
+      # at config load, while 644 would expose it to every host account.
+      # deploy/render-alertmanager-secret.sh writes it that way.
       - ./alertmanager:/etc/alertmanager:ro
       - alertmanager_data:/alertmanager
 

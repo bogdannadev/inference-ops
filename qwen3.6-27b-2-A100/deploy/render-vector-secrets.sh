@@ -22,7 +22,6 @@ import json, sys
 json.dump({"clickhouse_password": sys.argv[1]}, sys.stdout)
 PY
 
-# 644, not 600: the container runs as a non-root user and must be able to read
-# it. The file lives in a gitignored path on a single-operator host.
-chmod 644 vector/secrets.json
+# Owner-only: the Vector container runs as root, so 600 is enough.
+chmod 600 vector/secrets.json
 echo "wrote vector/secrets.json"
