@@ -1,0 +1,36 @@
+# Default "stream": false on /v1/responses.
+#
+# The OpenAI API defaults stream to false and the OpenAI SDKs omit the field
+# for non-streaming calls. SGLang 0.5.19's Responses handler passes the
+# missing value on as None, and its chat request model rejects that:
+#   "1 validation error for ChatCompletionRequest stream ... input_value=None"
+# (measured 2026-09-17: 400 without the field, 200 with it either way).
+#
+# `add` only writes a key that is absent, so clients that send stream keep
+# their value. reroute: false, because nothing here changes the route.
+# FAIL_OPEN: without the module the request still goes through, and at worst
+# gets the same 400 as before.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: transformer
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  url: ${WASM_PLUGIN_BASE}/plugins/transformer/2.0.1/plugin.wasm
+  failStrategy: FAIL_OPEN
+  phase: UNSPECIFIED_PHASE
+  priority: 50
+  defaultConfigDisable: true
+  matchRules:
+    - ingress:
+        - ai-responses
+      configDisable: false
+      config:
+        reroute: false
+        reqRules:
+          - operate: add
+            body:
+              - key: stream
+                value: "false"
+                value_type: boolean

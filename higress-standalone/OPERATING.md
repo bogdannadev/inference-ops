@@ -64,6 +64,7 @@ will be rejected never costs a Redis round trip or a metrics increment.
 | `ai-token-ratelimit` | 2.0.1 | all but ai-models | FAIL_OPEN | Daily / per-minute token limits, rules written by quota-bot |
 | `ai-quota` | 2.0.1 | all but ai-models | **FAIL_CLOSE** | Gates on `chat_quota:<name> > 0`, DECRBYs after |
 | `ai-proxy` | 2.0.1 | ai-messages | **FAIL_CLOSE** | Anthropic Messages ↔ OpenAI chat completions |
+| `transformer` | 2.0.1 | ai-responses | FAIL_OPEN | Adds `"stream": false` when absent; SGLang 0.5.19 rejects a Responses request without it |
 
 Routes (2026-09-17): `ai-chat` `/v1/chat/completions` (Prefix, for the quota
 admin API under it), `ai-completions` `/v1/completions`, `ai-models`
