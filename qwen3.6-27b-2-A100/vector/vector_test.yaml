@@ -95,3 +95,36 @@ tests:
               assert_eq!(.ttft_s, 0.196) &&
               assert_eq!(.decode_s, 0.054) &&
               assert_eq!(.e2e_s, 0.25)
+
+  - name: gateway access line becomes a gateway.requests row with the client IP
+    inputs:
+      - insert_at: gateway_rows
+        type: log
+        log_fields:
+          message: '{"ai_log":"{\"api\":\"-\",\"chat_id\":\"4927448c\",\"chat_round\":1,\"input_token\":1389,\"llm_service_duration\":34797,\"model\":\"qwen3.8-27b\",\"output_token\":4000,\"response_type\":\"normal\",\"total_token\":5389}","authority":"higress","consumer":"quota-admin","duration":"34798","request_id":"e2644f8e-4c9d-4cff-a346-6b484f410116","response_code":"200","response_flags":"-","route_name":"ai-chat","start_time":"2026-09-17T07:08:32.850Z","upstream_cluster":"outbound|8000||qwen-router.dns","user_agent":"-","x_forwarded_for":"198.51.100.23,172.18.0.6"}'
+    outputs:
+      - extract_from: gateway_rows
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.consumer, "quota-admin") &&
+              assert_eq!(.client_ip, "198.51.100.23") &&
+              assert_eq!(.status, 200) &&
+              assert_eq!(.total_tokens, 5389) &&
+              assert_eq!(.chat_id, "4927448c") &&
+              assert_eq!(.ts, "2026-09-17 07:08:32.850")
+
+  - name: unauthenticated line keeps an empty consumer and its client IP
+    inputs:
+      - insert_at: gateway_rows
+        type: log
+        log_fields:
+          message: '{"ai_log":"-","consumer":"-","duration":"0","request_id":"541a93d1","response_code":"401","response_flags":"-","route_name":"ai-models","start_time":"2026-09-17T08:40:09.605Z","user_agent":"curl/8.5.0","x_forwarded_for":"203.0.113.9"}'
+    outputs:
+      - extract_from: gateway_rows
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.consumer, "") &&
+              assert_eq!(.client_ip, "203.0.113.9") &&
+              assert_eq!(.status, 401)

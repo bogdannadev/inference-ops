@@ -152,6 +152,13 @@ transforms:
       # set server-side, which is not something this config controls.
       ts = parse_timestamp!(string!(raw.start_time), "%Y-%m-%dT%H:%M:%S%.3fZ")
 
+      # The client as Caddy saw it: the first x-forwarded-for entry. Caddy
+      # replaces a client-sent X-Forwarded-For (no trusted_proxies), so this is
+      # not client-controlled. Kept for tracing unauthenticated traffic.
+      xff = string(raw.x_forwarded_for) ?? ""
+      client_ip = strip_whitespace(string(split(xff, ",")[0]) ?? "")
+      if client_ip == "-" { client_ip = "" }
+
       . = {
         # STAGE D — deployment identity, the same pair Prometheus stamps via
         # global.external_labels. The columns carry DEFAULTs so an older Vector that omits
@@ -175,7 +182,8 @@ transforms:
         "upstream":       string(raw.upstream_cluster) ?? "",
         "authority":      string(raw.authority) ?? "",
         "response_flags": string(raw.response_flags) ?? "",
-        "user_agent":     string(raw.user_agent) ?? ""
+        "user_agent":     string(raw.user_agent) ?? "",
+        "client_ip":      client_ip
       }
 
   # ---------------------------------------------------------------------------

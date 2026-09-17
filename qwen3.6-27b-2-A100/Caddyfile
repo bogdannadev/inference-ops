@@ -49,6 +49,26 @@
 	}
 }
 
+# Source-address allowlists live outside the public repo: snippets
+# (webhook_sources) and (mcp_sources) in caddy/private/allowlists.caddy,
+# gitignored, mounted at /etc/caddy/private. The shape is in
+# caddy/allowlists.caddy.example. A missing file stops Caddy from loading this
+# config, so the sites can never come up without their allowlists.
+import /etc/caddy/private/allowlists.caddy
+
+# Access log without credentials. Caddy redacts Authorization and Cookie by
+# default, but not X-Api-Key, which Anthropic clients use for the key.
+(access_log) {
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Api-Key delete
+			}
+		}
+	}
+}
+
 (edge_auth) {
 	# ACME registration contact for certificate issuance
 	tls contact@example.com
@@ -66,6 +86,21 @@
 model.example.com {
 	import edge_auth
 
+	# Access log (2026-09-17): this site draws bursts of ~280 wrong-key
+	# requests an hour and, until now, nothing recorded where from.
+	import access_log
+
+	# Only the APIs the team uses (router log, 2026-09-16/17: chat completions
+	# and model listing). The router also serves /generate, /v1/responses,
+	# conversations, tokenize, embeddings, rerank and public info endpoints;
+	# none of them belong on a shared-key hostname. A second `route`, so it runs
+	# after the key check above (same-directive blocks keep file order) and
+	# before reverse_proxy (which sorts after `route`).
+	@not_api not path /v1/chat/completions /v1/completions /v1/models
+	route @not_api {
+		respond "Not found" 404
+	}
+
 	reverse_proxy qwen36-27b-router:8000 {
 		# Swap the edge credential for the internal SGLang key
 		header_up Authorization "Bearer {$SGLANG_API_KEY}"
@@ -82,6 +117,8 @@ model.example.com {
 # -----------------------------------------------------------------------------
 embed.example.com {
 	import edge_auth
+	# Same wrong-key bursts as the model hostname, at the same hours.
+	import access_log
 
 	reverse_proxy qwen3-emb:80
 }
@@ -139,14 +176,12 @@ bot.example.org {
 	# against a 40-char secret on a path that is itself unguessable. The IP list
 	# is defence in depth, and it still excludes the open internet.
 	#
-	# Cloudflare publishes these at https://www.cloudflare.com/ips-v4 — they
-	# change rarely, but they DO change. If deliveries start failing with 404
-	# rather than timing out, this list is the first thing to re-check.
-	# ONE remote_ip line, not several: repeating the same matcher type inside a
-	# named matcher does not OR them the way it reads, so the ranges all belong
-	# on a single directive.
+	# The ranges are in the private allowlist file (webhook_sources). Cloudflare
+	# publishes its ranges at https://www.cloudflare.com/ips-v4 — they change
+	# rarely, but they DO change. If deliveries start failing with 404 rather
+	# than timing out, that list is the first thing to re-check.
 	@telegram {
-		remote_ip 149.154.160.0/20 91.108.4.0/22 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+		import webhook_sources
 		# From the environment, never committed: this path is a second secret,
 		# and a value committed once stays readable in git history even after it
 		# is edited out. Set QUOTA_BOT_WEBHOOK_PATH in .env (which is gitignored)
@@ -206,6 +241,54 @@ gateway.example.org {
 	# limit. Paid traffic does not get that allowance.
 	request_body {
 		max_size 1MB
+	}
+
+	# Anthropic clients send the key as `x-api-key`. key-auth in the gateway
+	# matches the raw Authorization value ("Bearer <key>"), so the key is moved
+	# there when no Authorization was sent, and x-api-key is dropped either way.
+	# An explicit Authorization always wins. request_header runs before
+	# `handle`, and two request_header lines keep their file order.
+	@x_api_key {
+		header X-Api-Key *
+		not header Authorization *
+	}
+	request_header @x_api_key Authorization "Bearer {http.request.header.X-Api-Key}"
+	request_header -X-Api-Key
+
+	# Anthropic Messages (converted to chat completions inside the gateway).
+	# Same proxy as below; only the refusal bodies differ, in Anthropic's error
+	# shape, because Anthropic SDKs read `error.type`. handle blocks sort by
+	# path specificity, so this wins over /v1/*.
+	handle /v1/messages {
+		reverse_proxy higress:80 {
+			header_up -X-Mse-Consumer
+			flush_interval -1
+
+			@a_quota status 403
+			handle_response @a_quota {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"type":"error","error":{"type":"permission_error","message":"Token quota exhausted for this API key, or the key is not permitted on this route. Contact the operator to top up."}}` 403
+			}
+			@a_badkey status 401
+			handle_response @a_badkey {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"type":"error","error":{"type":"authentication_error","message":"Invalid API key. Send it as x-api-key or Authorization: Bearer."}}` 401
+			}
+			@a_toobig status 422
+			handle_response @a_toobig {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens exceeds the per-request limit of 70000 for this gateway."}}` 422
+			}
+			@a_ratelimited {
+				status 429
+				header X-Tokenratelimit-Reset *
+			}
+			handle_response @a_ratelimited {
+				header Content-Type "application/json; charset=utf-8"
+				header Retry-After {rp.header.X-Tokenratelimit-Reset}
+				respond `{"type":"error","error":{"type":"rate_limit_error","message":"Token rate limit reached for this API key. Retry after {rp.header.X-Tokenratelimit-Reset} seconds."}}` 429
+			}
+		}
 	}
 
 	# Only the OpenAI surface is forwarded. Higress serves its console landing
@@ -372,18 +455,18 @@ mcp.example.org {
 	# and there was nothing on the server to confirm it had even connected.
 	log
 
-	# 160.79.104.0/21 is Anthropic's published egress, used by the hosted Claude
-	# surfaces when they connect to a custom connector server-side.
-	#
-	# 198.51.100.10/32 is the admin workstation, added 2026-09-05. It is needed
-	# ONLY for the mcp-remote bridge in claude_desktop_config.json, which runs
-	# locally and therefore arrives from the operator's own address rather than
-	# Anthropic's. Adding it widens the surface to one host, and it is a
-	# RESIDENTIAL address: when the lease changes this silently 404s again and
-	# looks exactly like the server being down. The Connectors UI path needs no
-	# entry here and does not rot — prefer it, and delete this line when the
-	# bridge is no longer used.
-	@notanthropic not remote_ip 160.79.104.0/21 198.51.100.10/32
+	# Allowed sources are in the private allowlist file (mcp_sources):
+	# Anthropic's published egress, used by the hosted Claude surfaces when they
+	# connect to a custom connector server-side, plus an operator address for
+	# the local mcp-remote bridge in claude_desktop_config.json, which arrives
+	# from that address rather than Anthropic's. An operator address is
+	# residential: when the lease changes this silently 404s and looks exactly
+	# like the server being down. The Connectors UI path needs no such entry.
+	@notanthropic {
+		not {
+			import mcp_sources
+		}
+	}
 	respond @notanthropic "Not found" 404
 
 	reverse_proxy admin-mcp:8080 {

@@ -67,3 +67,31 @@ spec:
               "max_completion_tokens": { "type": "integer", "maximum": 70000 }
             }
           }
+    # Responses API: the output cap is max_output_tokens.
+    - ingress:
+        - ai-responses
+      configDisable: false
+      config:
+        rejected_code: 422
+        rejected_msg: "max_tokens exceeds the per-request limit for this gateway"
+        body_schema: |
+          {
+            "type": "object",
+            "properties": {
+              "max_output_tokens": { "type": "integer", "maximum": 70000 }
+            }
+          }
+    # Anthropic Messages: max_tokens is required by the protocol.
+    - ingress:
+        - ai-messages
+      configDisable: false
+      config:
+        rejected_code: 422
+        rejected_msg: "max_tokens exceeds the per-request limit for this gateway"
+        body_schema: |
+          {
+            "type": "object",
+            "properties": {
+              "max_tokens": { "type": "integer", "maximum": 70000 }
+            }
+          }

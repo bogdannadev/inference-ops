@@ -35,6 +35,8 @@ spec:
         - ai-chat
         - ai-completions
         - ai-models
+        - ai-responses
+        - ai-messages
       configDisable: false
       config:
         # FALSE, deliberately. `true` enables the builtin attribute set, which

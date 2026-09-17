@@ -1,0 +1,51 @@
+# Anthropic Messages → OpenAI chat completions, on the ai-messages route only.
+#
+# Source read at v2.2.4 (plugins/wasm-go/extensions/ai-proxy): for a
+# /v1/messages request whose provider does not list the Anthropic API, main.go
+# rewrites :path to /v1/chat/completions, converts the body
+# (provider/claude_to_openai.go) and converts the response back. The `openai`
+# provider does not list it, so conversion is automatic; `protocol` stays
+# unset (setting `original` would switch conversion OFF).
+#
+# openaiCustomUrl ends in /chat/completions, a "direct path", so every request
+# on this route is sent to exactly that path. The domain only sets the Host
+# header; the upstream cluster is still the ingress destination.
+#
+# apiTokens sets the engine key (same value the ingress sets).
+# modelMapping sends every model name to the served name: Anthropic clients ask
+# for claude-* names.
+# customSettings fills max_tokens only when absent (Anthropic requires it
+# anyway); the 70000 ceiling itself is request-validation's.
+#
+# Priority 100 runs after key-auth, request-validation, ai-statistics,
+# ai-token-ratelimit and ai-quota, so all of them see the original
+# /v1/messages request. FAIL_CLOSE: if the module is not loaded the request
+# reaches the router unconverted and gets a 404, never an unmetered answer.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-proxy
+  namespace: higress-system
+  resourceVersion: "1"
+spec:
+  url: ${WASM_PLUGIN_BASE}/plugins/ai-proxy/2.0.1/plugin.wasm
+  failStrategy: FAIL_CLOSE
+  phase: UNSPECIFIED_PHASE
+  priority: 100
+  defaultConfigDisable: true
+  matchRules:
+    - ingress:
+        - ai-messages
+      configDisable: false
+      config:
+        provider:
+          type: openai
+          openaiCustomUrl: "http://qwen-router.dns:8000/v1/chat/completions"
+          apiTokens:
+            - "${SGLANG_API_KEY}"
+          modelMapping:
+            "*": "qwen36-27b"
+          customSettings:
+            - name: max_tokens
+              value: 16384
+              overwrite: false

@@ -34,13 +34,15 @@ Verified from the live listener dump. Envoy runs the wasm filters in this
 order, and the order is load-bearing:
 
 ```
-client → Caddy (gateway.example.org, strips X-Mse-Consumer)
+client → Caddy (gateway.example.org, strips X-Mse-Consumer,
+                turns x-api-key into Authorization: Bearer)
        → gateway :80
            1. key-auth            AUTHN,  prio 310, FAIL_CLOSE
            2. request-validation  default, prio 950, FAIL_CLOSE
            3. ai-statistics       default, prio 900, FAIL_OPEN
            4. ai-token-ratelimit  default, prio 600, FAIL_OPEN   (rules owned by quota-bot)
            5. ai-quota            default, prio 280, FAIL_CLOSE
+           6. ai-proxy            default, prio 100, FAIL_CLOSE  (ai-messages only)
        → qwen-router.dns:8000 → r0 / r1
 ```
 
@@ -56,10 +58,24 @@ will be rejected never costs a Redis round trip or a metrics increment.
 
 | Plugin | Version | Routes | On failure | Does |
 |---|---|---|---|---|
-| `key-auth` | 2.0.0 | ai-chat, ai-completions, ai-models | **FAIL_CLOSE** | Matches the raw `Authorization` value against `consumers.conf`, sets `X-Mse-Consumer` |
-| `request-validation` | 2.0.1 | ai-chat, ai-completions | **FAIL_CLOSE** | Rejects `max_tokens > 70000` with 422 |
-| `ai-statistics` | 2.0.1 | all three | FAIL_OPEN | Emits per-consumer token/latency counters |
-| `ai-quota` | 2.0.1 | ai-chat, ai-completions | **FAIL_CLOSE** | Gates on `chat_quota:<name> > 0`, DECRBYs after |
+| `key-auth` | 2.0.0 | all five | **FAIL_CLOSE** | Matches the raw `Authorization` value against `consumers.conf`, sets `X-Mse-Consumer` |
+| `request-validation` | 2.0.1 | all but ai-models | **FAIL_CLOSE** | Rejects an output cap over 70000 with 422 (`max_tokens`/`max_completion_tokens`; `max_output_tokens` on Responses) |
+| `ai-statistics` | 2.0.1 | all five | FAIL_OPEN | Emits per-consumer token/latency counters |
+| `ai-token-ratelimit` | 2.0.1 | all but ai-models | FAIL_OPEN | Daily / per-minute token limits, rules written by quota-bot |
+| `ai-quota` | 2.0.1 | all but ai-models | **FAIL_CLOSE** | Gates on `chat_quota:<name> > 0`, DECRBYs after |
+| `ai-proxy` | 2.0.1 | ai-messages | **FAIL_CLOSE** | Anthropic Messages ↔ OpenAI chat completions |
+
+Routes (2026-09-17): `ai-chat` `/v1/chat/completions` (Prefix, for the quota
+admin API under it), `ai-completions` `/v1/completions`, `ai-models`
+`/v1/models`, `ai-responses` `/v1/responses` (POST create only; stored-response
+retrieval is not offered because each replica stores its own), `ai-messages`
+`/v1/messages` (Anthropic; converted to chat completions in the gateway, since
+the router has no `/v1/messages`). `/v1/messages/count_tokens`, embeddings and
+every SGLang-native path are 404.
+
+Token usage for Responses and Anthropic answers is parsed by the same
+`pkg/tokenusage` as chat (`response.usage`, `message.usage` / `usage`), so
+ai-quota and ai-statistics meter all four billable routes.
 
 `FAIL_OPEN` on `ai-statistics` alone is deliberate: losing metrics is not a
 reason to stop serving. Losing authentication or quota enforcement is.
@@ -258,7 +274,9 @@ the override for exactly that reason** — never edit `docker-compose.yml`.
   consumer with 1 token left can spend a whole request and go negative.
   Balances stay negative until a `/quota/refresh` sets them.
 - **Adding a path to `./config/ingresses/` without adding it to
-  `enable_path_suffixes` in `ai-quota.yaml` re-opens an unmetered hole.**
+  `enable_path_suffixes` in `ai-quota.yaml` AND to the `ingress:` lists of
+  key-auth, ai-quota, ai-token-ratelimit, request-validation and ai-statistics
+  re-opens an unmetered (or unauthenticated) hole.** Every rule is per ingress.
   Measured previously: `/v1/completions` and SGLang's `/generate` both returned
   200 at zero balance.
 - **`max_tokens` 70000 is quoted to customers in the Caddyfile 422 message.**

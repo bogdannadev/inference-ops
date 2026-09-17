@@ -3746,6 +3746,8 @@ sealed class Worker(
                   .Append(Fmt.Secs(ColNum(row, "duration_ms") / 1000));
                 if (ColNum(row, "input_tokens") is >= 1 and var inTok) sb.Append($" · {Fmt.Num(inTok)} in");
                 if (ua is not null) sb.Append($" · {Esc(ua)}");
+                // Where it came from, as Caddy saw it; empty before 2026-09-17.
+                if (Col(row, "client_ip") is { Length: > 0 } ip) sb.Append($"\n\U0001f310 <code>{Esc(ip)}</code>");
                 sb.Append($"\n<code>{Esc(Col(row, "request_id") ?? "")}</code>\n");
             }
             sb.Append("\nTap an id to copy it, then /trace &lt;id&gt; for that request in full.");
@@ -3754,6 +3756,7 @@ sealed class Worker(
         return new Reply(sb.ToString() + Fmt.Note(
             ErrorCausesNote + "\n\n"
           + "\U0001f6d1 abort — the engine ended a request itself; from its own records.\n"
+          + "\U0001f310 is the client address as the edge saw it (recorded since 2026-09-17).\n"
           + $"<b>Latest</b> — newest first, up to 10, over the last {window}, times UTC. The time is the whole "
           + "request at the gateway: a few milliseconds is a refusal, minutes is a wait that ended badly. "
           + "Traffic on the direct hostname has no key and never appears here."), keyboard);

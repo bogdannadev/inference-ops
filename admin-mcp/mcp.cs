@@ -384,10 +384,10 @@ static class RequestSql
     // A key's latest failed requests, newest first.
     public const string KeyErrors = """
         SELECT ts, request_id, route, status, response_flags, duration_ms,
-               input_tokens, user_agent, cause
+               input_tokens, user_agent, client_ip, cause
         FROM (
             SELECT ts, request_id, route, status, response_flags, duration_ms,
-                   input_tokens, user_agent,
+                   input_tokens, user_agent, client_ip,
         """ + ErrorCause + """
          AS cause
             FROM gateway.requests FINAL

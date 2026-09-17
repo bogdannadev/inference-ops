@@ -1,0 +1,18 @@
+# Copy to caddy/private/allowlists.caddy (gitignored) and fill in.
+# The Caddyfile imports it and fails to load without it, so a missing file is
+# a startup error rather than an open site. Repeated remote_ip lines inside one
+# snippet merge into a single list.
+
+# Who may deliver to the quota-bot webhook: the relay's source ranges
+# (Cloudflare IPv4 from www.cloudflare.com/ips-v4 for the Worker relay), and
+# Telegram's documented ranges if it delivers directly.
+(webhook_sources) {
+	remote_ip 192.0.2.0/24
+}
+
+# Who may reach admin-mcp: Anthropic's published egress range, plus any
+# operator address that runs a local MCP bridge.
+(mcp_sources) {
+	remote_ip 198.51.100.0/24
+	remote_ip 203.0.113.7/32
+}

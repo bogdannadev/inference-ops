@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS gateway.requests
     authority       LowCardinality(String),
     response_flags  LowCardinality(String),
     user_agent      String,
+    -- First x-forwarded-for entry: the client as Caddy saw it. Added
+    -- 2026-09-17 by ALTER (see deploy/apply-gateway-schema.sh); older rows
+    -- are empty.
+    client_ip       String DEFAULT '',
 
     -- When Vector shipped it. A large ingest_ts - ts gap means the tailer fell
     -- behind or replayed a backlog, which is worth being able to see.

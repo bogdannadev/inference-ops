@@ -59,6 +59,8 @@ spec:
     - ingress:
         - ai-chat
         - ai-completions
+        - ai-responses
+        - ai-messages
       # Disabled until quota-bot renders real rules. The config must still
       # parse — the plugin rejects an empty rule_items — so it names a consumer
       # that cannot exist ('.' is outside the name alphabet).

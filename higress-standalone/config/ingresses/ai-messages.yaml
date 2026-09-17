@@ -1,0 +1,38 @@
+# Billable path 4: Anthropic Messages API (POST /v1/messages), added 2026-09-17.
+#
+# The router (sglang-router 0.3.2) has no /v1/messages; its fallback answers
+# 404. SGLang itself does serve it, but only behind the router. So ai-proxy
+# (wasmplugins/ai-proxy.yaml) converts the request to OpenAI chat completions,
+# sends it to the router's /v1/chat/completions, and converts the answer —
+# streamed or not — back to Anthropic's shape.
+#
+# Anthropic clients send the key as `x-api-key`. Caddy turns that into
+# `Authorization: Bearer <key>` before the gateway (key-auth matches the raw
+# Authorization value), and the header is removed here so it never travels
+# further.
+#
+# /v1/messages/count_tokens is NOT offered: Exact match, so it is 404.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-messages
+  namespace: higress-system
+  annotations:
+    higress.io/destination: "qwen-router.dns:8000"
+    higress.io/request-header-control-update: |
+      Authorization Bearer ${SGLANG_API_KEY}
+      x-request-id-labels {"consumer":"%REQ(X-MSE-CONSUMER)%"}
+    higress.io/request-header-control-remove: x-api-key
+    higress.io/ignore-path-case: "false"
+spec:
+  ingressClassName: higress
+  rules:
+  - http:
+      paths:
+      - path: /v1/messages
+        pathType: Exact
+        backend:
+          resource:
+            apiGroup: networking.higress.io
+            kind: McpBridge
+            name: default

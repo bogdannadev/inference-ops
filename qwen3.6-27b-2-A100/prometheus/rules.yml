@@ -330,3 +330,46 @@ groups:
           description: >-
             502/503 or another 5xx from the gateway, router or engine. /errors
             {{ $labels.consumer }} lists them with request ids for /trace.
+
+  # ---------------------------------------------------------------------------
+  # Unauthenticated traffic (2026-09-17).
+  #
+  # Both shared-key hostnames take bursts of ~280 wrong-key requests an hour,
+  # at the same hours (7 days to 2026-09-17: 12 bursts on model.example.com,
+  # 9 on embed.example.com; a normal hour has 0-14). The existing
+  # EdgeAuthRejectionRate needs 0.2/s for 10 minutes and never saw them.
+  # Caddy now access-logs both sites, so `docker logs` on Caddy names the
+  # source; the gateway's own 401s carry client_ip in gateway.requests and the
+  # bot's `/errors unauthenticated` lists them.
+  # ---------------------------------------------------------------------------
+  - name: edge-auth
+    rules:
+      - alert: EdgeWrongKeyBurst
+        expr: |
+          sum by (host) (increase(caddy_http_request_duration_seconds_count{code="401",host!="_other"}[1h])) > 100
+        for: 5m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.host }}: {{ $value | printf \"%.0f\" }} wrong-key requests in the last hour"
+          description: >-
+            Something is presenting a bad key at {{ $labels.host }} over and
+            over: a client with a stale key, or someone guessing. The shared
+            edge keys are long, so guessing will not succeed, but the source
+            should be found. docker logs on the Caddy container, filtered for
+            this host and status 401, shows the address. For the gateway
+            hostname, /errors unauthenticated in the bot lists them.
+
+      - alert: GatewayWrongKeyBurst
+        expr: |
+          sum(gateway_usage_error_requests{window="1h",consumer="unauthenticated",cause="no_key"}) > 50
+        for: 2m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Gateway: {{ $value }} requests with a bad or missing key in the last hour"
+          description: >-
+            Per-key gateway hostname. /errors unauthenticated in the bot lists
+            the requests with the client address.

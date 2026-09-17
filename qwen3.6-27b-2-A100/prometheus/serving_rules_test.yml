@@ -168,3 +168,49 @@ tests:
       - eval_time: 3m
         alertname: GatewayServerErrors
         exp_alerts: []
+
+  # ---------------------------------------------------------------------------
+  - interval: 1m
+    name: wrong-key bursts per host
+
+    input_series:
+      # 280 401s in an hour on the direct hostname: a burst.
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="model.example.com",server="srv1",handler="subroute"}'
+        values: '0+5x70'
+      # A few an hour on the gateway: not a burst.
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="gateway.example.org",server="srv1",handler="subroute"}'
+        values: '0+0.05x70'
+      # _other is scanners hitting the bare IP; ignored.
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="_other",server="srv1",handler="subroute"}'
+        values: '0+10x70'
+      - series: 'gateway_usage_error_requests{window="1h",consumer="unauthenticated",cause="no_key",job="engine-usage"}'
+        values: '60x70'
+
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: EdgeWrongKeyBurst
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              host: model.example.com
+            exp_annotations:
+              summary: "model.example.com: 300 wrong-key requests in the last hour"
+              description: >-
+                Something is presenting a bad key at model.example.com over and
+                over: a client with a stale key, or someone guessing. The shared
+                edge keys are long, so guessing will not succeed, but the source
+                should be found. docker logs on the Caddy container, filtered for
+                this host and status 401, shows the address. For the gateway
+                hostname, /errors unauthenticated in the bot lists them.
+      - eval_time: 70m
+        alertname: GatewayWrongKeyBurst
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+            exp_annotations:
+              summary: "Gateway: 60 requests with a bad or missing key in the last hour"
+              description: >-
+                Per-key gateway hostname. /errors unauthenticated in the bot lists
+                the requests with the client address.
