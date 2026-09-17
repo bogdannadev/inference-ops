@@ -220,6 +220,11 @@ requests end that way. They are counted from the gateway access log as
 `clickhouse/engine-usage-metrics_test.sql`), and `/top`, `/errors`, the key
 card, the written report and admin-mcp's `consumer_stats` show them.
 
+`/top` and `/usage` also list the direct hostname as its own row. SGLang records
+its requests with an empty consumer, and Prometheus drops empty labels, so a
+lookup by the `consumer` label silently lost them: until 2026-09-17 both screens
+showed only gateway keys while the direct hostname carried most of the load.
+
 ## Usage in money: reference prices
 
 `/key`, `/usage` and the written report price each consumer's tokens at what

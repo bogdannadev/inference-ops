@@ -1671,12 +1671,12 @@ sealed class Worker(
         // direction: the ledger charges input and output identically, but a
         // single total hides that a consumer at 40:1 is paying almost entirely
         // for context it re-sent, most of which the prefix cache served.
-        var inT    = UsageByConsumerAsync("engine_usage_prompt_tokens", window, ct);
-        var outT   = UsageByConsumerAsync("engine_usage_completion_tokens", window, ct);
-        var reqsT  = UsageByConsumerAsync("engine_usage_requests", window, ct);
-        var knownT = UsageByConsumerAsync("engine_usage_cache_known_prompt_tokens", window, ct);
-        var devT   = UsageByConsumerAsync("engine_usage_cached_device_tokens", window, ct);
-        var hostT  = UsageByConsumerAsync("engine_usage_cached_host_tokens", window, ct);
+        var inT    = UsageByConsumerAsync("engine_usage_prompt_tokens", window, ct, withDirect: true);
+        var outT   = UsageByConsumerAsync("engine_usage_completion_tokens", window, ct, withDirect: true);
+        var reqsT  = UsageByConsumerAsync("engine_usage_requests", window, ct, withDirect: true);
+        var knownT = UsageByConsumerAsync("engine_usage_cache_known_prompt_tokens", window, ct, withDirect: true);
+        var devT   = UsageByConsumerAsync("engine_usage_cached_device_tokens", window, ct, withDirect: true);
+        var hostT  = UsageByConsumerAsync("engine_usage_cached_host_tokens", window, ct, withDirect: true);
         var nodeT  = NodeCacheAsync(window, ct);
         var warnT  = UsageDataWarningAsync(ct);
         var pricesT = priceBook.GetAsync(ct);
@@ -1712,7 +1712,7 @@ sealed class Worker(
             var bj = PriceBook.Cost(prices.AlibabaBj, i, o);
             orT += list; orcT += cached; sgT += sg; bjT += bj;
 
-            sb.Append($"\n<b>{Esc(n)}</b>\n");
+            sb.Append($"\n<b>{ConsumerTitle(n)}</b>\n");
             sb.Append($"⬇ {Fmt.Num(i)} · ⬆ {Fmt.Num(o)} · {Fmt.Num(reqs.GetValueOrDefault(n))} req")
               .Append(c.Hit is { } hh ? $" · ♻️ {hh * 100:0}%" : "")
               .Append(c.HostShare is > 0 and var hs ? $" (HiCache {hs * 100:0.#}%)" : "")
@@ -1777,9 +1777,26 @@ sealed class Worker(
 
     // One gauge for one window, keyed by consumer. Engine traffic that did not
     // pass the gateway has no consumer label and drops out here, as it should.
-    private Task<Dictionary<string, double>> UsageByConsumerAsync(
-        string metric, string window, CancellationToken ct, string extra = "") =>
-        PromAsync($"sum by (consumer) ({metric}{{window=\"{window}\"{extra}}})", ct, "consumer");
+    // withDirect keeps the rows with no consumer label, under DirectConsumer.
+    // Those are the direct hostname's requests: SGLang records them with an
+    // empty consumer and Prometheus drops empty labels, so a lookup by label
+    // silently loses them — and they can be most of the node's load.
+    private async Task<Dictionary<string, double>> UsageByConsumerAsync(
+        string metric, string window, CancellationToken ct, string extra = "", bool withDirect = false)
+    {
+        var query = $"sum by (consumer) ({metric}{{window=\"{window}\"{extra}}})";
+        if (!withDirect) return await PromAsync(query, ct, "consumer");
+        var result = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var (labels, value) in await PromSeriesAsync(query, ct))
+            result[labels.GetValueOrDefault("consumer", DirectConsumer)] = value;
+        return result;
+    }
+
+    // Key names are [a-z0-9-], so the empty string cannot collide with one.
+    private const string DirectConsumer = "";
+
+    private string ConsumerTitle(string n) =>
+        n == DirectConsumer ? $"{Esc(cfg.DirectHost)} · direct, shared key" : Esc(n);
 
     // The whole node's prefix cache for a window: every finished request,
     // gateway traffic or not.
@@ -3453,9 +3470,9 @@ sealed class Worker(
         // Tokens and requests: exact sums over what the engine finished.
         // Errors, 401s and cut-offs: the gateway access log, the only place a
         // status code or a request that never reached the engine is counted.
-        var inT   = UsageByConsumerAsync("engine_usage_prompt_tokens", window, ct);
-        var outT  = UsageByConsumerAsync("engine_usage_completion_tokens", window, ct);
-        var reqsT = UsageByConsumerAsync("engine_usage_requests", window, ct);
+        var inT   = UsageByConsumerAsync("engine_usage_prompt_tokens", window, ct, withDirect: true);
+        var outT  = UsageByConsumerAsync("engine_usage_completion_tokens", window, ct, withDirect: true);
+        var reqsT = UsageByConsumerAsync("engine_usage_requests", window, ct, withDirect: true);
         var errsT = UsageByConsumerAsync("gateway_usage_requests", window, ct, ",status_class=~\"4xx|5xx\"");
         var cutT  = UsageByConsumerAsync("gateway_usage_cut_requests", window, ct);
         var uaT   = PromScalarAsync($"sum(gateway_usage_unauthorized_requests{{window=\"{window}\",consumer=\"unauthenticated\"}})", ct);
@@ -3474,7 +3491,7 @@ sealed class Worker(
                        .OrderByDescending(Tok).ThenByDescending(n => reqs.GetValueOrDefault(n))
                        .ToList();
         if (names.Count == 0)
-            return new Reply($"\U0001f3c6 <b>Top consumers</b> · {window}\n{warnT.Result}\nNo gateway traffic in this window.", keyboard);
+            return new Reply($"\U0001f3c6 <b>Top consumers</b> · {window}\n{warnT.Result}\nNo traffic in this window.", keyboard);
 
         var total = names.Sum(Tok);
         var sb = new StringBuilder($"\U0001f3c6 <b>Top consumers</b> · {window}\n{warnT.Result}");
@@ -3489,7 +3506,7 @@ sealed class Worker(
             var e = errs.GetValueOrDefault(n); var c = cuts.GetValueOrDefault(n);
             var cost = PriceBook.Cost(prices.OpenRouter, i, o);
 
-            sb.Append($"\n<b>{rank}. {Esc(n)}</b>\n");
+            sb.Append($"\n<b>{rank}. {ConsumerTitle(n)}</b>\n");
             sb.Append($"{Fmt.ShareBar(share)} {Fmt.Pct(share)} · {Fmt.Num(Tok(n))} tok\n");
             sb.Append($"⬇ {Fmt.Num(i)} in · ⬆ {Fmt.Num(o)} out")
               .Append(Fmt.Ratio(i, o) is { Length: > 0 } ratio ? $" · {ratio}" : "").Append('\n');
@@ -3512,7 +3529,9 @@ sealed class Worker(
           + "a reference, not a bill. /usage shows all four references.\n"
           + "err — 4xx/5xx answers. cut — requests ended before their usage frame, charged nothing.\n"
           + "Tokens and requests are exact sums over the engine's per-request records; errors and cuts come "
-          + "from the gateway access log."));
+          + "from the gateway access log.\n"
+          + $"<b>{Esc(cfg.DirectHost)}</b> is the direct hostname: one shared key, no balance or limits, and no "
+          + "access-log row, so it has no err/cut here — /errors shows its refusals."));
         return new Reply(sb.ToString(), keyboard);
     }
 
