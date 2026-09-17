@@ -22,6 +22,11 @@ docker exec -i qwen36-27b-langfuse-clickhouse \
   clickhouse-client --password "$LANGFUSE_CLICKHOUSE_PASSWORD" --multiquery \
   < clickhouse/gateway-requests.sql
 
+# Columns added after the first install. IF NOT EXISTS keeps this idempotent.
+docker exec qwen36-27b-langfuse-clickhouse \
+  clickhouse-client --password "$LANGFUSE_CLICKHOUSE_PASSWORD" \
+  -q "ALTER TABLE gateway.requests ADD COLUMN IF NOT EXISTS client_ip String DEFAULT '' AFTER user_agent"
+
 docker exec qwen36-27b-langfuse-clickhouse \
   clickhouse-client --password "$LANGFUSE_CLICKHOUSE_PASSWORD" \
   -q "SELECT database, name, engine, total_rows FROM system.tables WHERE database='gateway'"

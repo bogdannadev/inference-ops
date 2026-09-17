@@ -1168,6 +1168,9 @@ services:
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Gitignored allowlists the Caddyfile imports (caddy/allowlists.caddy.example).
+      # A directory, so editing the file reaches the container.
+      - ./caddy/private:/etc/caddy/private:ro
       - caddy_data:/data
       - caddy_config:/config
 

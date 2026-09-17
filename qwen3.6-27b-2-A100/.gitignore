@@ -17,3 +17,7 @@ __pycache__/
 
 # Rendered from .env by deploy/render-prometheus-secrets.sh
 prometheus/secrets/
+
+# Caddy source-address allowlists (operator addresses); shape in
+# caddy/allowlists.caddy.example
+caddy/private/
