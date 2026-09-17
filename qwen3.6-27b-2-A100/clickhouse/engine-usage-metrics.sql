@@ -153,6 +153,48 @@ FROM (
 )
 WHERE isFinite(value) AND (sc != 'none' OR value > 0) AND (name != 'gateway_usage_requests' OR value > 0)
 UNION ALL
+-- ---------------------------------------------------------------------------
+-- Why requests failed, by named cause (bot /errors, alerts GatewayClients*,
+-- GatewayTimeouts). One cause per request; rows with no cause are left out.
+-- The status codes come first: a 4xx/5xx is that cause whatever the flags say.
+-- The DC/SI causes count billable requests charged nothing, the same predicate
+-- as gateway_usage_cut_requests, split by whether any response had started
+-- (status 0 = the client left before the first byte).
+-- KEEP IN STEP with RequestSql.ErrorCause in admin-mcp/mcp.cs and with
+-- error-cause_test.sql.
+-- ---------------------------------------------------------------------------
+SELECT 'gateway_usage_error_requests', 'gauge',
+       'Gateway requests that did not end in a full answer, by named cause.',
+       map('window', window, 'consumer', consumer, 'cause', cause), toFloat64(n)
+FROM (
+    SELECT
+        win.1 AS window,
+        if(consumer = '', 'unauthenticated', consumer) AS consumer,
+        multiIf(
+            status = 401, 'no_key',
+            status = 403, 'no_balance',
+            status = 429, 'rate_limited',
+            status = 422, 'max_tokens',
+            status = 413, 'too_large',
+            status = 400, 'bad_request',
+            status = 404, 'not_found',
+            status IN (408, 504), 'timeout',
+            status >= 500, 'server_error',
+            status >= 400, 'client_error',
+            route NOT IN ('ai-chat', 'ai-completions') OR total_tokens > 0, '',
+            status < 200 AND match(response_flags, '(^|,)DC(,|$)'), 'left_before_reply',
+            status < 200, 'no_reply',
+            match(response_flags, '(^|,)DC(,|$)'), 'left_mid_answer',
+            match(response_flags, '(^|,)(SI|UC|UPE|UT)(,|$)'), 'cut_mid_answer',
+            '') AS cause,
+        count() AS n
+    FROM gateway.requests FINAL,
+         (SELECT arrayJoin([('1h', 3600), ('24h', 86400), ('7d', 604800), ('30d', 2592000)]) AS win) AS w4
+    WHERE ts >= now64(3) - toIntervalSecond(win.2)
+    GROUP BY window, consumer, cause
+    HAVING cause != ''
+)
+UNION ALL
 SELECT 'gateway_usage_last_record_timestamp_seconds', 'gauge',
        'Start time of the newest gateway.requests row.', map(), toFloat64(toUnixTimestamp64Milli(max(ts))) / 1000
 FROM gateway.requests

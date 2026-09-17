@@ -329,6 +329,7 @@ engine_usage_{ttft_seconds,e2e_seconds}{window,consumer,p="50"|"95"}
 engine_usage_queue_seconds{p="95"}, engine_usage_decode_tokens_per_second{p="50"}
 engine_usage_replica_completion_tokens{window,consumer,replica}
 gateway_usage_requests{window,consumer,status_class}
+gateway_usage_error_requests{window,consumer,cause}
 gateway_usage_{rate_limited,unauthorized,quota_denied,cut}_requests{window,consumer}
 gateway_usage_cut_seconds, gateway_usage_duration_seconds{p="50"|"95"|"99"}
 engine_usage_{first,last}_record_timestamp_seconds{source}, gateway_usage_last_record_timestamp_seconds
@@ -344,6 +345,59 @@ on 2026-09-15.
 `consumer="unauthenticated"` is the 401 path on the gateway side; engine traffic
 that bypassed the gateway has no consumer label. The SQL's cut-off predicate has
 regression cases: `./deploy/test-usage-sql.sh`.
+
+### Why requests failed — `gateway_usage_error_requests{cause}`
+
+Added 2026-09-17. One named cause per gateway request that did not end in a full
+answer; requests without a cause are not exported. Status codes win over
+response flags. The bot's `/errors` and the `serving` alerts read it.
+
+| cause | rule | usually means |
+|---|---|---|
+| `timeout` | 408 or 504 | nothing sent for 900 s (stream idle timeout) |
+| `server_error` | other 5xx | router or engine failure |
+| `left_before_reply` | billable, charged nothing, status 0, flag `DC` | client gave up while queued or in prefill |
+| `left_mid_answer` | billable, charged nothing, flag `DC`, a status was sent | client cancelled a running answer |
+| `cut_mid_answer` | billable, charged nothing, flag `SI`/`UC`/`UPE`/`UT` | stream cut upstream |
+| `no_reply` | status 0 without `DC` | connection ended with no answer |
+| `bad_request` | 400 | engine validation: prompt + max_tokens over 169K, bad parameter (no reason is logged) |
+| `max_tokens` / `too_large` | 422 / 413 | gateway caps |
+| `rate_limited` | 429 | token limit, or router queue full |
+| `no_balance` / `no_key` / `not_found` | 403 / 401 / 404 | gateway refusals |
+| `client_error` | any other 4xx | |
+
+The same expression is `RequestSql.ErrorCause` in `admin-mcp/mcp.cs`, which
+lists one key's failed requests for the bot. `clickhouse/error-cause_test.sql`
+pins the cases; change the three together.
+
+The direct hostname has no access-log row, so `/errors` shows Caddy's per-host
+status counters for it (`caddy_http_request_duration_seconds_count{host}`),
+approximate and without disconnects.
+
+## Serving alerts — `serving` group in `prometheus/rules.yml`
+
+Added 2026-09-17 after the two failures of 2026-09-16. Unit tests:
+`promtool test rules prometheus/serving_rules_test.yml` (15 s evaluation, so
+the `for:` clauses are exercised).
+
+| rule | fires when | 2026-09-16 case |
+|---|---|---|
+| `node:engine_queue_stranded:bool` (recording) | 1 while a replica has a queue and another has no queue and fewer than 4 running | 14:20-14:28, r1 queued behind a 32K-token answer, r0 idle |
+| `EngineQueueStrandedOnOneReplica` | the above for 2 min | same |
+| `EngineQueueNotDraining` | a replica's queue has not been empty in any 1 min slice for 10 min | 11:11-11:58 orphan stall |
+| `GatewayClientsLeavingBeforeReply` | 8 or more `left_before_reply` for one key in the last hour | 69 at 11:00, 8 at 12:00 |
+| `GatewayTimeouts` | any `timeout` in the last hour | 12 at 11:00 |
+| `GatewayServerErrors` | 3 or more `server_error` in the last hour | — |
+
+"4 running" is `--max-running-requests`, which the engine does not export; keep
+the rule in step with docker-compose.yml. The gateway alerts read 1-hour gauges,
+so they resolve up to an hour after the last bad request.
+
+Backtest over 2026-09-10..17: 76 stranded minutes (54 with the other replica
+idle); `EngineQueueNotDraining` would have fired once per replica, both on
+2026-09-16 (r0 from 11:23 for 18 min, r1 from 11:25 for 10 min), and never
+otherwise. The bot's `/errors` prints stranded minutes from the recording rule
+(`sum_over_time(...) * 15 / 60`), which only counts from the rule's deployment.
 
 ### Quota is a single total-token balance
 
