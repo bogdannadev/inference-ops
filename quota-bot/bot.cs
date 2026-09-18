@@ -118,7 +118,10 @@ var cfg = new BotConfig(
     RedisHost:       Opt("REDIS_HOST", "higress-redis"),
     RedisPort:       int.Parse(Opt("REDIS_PORT", "6379"), CultureInfo.InvariantCulture),
     PrometheusUrl:   Opt("PROMETHEUS_URL", "http://qwen36-27b-prometheus:9090").TrimEnd('/'),
-    PublicBaseUrl:   Opt("PUBLIC_BASE_URL", "https://gateway.example.org").TrimEnd('/'),
+    // Required, not defaulted: this repo is public, so no deployment's
+    // hostnames are compiled in. A wrong default here would be handed to
+    // customers in a generated config.
+    PublicBaseUrl:   Req("PUBLIC_BASE_URL").TrimEnd('/'),
     KubeConfigPath:  Opt("KUBECONFIG_PATH", "/etc/kube/config"),
     ConsumersPath:   Opt("CONSUMERS_PATH", "/data/consumers.conf"),
     AuditPath:       Opt("AUDIT_PATH", "/data/audit.log"),
@@ -143,8 +146,11 @@ var cfg = new BotConfig(
     AlertmanagerUrl: Opt("ALERTMANAGER_URL", "http://qwen36-27b-alertmanager:9093").TrimEnd('/'),
     // The team's direct router hostname (Caddy, shared edge key, no gateway).
     // Its traffic has no consumer and no access-log row, so /errors reads its
-    // status codes from Caddy's per-host counters instead.
-    DirectHost:      Opt("DIRECT_HOST", "model.example.com"),
+    // status codes from Caddy's per-host counters instead — which only works
+    // if this matches Caddy's `host` label exactly (EDGE_HOST_MODEL in the
+    // inference project's .env). Required for the same reason as
+    // PUBLIC_BASE_URL above.
+    DirectHost:      Req("DIRECT_HOST"),
     AlertChatIds:    alertChatIds);
 
 // Encoded once, not on every delivery — and validated here because the

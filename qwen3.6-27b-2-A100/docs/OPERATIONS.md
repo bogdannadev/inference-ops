@@ -33,7 +33,8 @@ docker run --rm --network qwen36-27b-backend curlimages/curl:latest \
 ```
 
 Over the public edge (from outside): `curl -H "Authorization: Bearer
-$EDGE_API_KEY" https://model.example.com/v1/models`.
+$EDGE_API_KEY" https://$EDGE_HOST_MODEL/v1/models` — the hostname comes from
+`.env`, not from this repo.
 
 ## Boot checks after every replica start
 

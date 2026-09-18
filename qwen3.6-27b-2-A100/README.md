@@ -46,7 +46,7 @@ timescales and feeds back into the settings the other two obey.
 │   caddy :443            TLS · 401 guard · key swap · no body cap           │
 │     │                   ── rejects here never reach SGLang ──┐             │
 │     ▼                                                        │             │
-│   sgl-router :8000      cache_aware · injects `traceparent`  │             │
+│   sgl-router            cache_aware · injects `traceparent`  │             │
 │     │                                                        │             │
 │     ├──────────────┬───────────────────────────────────┐     │             │
 │     ▼              ▼                                   │     │             │
@@ -139,7 +139,8 @@ all three are instrumented separately:
 
 ```bash
 # 1. secrets — create .env with at minimum:
-#    SGLANG_API_KEY, EDGE_API_KEY, HF_TOKEN (and GRAFANA_ADMIN_USER/PASSWORD)
+#    SGLANG_API_KEY, EDGE_API_KEY, HF_TOKEN, GRAFANA_ADMIN_USER/PASSWORD,
+#    and the public hostnames: EDGE_HOST_* + ACME_CONTACT + GRAFANA_PUBLIC_URL
 #    (full var list in docs/ARCHITECTURE.md)
 
 # 2. start the stack, then create the usage tables and the scrape secret
@@ -216,7 +217,7 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 
 - `qwen36-27b-r0` / `qwen36-27b-r1` — SGLang `TP=1` replicas, GPU0/GPU1,
   DFlash2 speculative decoding, Mamba radix prefix caching + HiCache host tier
-- `qwen36-27b-router` — SGLang model-gateway, `cache_aware`, OpenAI API, :8000
+- `qwen36-27b-router` — SGLang model-gateway, `cache_aware`, OpenAI API
 - `caddy` — TLS termination, edge-auth key swap, unbounded body size (only host ports)
 - `prometheus` — 9 scrape targets, 30d/20GB retention, 16 alert rules, hot reload
 - `grafana` — 7 dashboards (overview/sglang/router/gpu/host/edge/pipeline), SLO rules
@@ -247,11 +248,21 @@ clickhouse retention        3d diagnostics / 7d audit, logs capped at ~130 MB
 
 ## External access
 
-```text
-https://model.example.com    # Caddy -> router :8000 (edge key required)
-https://embed.example.com     # Caddy -> qwen3-emb (edge key required)
-```
+Caddy publishes 80/443 and is the only service with host ports. It answers on
+six hostnames: the direct model edge and the embedder (both shared-key), the
+paid gateway, Grafana, the quota-bot webhook and admin-mcp.
+
+**The names are not in this repo.** Every site address in the `Caddyfile`
+reads an `EDGE_HOST_*` variable, and the values live in the gitignored `.env`
+(`EDGE_HOST_MODEL`, `EDGE_HOST_EMBED`, `EDGE_HOST_BOT`, `EDGE_HOST_GATEWAY`,
+`EDGE_HOST_GRAFANA`, `EDGE_HOST_MCP`, plus `ACME_CONTACT` for certificate
+issuance). The committed config still shows what each site does; it just does
+not say which deployment it is. An unset variable leaves the site address
+empty and Caddy refuses to start, so a missing value fails at boot.
+
+The edge also strips the response headers that described it — `Server`, `Via`
+and the Envoy/Higress timing headers — see the `hide_edge` snippet in the
+`Caddyfile`.
 
 Everything else binds to `127.0.0.1` on the host and is reached over an SSH
-tunnel (see [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the port map).
+tunnel (see [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)).

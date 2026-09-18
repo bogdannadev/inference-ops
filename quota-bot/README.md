@@ -393,8 +393,8 @@ The webhook needs a hostname on 443 — Telegram accepts only 443, 80, 88 and
 documents that its IP ranges change:
 
 ```caddyfile
-bot-old.example.org {
-	tls contact@example.com
+{$EDGE_HOST_BOT} {
+	tls {$ACME_CONTACT}
 
 	@telegram remote_ip 149.154.160.0/20 91.108.4.0/22
 	handle @telegram {
@@ -554,7 +554,7 @@ filtered, because not Telegram:
 Telegram --POST--> <name>.workers.dev        free, permanent hostname
                         |
                         v  Worker forwards, secret header intact
-                   bot.example.org     Caddy, Cloudflare IPs allowed
+                   <bot hostname>            Caddy, Cloudflare IPs allowed
                         |
                         v
                    quota-bot:8080

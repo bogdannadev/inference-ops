@@ -5,7 +5,8 @@ A100 node: **per-consumer API keys, token quotas, and per-consumer usage
 statistics**.
 
 Status: **evaluation, nothing in production.** The public edge is unchanged —
-`model.example.com` still terminates at the Caddy in `../qwen3.6-27b-2-A100`,
+the direct model hostname still terminates at the Caddy in
+`../qwen3.6-27b-2-A100`,
 which authenticates one shared `EDGE_API_KEY` and proxies straight to the
 SGLang router.
 
@@ -105,7 +106,7 @@ Rules learned the hard way:
 ## Current state (2026-09-02): the minimal chain is built and verified
 
 Everything below was measured against the running stack, from inside the `edge`
-network. **The public edge is untouched** — `model.example.com` still goes Caddy
+network. **The public edge is untouched** — the direct hostname still goes Caddy
 -> router directly with the single shared key, and returned 200 throughout.
 
 ```
@@ -209,7 +210,7 @@ quotes itself.
    one curl.
 2. **Scrape the consumer counters** into the A100 node's Prometheus and build a
    per-consumer panel.
-3. **Public hostname.** Add `model-gw.example.com` as a NEW Caddy site pointing
+3. **Public hostname.** Add a NEW Caddy site (`EDGE_HOST_GATEWAY`) pointing
    at `higress:8080`, with `header_up -X-Mse-Consumer` and `flush_interval -1`.
    The existing site is not touched, so there is nothing to roll back and no
    flag day: clients migrate one at a time, and the direct path stays as the

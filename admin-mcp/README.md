@@ -166,7 +166,8 @@ Both one-time steps are **done** (2026-09-05):
    not GET — ClickHouse treats a GET as read-only for *every* user, so a GET
    test proves nothing about the profile. POST `INSERT` and POST `DROP` both
    return `Code 164 READONLY`; POST `SELECT` works.
-2. `mcp.example.org` → 203.0.113.10, and `caddy reload`. Do not
+2. A DNS A record for the MCP hostname (`EDGE_HOST_MCP` in the inference
+   project's `.env`) pointing at this host, and `caddy reload`. Do not
    reload a site block whose hostname does not resolve yet: Caddy starts an ACME
    loop it cannot win and the failures count against Let's Encrypt's rate
    limits, delaying the certificate even after the record appears.
@@ -175,8 +176,8 @@ Both one-time steps are **done** (2026-09-05):
 rename swaps the inode so the reload silently succeeds against the stale
 config. Verify through the admin API, not the reload's exit code.
 
-In Claude: add a custom connector at `https://mcp.example.org/mcp`
-with the bearer token from `.env` as an `Authorization` header.
+In Claude: add a custom connector at `https://<mcp-host>/mcp` with the bearer
+token from `.env` as an `Authorization` header.
 
 Verified from this host, which is *not* in Anthropic's range: both an
 unauthenticated request and one carrying a valid bearer get `404`. The

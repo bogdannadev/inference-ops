@@ -33,7 +33,7 @@
 //
 // Set it in the Cloudflare dashboard: Worker -> Settings -> Variables and
 // Secrets -> add ORIGIN as a SECRET (not a plaintext variable), value
-//   https://bot.example.org/tg/<the path from TELEGRAM_WEBHOOK_URL>
+//   https://<the bot's origin hostname>/tg/<the path from TELEGRAM_WEBHOOK_URL>
 export default {
   async fetch(request, env) {
     const ORIGIN = env.ORIGIN;

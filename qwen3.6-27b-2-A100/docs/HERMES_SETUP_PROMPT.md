@@ -9,8 +9,10 @@ gateway `max_tokens` ceiling or the tier limits change.
 The API key is **not** in the prompt. Issue one with quota-bot `/newkey`; `/connect <name>`
 shows its endpoint, model and key. Put the key in `~/.hermes/.env` as `QWEN_GW_API_KEY`.
 
-This is the customer gateway (`gateway.example.org`, per-key auth, quota and
-limits), not the internal `model.example.com` edge.
+This is the customer gateway (per-key auth, quota and limits), not the
+internal shared-key edge. Its hostname is `EDGE_HOST_GATEWAY` in `.env` (the
+repo is public, so the names are not committed); `/connect <name>` in
+quota-bot prints it, and `<gateway-host>` below stands for it.
 
 ---
 
@@ -25,7 +27,7 @@ inventing one.
 ENDPOINT — add it as a named custom provider
   providers:
     qwen-gw:
-      api: https://gateway.example.org/v1
+      api: https://<gateway-host>/v1
       key_env: QWEN_GW_API_KEY          # I will put the key in ~/.hermes/.env
       transport: chat_completions
       default_model: qwen3.8-27b

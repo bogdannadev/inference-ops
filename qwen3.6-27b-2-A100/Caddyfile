@@ -1,5 +1,5 @@
 # =============================================================================
-# Edge gateway — example.com
+# Edge gateway
 #
 # Pattern:
 #   - One shared snippet (edge_auth) carries TLS contact and the edge-key
@@ -69,9 +69,38 @@ import /etc/caddy/private/allowlists.caddy
 	}
 }
 
+# Response headers that describe the edge stack rather than the answer.
+# Measured 2026-09-18 before this snippet existed: `server: Caddy` on every
+# Caddy-generated reply, `via: 1.1 Caddy` on every proxied one, and, through
+# the paid hostname, `server: istio-envoy` plus Envoy/Higress timing headers
+# (`x-envoy-upstream-service-time`, `req-arrive-time`, `req-cost-time`,
+# `resp-start-time`). Together those advertise two proxy layers and which
+# software each one runs — enough to pick a CVE list before probing anything.
+#
+# `header` sorts before `reverse_proxy` in Caddy's directive order, so this
+# wraps the proxy and the deletions apply to upstream responses and to the
+# `handle_response` bodies written below them, not just to Caddy's own.
+#
+# X-Request-Id is deliberately NOT deleted: it is the id clients quote in a
+# support request and the key gateway and engine records join on.
+(hide_edge) {
+	header {
+		-Server
+		-Via
+		-X-Envoy-Upstream-Service-Time
+		-X-Envoy-Decorator-Operation
+		-X-Envoy-Peer-Metadata
+		-X-Envoy-Peer-Metadata-Id
+		-Req-Arrive-Time
+		-Req-Cost-Time
+		-Resp-Start-Time
+		-X-Powered-By
+	}
+}
+
 (edge_auth) {
 	# ACME registration contact for certificate issuance
-	tls contact@example.com
+	tls {$ACME_CONTACT}
 
 	# Reject anything without the edge key before it reaches the proxy
 	@bad_key not header Authorization "Bearer {$EDGE_API_KEY}"
@@ -83,8 +112,9 @@ import /etc/caddy/private/allowlists.caddy
 # -----------------------------------------------------------------------------
 # Qwen3.6-27B — SGLang router on the A100 node
 # -----------------------------------------------------------------------------
-model.example.com {
+{$EDGE_HOST_MODEL} {
 	import edge_auth
+	import hide_edge
 
 	# Access log (2026-09-17): this site draws bursts of ~280 wrong-key
 	# requests an hour and, until now, nothing recorded where from.
@@ -115,8 +145,9 @@ model.example.com {
 # NOTE: after the network split, the TEI container must join the shared
 # `edge` network so the name `qwen3-emb` resolves from this Caddy.
 # -----------------------------------------------------------------------------
-embed.example.com {
+{$EDGE_HOST_EMBED} {
 	import edge_auth
+	import hide_edge
 	# Same wrong-key bursts as the model hostname, at the same hours.
 	import access_log
 
@@ -155,8 +186,9 @@ embed.example.com {
 # workers.dev, which forwards here from Cloudflare's IPs. Those are not
 # filtered, because they are not Telegram's. Measured after the switch: a 50
 # minute idle gap still delivered in 1s, against 132-543s before.
-bot.example.org {
-	tls contact@example.com
+{$EDGE_HOST_BOT} {
+	tls {$ACME_CONTACT}
+	import hide_edge
 
 	# Access log on, deliberately, and kept. This is the one site that can mint
 	# API keys, so "who called it and what did they get" is worth having. It is
@@ -217,7 +249,7 @@ bot.example.org {
 # EDGE_API_KEY, which is exactly what this hostname replaces. Identity here is
 # per-consumer (Higress key-auth) and budgets are token quotas (ai-quota).
 #
-# The team keeps using model.example.com above — straight to the router, no
+# The team keeps using the direct model hostname above — straight to the router, no
 # gateway, no Redis, no quota. That is deliberate: ai-quota has no fail-open, so
 # if the ledger is unavailable every consumer on THIS hostname gets a 403. The
 # direct hostname is the standing escape hatch.
@@ -225,8 +257,9 @@ bot.example.org {
 # Rehearsed in full on a throwaway Caddy on the edge network (no published
 # ports, tls internal) before landing here.
 # -----------------------------------------------------------------------------
-gateway.example.org {
-	tls contact@example.com
+{$EDGE_HOST_GATEWAY} {
+	tls {$ACME_CONTACT}
+	import hide_edge
 
 	# Bounds the PROMPT half of a request's cost. A byte cap is the only lever
 	# that exists before tokenisation, and it is what makes overdraft bounded:
@@ -236,9 +269,9 @@ gateway.example.org {
 	# capped separately by request-validation in the gateway (max_tokens 8192),
 	# so worst-case overdraft is ~one full-context request, not unbounded.
 	#
-	# NOTE this is per-site. model.example.com deliberately has NO cap, because
-	# OCR traffic sends base64 images inline and blew past the old global 8MB
-	# limit. Paid traffic does not get that allowance.
+	# NOTE this is per-site. The direct model hostname deliberately has NO cap,
+	# because OCR traffic sends base64 images inline and blew past the old
+	# global 8MB limit. Paid traffic does not get that allowance.
 	request_body {
 		max_size 1MB
 	}
@@ -395,8 +428,9 @@ gateway.example.org {
 # Anonymous viewing is deliberately OFF (docker-compose.metrics.yml): these
 # dashboards carry per-consumer token usage, i.e. customer names and spend.
 # -----------------------------------------------------------------------------
-grafana.example.org {
-	tls contact@example.com
+{$EDGE_HOST_GRAFANA} {
+	tls {$ACME_CONTACT}
+	import hide_edge
 
 	reverse_proxy qwen36-27b-grafana:3000 {
 		# Grafana Live uses websockets; Caddy upgrades them automatically, but
@@ -445,8 +479,9 @@ grafana.example.org {
 # NOT for browsers. Claude.ai reaches this server-side, from that range; a
 # browser tab never talks to it directly.
 # -----------------------------------------------------------------------------
-mcp.example.org {
-	tls contact@example.com
+{$EDGE_HOST_MCP} {
+	tls {$ACME_CONTACT}
+	import hide_edge
 
 	# Access log ON, for the same reason infra-bot keeps its own: this is the
 	# other site that can mint and revoke API keys, and without a log a request

@@ -34,7 +34,7 @@ Verified from the live listener dump. Envoy runs the wasm filters in this
 order, and the order is load-bearing:
 
 ```
-client → Caddy (gateway.example.org, strips X-Mse-Consumer,
+client → Caddy (gateway hostname, strips X-Mse-Consumer,
                 turns x-api-key into Authorization: Bearer)
        → gateway :80
            1. key-auth            AUTHN,  prio 310, FAIL_CLOSE
@@ -218,7 +218,7 @@ from the host.
 
 ```bash
 ADMIN=$(grep -E '^quota-admin[[:space:]]' consumers.conf | sed 's/^quota-admin[[:space:]]*//')
-BASE=https://gateway.example.org/v1/chat/completions
+BASE="https://$EDGE_HOST_GATEWAY/v1/chat/completions"
 
 curl -H "Authorization: $ADMIN" "$BASE/quota?consumer=NAME"              # read
 curl -H "Authorization: $ADMIN" -d 'consumer=NAME&quota=1000000' "$BASE/quota/refresh"   # set

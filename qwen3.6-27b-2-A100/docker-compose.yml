@@ -1165,6 +1165,17 @@ services:
       - QUOTA_BOT_WEBHOOK_PATH=${QUOTA_BOT_WEBHOOK_PATH:?set QUOTA_BOT_WEBHOOK_PATH in .env}
       # Retired path, honoured only while the relay is being switched over.
       - QUOTA_BOT_WEBHOOK_PATH_OLD=${QUOTA_BOT_WEBHOOK_PATH_OLD:-}
+      # Site addresses and ACME contact. Out of the committed Caddyfile since
+      # 2026-09-18 (public repo): the config describes the edge's shape, .env
+      # says which names it answers to. `:?` so a missing value stops compose
+      # here rather than letting Caddy come up with an empty site address.
+      - EDGE_HOST_MODEL=${EDGE_HOST_MODEL:?set EDGE_HOST_MODEL in .env}
+      - EDGE_HOST_EMBED=${EDGE_HOST_EMBED:?set EDGE_HOST_EMBED in .env}
+      - EDGE_HOST_BOT=${EDGE_HOST_BOT:?set EDGE_HOST_BOT in .env}
+      - EDGE_HOST_GATEWAY=${EDGE_HOST_GATEWAY:?set EDGE_HOST_GATEWAY in .env}
+      - EDGE_HOST_GRAFANA=${EDGE_HOST_GRAFANA:?set EDGE_HOST_GRAFANA in .env}
+      - EDGE_HOST_MCP=${EDGE_HOST_MCP:?set EDGE_HOST_MCP in .env}
+      - ACME_CONTACT=${ACME_CONTACT:?set ACME_CONTACT in .env}
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
