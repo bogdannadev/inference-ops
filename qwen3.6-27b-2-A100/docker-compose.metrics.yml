@@ -313,7 +313,7 @@ services:
       - GF_SERVER_ENFORCE_DOMAIN=false
       # Must match the public URL, or Grafana builds redirects, share links and
       # alert notification URLs pointing at localhost.
-      - GF_SERVER_ROOT_URL=https://grafana.example.org
+      - GF_SERVER_ROOT_URL=${GRAFANA_PUBLIC_URL:?set GRAFANA_PUBLIC_URL in .env}
       - GF_SERVER_READ_TIMEOUT=60
       - GF_SERVER_WRITE_TIMEOUT=60
       - GF_SNAPSHOTS_EXTERNAL_ENABLED=false
@@ -365,7 +365,7 @@ services:
     networks:
       # backend: reach Prometheus and ClickHouse.
       # edge: so Caddy can proxy the public HTTPS site for
-      #   grafana.example.org. Caddy lives on `edge` only — it must
+      #   Grafana (EDGE_HOST_GRAFANA). Caddy lives on `edge` only — it must
       #   never be able to reach a worker — so the service being fronted has to
       #   come to it, not the reverse.
       - qwen36-27b-backend

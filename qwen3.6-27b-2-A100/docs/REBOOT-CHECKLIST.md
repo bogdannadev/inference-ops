@@ -118,12 +118,13 @@ docker exec qwen36-27b-langfuse-clickhouse clickhouse-client --password "$PW" \
 ```
 
 Then one real request end to end, which exercises auth, quota, routing, the
-engine, the access log and the engine's request records at once:
+engine, the access log and the engine's request records at once (`set -a; .
+./.env; set +a` first — the public hostnames live there, not in this repo):
 
 ```bash
 curl -H "Authorization: $ADMIN" -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"say ok"}],"max_tokens":5}' \
-  https://gateway.example.org/v1/chat/completions
+  "https://$EDGE_HOST_GATEWAY/v1/chat/completions"
 ```
 
 It should return 200, add one row to `gateway.requests` and one to

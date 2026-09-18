@@ -287,8 +287,8 @@ payload: the only diff is the injected system block, there are **zero** empty
 config at `reasoning_effort: medium` renders byte-identically to 3.6. Live
 `prompt_tokens` for that payload: r0 25, r1 67.
 
-End-to-end through Caddy on the real client path (TLS + edge key,
-`model.example.com`): chat completion correct, `reasoning_content` split, and
+End-to-end through Caddy on the real client path (TLS + edge key, the
+direct model hostname): chat completion correct, `reasoning_content` split, and
 auth still enforced (401 without a key). Clients continue to request model
 `qwen36-27b` and nothing at the edge changed.
 

@@ -178,7 +178,7 @@ tests:
       - series: 'caddy_http_request_duration_seconds_count{code="401",host="model.example.com",server="srv1",handler="subroute"}'
         values: '0+5x70'
       # A few an hour on the gateway: not a burst.
-      - series: 'caddy_http_request_duration_seconds_count{code="401",host="gateway.example.org",server="srv1",handler="subroute"}'
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="gateway.example.com",server="srv1",handler="subroute"}'
         values: '0+0.05x70'
       # _other is scanners hitting the bare IP; ignored.
       - series: 'caddy_http_request_duration_seconds_count{code="401",host="_other",server="srv1",handler="subroute"}'

@@ -26,7 +26,7 @@ removed. `postcheck.sh` is only `echo "All good!"`.
 
 | Check | Result |
 |---|---|
-| `https://gateway.example.org` no auth | 401 |
+| the gateway hostname, no auth | 401 |
 | bogus key | 401 |
 | valid consumer, streaming | 200, TTFB 0.23s |
 | ai-quota metering | real ledger decremented |

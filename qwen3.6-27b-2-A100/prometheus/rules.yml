@@ -335,8 +335,8 @@ groups:
   # Unauthenticated traffic (2026-09-17).
   #
   # Both shared-key hostnames take bursts of ~280 wrong-key requests an hour,
-  # at the same hours (7 days to 2026-09-17: 12 bursts on model.example.com,
-  # 9 on embed.example.com; a normal hour has 0-14). The existing
+  # at the same hours (7 days to 2026-09-17: 12 bursts on the model hostname,
+  # 9 on the embedder's; a normal hour has 0-14). The existing
   # EdgeAuthRejectionRate needs 0.2/s for 10 minutes and never saw them.
   # Caddy now access-logs both sites, so `docker logs` on Caddy names the
   # source; the gateway's own 401s carry client_ip in gateway.requests and the

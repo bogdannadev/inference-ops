@@ -139,7 +139,7 @@ scrape_configs:
   # target is up but serves only process and config gauges.
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------
-  # Higress AI gateway — the PAID edge (gateway.example.org).
+  # Higress AI gateway — the PAID edge (EDGE_HOST_GATEWAY).
   #
   # Port 15020 is pilot-agent's MERGED metrics endpoint, which is what the
   # Higress console documents. It is a strict superset of Envoy's own :15090 —

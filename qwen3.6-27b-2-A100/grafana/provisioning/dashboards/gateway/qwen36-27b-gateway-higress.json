@@ -20,7 +20,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**Paid gateway — `gateway.example.org`.** Series come from the `ai-statistics` wasm plugin, scraped from Envoy on `higress:15090`. Verified against the ledger: a request reporting 54/16/70 tokens moved these counters by exactly 54/16/70 and the Redis balance by 70.\n\nThese are **counters that reset when the gateway container restarts** — always read them through `rate()` or `increase()`, which handle resets. Raw totals are not a billing figure.\n\n**Not here: each consumer's REMAINING quota.** That lives in `higress-redis` (RESP, not HTTP) and would need a `redis_exporter`. Read it with `curl -H \"Authorization: $ADMIN\" 'https://gateway.example.org/v1/chat/completions/quota?consumer=<name>'`."
+        "content": "**Paid gateway.** Series come from the `ai-statistics` wasm plugin, scraped from Envoy on `higress:15090`. Verified against the ledger: a request reporting 54/16/70 tokens moved these counters by exactly 54/16/70 and the Redis balance by 70.\n\nThese are **counters that reset when the gateway container restarts** — always read them through `rate()` or `increase()`, which handle resets. Raw totals are not a billing figure.\n\n**Not here: each consumer's REMAINING quota.** That lives in `higress-redis` (RESP, not HTTP) and would need a `redis_exporter`. Read it with `curl -H \"Authorization: $ADMIN\" 'https://<gateway-host>/v1/chat/completions/quota?consumer=<name>'`."
       }
     },
     {
