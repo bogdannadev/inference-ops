@@ -234,43 +234,31 @@
 # runtime server_args from /get_server_info between the two builds — `--help`
 # does NOT show defaults that are resolved at startup, which is exactly how
 # v0.5.17 flipped mm_feature_transport underneath us.
-#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.19-cu130
+#   docker inspect --format='{{index .RepoDigests 0}}' lmsysorg/sglang:v0.5.20-cu130
 #
-# v0.5.19 (2026-09-05). Plan and gates: tuning/docs/UPGRADE_v0.5.19.md
-#   torch 2.13.0 UNCHANGED; only FlashInfer moves, 0.6.17 -> 0.6.18.
-#   The reason to roll: PR #34859 puts our GDN head-group ratio 3
-#   (linear_num_value_heads 48 / linear_num_key_heads 16, across 48 of 64
-#   layers) onto the fused QKVZBA split/reshape/cat path. On v0.5.18 the CUDA
-#   tuple was (1,2,4), so ratio 3 took the unfused fallback -- two
-#   .contiguous() copies plus a torch.cat, every layer, every forward.
-#   Expect <=1%, most likely inside the ~1.5% noise floor, and visible on
-#   prefill/TTFT if anywhere. It is measured, not assumed.
+# v0.5.20 (2026-09-18). Plan and gates: tuning/docs/UPGRADE_v0.5.20.md
+#   Platform UNCHANGED from v0.5.19 (CUDA 13.0.3, torch 2.13.0, FlashInfer
+#   0.6.18, transformers 5.12.1); only sglang-kernel 0.4.6.post1 -> 0.4.7.
+#   The reason to roll: PR #37818. With DFLASH + extra_buffer the 0.5.19
+#   verify path never recorded a GDN state checkpoint when accepted tokens
+#   crossed a --mamba-track-interval boundary, while the scheduler booked it
+#   as recorded, so radix entries could pair KV at one length with linear
+#   state from an earlier one.
+#   Also upstream now: the client-disconnect abort fix (f478b2bb2d, #35255)
+#   that 0.5.19 carried as a bind-mounted backport (a930c99). The patch files
+#   and both mounts are gone; do not bring the mounts back on a newer image.
 #
 #   NOTE while r1 is rolled and r0 is not: this anchor is shared by BOTH
 #   replicas AND the router, but roll-replica.sh recreates only the replica
-#   named. r0 and the router keep running v0.5.18 until something recreates
-#   them. That asymmetry IS the A/B window. Do not run a bare
+#   named. r0 and the router keep running the old build until something
+#   recreates them. That asymmetry IS the A/B window. Do not run a bare
 #   `docker compose up -d` during it.
-# ABORT-FIX BACKPORT (2026-09-16). This image is sglang 0.5.19 at 0bcd822377
-# (2026-09-03), one day before upstream f478b2bb2d (#35255). Without that fix, a
-# streaming request whose client cancels is never aborted in the scheduler:
-# handler cleanup deletes rid_to_state first, so abort_request() returns early
-# and the request decodes to completion for nobody ("Received output for
-# rid=... but the state was deleted in TokenizerManager"). Queued requests
-# whose clients have left are admitted later and run the same way. On
-# 2026-09-16 every long queue stall (5-20 min, 1 slot of 4 busy) ended 2-3 s
-# after such a request stopped: it held 60-70% of the KV pool, so nothing in
-# the queue fit.
-# patches/sglang-abort-fix/ holds the two patched files, bind-mounted into both
-# replicas, and the backport diff. It differs from upstream only in context:
-# _send_one_request/_send_batch_request are still sync at this pin. Upstream's
-# regression tests pass on it (26/26; 9 fail on the unpatched pin).
 #
 # --enable-priority-scheduling was considered and rejected: for this
 # workload it only re-scans the queue every step, and it honours a
 # client-supplied `priority`, which would let any API client preempt other
 # tenants.
-x-sglang-image: &sglang-image lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -551,10 +539,6 @@ services:
       - sglang_kernel_cache_r0:/root/.cache/sglang
       - ./logs/r0:/app/logs
       - /etc/localtime:/etc/localtime:ro
-      # Abort-fix backport, see the note above x-sglang-image. Drop both
-      # lines once the image is newer than upstream f478b2bb2d.
-      - ./patches/sglang-abort-fix/tokenizer_manager.py:/sgl-workspace/sglang/python/sglang/srt/managers/tokenizer_manager.py:ro
-      - ./patches/sglang-abort-fix/scheduler.py:/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:ro
 
     deploy:
       resources:
@@ -921,9 +905,6 @@ services:
       - sglang_kernel_cache_r1:/root/.cache/sglang
       - ./logs/r1:/app/logs
       - /etc/localtime:/etc/localtime:ro
-      # Same abort-fix backport as r0.
-      - ./patches/sglang-abort-fix/tokenizer_manager.py:/sgl-workspace/sglang/python/sglang/srt/managers/tokenizer_manager.py:ro
-      - ./patches/sglang-abort-fix/scheduler.py:/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:ro
 
     deploy:
       resources:
