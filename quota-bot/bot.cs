@@ -132,7 +132,7 @@ var cfg = new BotConfig(
     // that with go-humanize, where MB is 10^6 — not 2^20 — so the real ceiling
     // is 1,000,000 bytes. It is the only limit that bounds an INLINE IMAGE, so
     // the generated OpenCode config sizes its attachment budget from it.
-    BodyLimit:       int.Parse(Opt("MAX_BODY_BYTES", "1000000"), CultureInfo.InvariantCulture),
+    BodyLimit:       int.Parse(Opt("MAX_BODY_BYTES", "4000000"), CultureInfo.InvariantCulture),
     AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
     // Shared with admin-mcp, which is the only caller of /admin/*. Optional:
     // unset means those endpoints are not mapped at all, which is the right
@@ -2036,8 +2036,9 @@ sealed class Worker(
           + "<b>Images</b>\n"
           + "The model reads them \u2014 paste or drag a screenshot in. The config resizes every image to "
           + $"{ImageEdge}\u00d7{ImageEdge} and {Fmt.Num(ImageBudget(cfg.BodyLimit))} bytes of base64 first, "
-          + $"because the gateway refuses a request body over {Fmt.Num(cfg.BodyLimit)} bytes and OpenCode's "
-          + "own default (5 MB) would be refused every time.\n"
+          + $"because the gateway refuses a request body over {Fmt.Num(cfg.BodyLimit)} bytes and every image "
+          + "in a conversation is sent again on each turn. OpenCode's own default (5 MB per image) would be "
+          + "refused.\n"
           + $"An image costs about one token per 32\u00d732 pixels: at {ImageEdge}\u00d7{ImageEdge} that is "
           + $"~{ImageEdge / 32 * (ImageEdge / 32):N0} tokens, charged like any other input.\n\n"
           + "<b>Thinking</b>\n"
@@ -2126,8 +2127,12 @@ sealed class Worker(
     // 1,600 tokens for a full-square image and keeps a screenshot legible.
     private const int ImageEdge = 1280;
 
-    // Half the body budget for the image, half for the conversation around it.
-    private static int ImageBudget(int bodyLimit) => bodyLimit / 2;
+    // An eighth of the body per image. OpenCode resends every image in the
+    // history on every turn, so one request has to hold several: the
+    // image-batches skill puts 6 images plus up to 3 crops in one subagent.
+    // At the 4 MB body cap this is 500 KB, the same per-image budget the old
+    // 1 MB cap gave with a half share, so existing configs stay valid.
+    private static int ImageBudget(int bodyLimit) => bodyLimit / 8;
 
     // What OpenCode will actually put in max_tokens. It clamps to its own
     // OUTPUT_TOKEN_MAX (32,000, provider/transform.ts) whatever the config says,

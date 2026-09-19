@@ -53,8 +53,10 @@ CONTEXT WINDOW — set explicitly, never rely on auto-detection
 - Any request asking for more than 70,000 output tokens (max_tokens or
   max_completion_tokens) is rejected by the gateway with HTTP 422. Never
   request more than 70000; leave room so prompt + max_tokens <= 169000.
-- A request body may be at most 1 MB of JSON. A full 169K-token text context
-  fits (~0.75 MB); inline base64 images can exceed it (HTTP 413).
+- A request body may be at most 4 MB of JSON. A full 169K-token text context
+  fits (~0.75 MB); inline base64 images can exceed it (HTTP 413). Images are
+  downscaled to 2 MP on the server, so send them at most ~1600 px on the long
+  side, and at most 16 per request.
 
 COMPRESSION — compress well before the hard ceiling
 Reasons, all measured on this node:

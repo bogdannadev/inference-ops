@@ -203,7 +203,7 @@
 #       2026-08-24, crashed the scheduler on boot; reverted, r1 recovered.
 #       Do not re-add without checking that upstream gate first.
 #
-#   --mm-preprocess-cache-size-mb 512    APPLIED. The content-addressed
+#   --mm-preprocess-cache-size-mb 512    APPLIED (2048 since 2026-09-19). The content-addressed
 #       multimodal preprocessing cache is OFF by default for our processor
 #       (base_processor.py: auto_mm_preprocess_cache_size_mb = 0; only
 #       Kimi-K3 defaults it to 256). Host RAM only, no GPU cost, divided
@@ -691,6 +691,44 @@ services:
     # alternative fix (cap_add: SYS_PTRACE) buys a capability we do not need
     # for a code path we never use. Do not remove without re-reading this.
     #
+    # Image input (added 2026-09-19, BOTH replicas). Consumers now send photos
+    # and screenshots through OpenCode, so the "text only" assumption above no
+    # longer holds.
+    #
+    # --image-processor-backend pil
+    #   0.5.19 runs the fast image processor in the TOKENIZER process on the
+    #   serving GPU (base_processor.py _fast_image_processor_device ->
+    #   cuda:{base_gpu_id}). At --mem-fraction-static 0.94 that GPU sits at
+    #   20-40 MiB free, so any large image died with "CUDA out of memory" in
+    #   image_processing_qwen2_vl._preprocess -> 500 on both replicas -> the
+    #   router's circuit breaker opened -> 503. pil is the only flag-level CPU
+    #   route: every non-pil backend (torchvision included) is still sent to
+    #   the GPU. Model input is identical to torchvision's (max 1 grey level
+    #   on isolated pixels, mean 0). CPU cost: 100-300 ms per image at the cap
+    #   below, paid once per image thanks to the preprocess cache.
+    #
+    # --mm-process-config '{"image":{"size":{...}}}'
+    #   Caps every image at 2 MP (longest_edge = max pixels, 32x32 px per
+    #   token). The model's own default is 16.7 MP: a 12 MP phone photo was
+    #   11,844 tokens, a 5K screenshot 14,400. At the cap: ~2,030 tokens, and
+    #   1080p screenshots are untouched. Fine print on large images is lost
+    #   (text under ~20 px in a 12 MP photo); the client-side skill in
+    #   docs/opencode-skills/image-batches/ crops regions at full resolution
+    #   instead. TRAP: {"max_pixels": N} is accepted and SILENTLY IGNORED by
+    #   transformers 5.12 -- token counts do not change. Only `size` works.
+    #
+    # --mm-preprocess-cache-size-mb 2048 (was 512)
+    #   pixel_values are fp32, ~47 MiB per 2 MP image, so 512 held ~10 images.
+    #   OpenCode resends every image in the history on every turn. Host RAM
+    #   only.
+    #
+    # --limit-mm-data-per-request '{"image":16}'
+    #   16 capped images ~ 33k tokens. Above it, the tokenizer refuses the
+    #   request with "Image count N exceeds limit 16 per request" before any
+    #   image is decoded.
+    #
+    # Caddy's gateway-site body cap was raised to 4MB alongside this.
+    #
     # --tokenizer-metrics-allowed-custom-labels consumer (added 2026-09-05,
     # BOTH replicas).
     #
@@ -747,7 +785,10 @@ services:
       --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
       --port 8001
-      --mm-preprocess-cache-size-mb 512
+      --mm-preprocess-cache-size-mb 2048
+      --image-processor-backend pil
+      --mm-process-config '{"image":{"size":{"longest_edge":2097152,"shortest_edge":65536}}}'
+      --limit-mm-data-per-request '{"image":16}'
       --trust-remote-code
       --dtype bfloat16
       --tp 1
@@ -898,7 +939,10 @@ services:
       --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
       --port 8002
-      --mm-preprocess-cache-size-mb 512
+      --mm-preprocess-cache-size-mb 2048
+      --image-processor-backend pil
+      --mm-process-config '{"image":{"size":{"longest_edge":2097152,"shortest_edge":65536}}}'
+      --limit-mm-data-per-request '{"image":16}'
       --trust-remote-code
       --dtype bfloat16
       --tp 1

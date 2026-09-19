@@ -264,16 +264,25 @@ import /etc/caddy/private/allowlists.caddy
 	# Bounds the PROMPT half of a request's cost. A byte cap is the only lever
 	# that exists before tokenisation, and it is what makes overdraft bounded:
 	# ai-quota's gate is `> 0` and its DECRBY lands afterwards, so one request
-	# can always cross zero. 1MB comfortably fits the served 169k context
-	# (~0.75MB of JSON) while refusing absurd payloads. The output half is
-	# capped separately by request-validation in the gateway (max_tokens 8192),
-	# so worst-case overdraft is ~one full-context request, not unbounded.
+	# can always cross zero. The output half is capped separately by
+	# request-validation in the gateway (max_tokens 8192), so worst-case
+	# overdraft is ~one full-context request, not unbounded.
+	#
+	# 4MB since 2026-09-19 (was 1MB). Text alone already fills the served 169k
+	# context at ~0.75MB of JSON, and the engine refuses anything longer, so
+	# the extra room buys no extra prompt tokens. It is there for images:
+	# OpenCode sends base64 images inline and resends the whole history every
+	# turn. Clients shrink images before sending (1600 px long side, JPEG; see
+	# docs/opencode-skills/image-batches/), which fits a batch of ~6 plus a
+	# few full-resolution crops. The engine caps each image at 2 MP and 16 per
+	# request (docker-compose.yml, "Image input"). The cap stays because the
+	# engine tokenises a body before it can refuse it for length.
 	#
 	# NOTE this is per-site. The direct model hostname deliberately has NO cap,
 	# because OCR traffic sends base64 images inline and blew past the old
-	# global 8MB limit. Paid traffic does not get that allowance.
+	# global 8MB limit.
 	request_body {
-		max_size 1MB
+		max_size 4MB
 	}
 
 	# Anthropic clients send the key as `x-api-key`. key-auth in the gateway
@@ -407,7 +416,7 @@ import /etc/caddy/private/allowlists.caddy
 	# handle_response blocks above. Shape it here instead.
 	handle_errors {
 		header Content-Type "application/json; charset=utf-8"
-		respond `{"error":{"message":"Request rejected by the gateway. If the prompt is very large, reduce it: the request body limit is 1MB.","type":"invalid_request_error","param":null,"code":"request_rejected"}}` {err.status_code}
+		respond `{"error":{"message":"Request rejected by the gateway. If the prompt is very large, reduce it: the request body limit is 4MB. Shrink images before sending them.","type":"invalid_request_error","param":null,"code":"request_rejected"}}` {err.status_code}
 	}
 }
 
