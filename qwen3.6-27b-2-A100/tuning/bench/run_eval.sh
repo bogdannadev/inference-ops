@@ -21,12 +21,17 @@ case "$REPLICA" in
 esac
 
 cd "$(dirname "$0")/../.."
-source .env
+set -a; source .env; set +a   # exported: docker run -e NAME copies it, keeping the key off argv
 OUT="tuning/results/${SCRIPT}_${REPLICA}_${LABEL}.json"
+
+# EVAL_CORPUS: optional host directory mounted read-only at /corpus (kvq_eval).
+CORPUS_MOUNT=()
+[ -n "${EVAL_CORPUS:-}" ] && CORPUS_MOUNT=(-v "${EVAL_CORPUS}:/corpus:ro")
 
 docker run --rm --cpuset-cpus 48-55 \
   --network qwen36-27b-backend \
-  -e SGLANG_API_KEY="${SGLANG_API_KEY}" \
+  "${CORPUS_MOUNT[@]}" \
+  -e SGLANG_API_KEY \
   -v "$(pwd)/tuning/bench:/bench:ro" \
   python:3.12-slim \
   python3 -u "/bench/${SCRIPT}.py" --host "$HOST" --port "$PORT" --label "$LABEL" "$@" > "$OUT"
