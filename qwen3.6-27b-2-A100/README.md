@@ -171,6 +171,9 @@ The in-repo `docs/` directory is the operational manual for this node:
   customer pastes into a fresh client so it configures itself against this
   node's real limits. quota-bot `/opencode <name>` sends the OpenCode one with
   the generated `opencode.json`
+- **[docs/opencode-skills/](docs/opencode-skills/README.md)** — OpenCode skills
+  a customer installs alongside that config; `image-batches` reads large image
+  sets in subagent batches within the 4 MB body / 16-image / 2 MP limits
 
 - **[tuning/docs/UPGRADE_QWEN3.8.md](tuning/docs/UPGRADE_QWEN3.8.md)** —
   2026-08-15 Qwen3.6 → Qwen3.8 weights swap: why no engine change, why the
