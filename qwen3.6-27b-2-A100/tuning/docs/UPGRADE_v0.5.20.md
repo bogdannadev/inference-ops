@@ -270,10 +270,8 @@ the same pair at the same point after startup.
 
 Operator call: r0 rolled right after the r1 gates passed, without a live A/B
 hold. Traffic was near zero, so a hold would have measured little, and r0 was
-still carrying the #37818 bug. Consequence: **no performance comparison
-exists for this roll.** The platform is identical and the pools are
-byte-for-byte the same size, so none is expected; if one is wanted later,
-compare `engine.requests` TTFT / decode by `replica` before and after 13:12.
+still carrying the #37818 bug. No A/B hold exists; the drained
+before/after below (same config, same replica) replaces it.
 
 ## Phase 3 — converged, 2026-09-19 13:26. PASS
 
@@ -296,3 +294,89 @@ known tokenizer-free-routing message (`ROUTING.md`).
 ```
 qwen36-27b-r0  qwen36-27b-r1  qwen36-27b-router   sha256:06e4f2ed…d611f   v0.5.20
 ```
+
+# Measured after the roll — 2026-09-19 ~13:40, r1 drained
+
+r1 drained from the router with `deploy/drain-replica.sh r1 drain` (idle
+after 1 s), restored with `... r1 restore`. Baseline: the 2026-09-13 B4 runs
+in `HICACHE_DFLASH2.md`, the same live config (DFlash2, HiCache 3, fp8 draft
+KV, mem 0.94, chunk 4096) on 0.5.19, same replica, also drained.
+
+## #37818: a hit on decoded tokens restores the right GDN state — PASS 3/3
+
+`tuning/bench/mamba_ckpt_probe.py` → `tuning/results/mamba_ckpt_probe_r1_v0520.json`.
+Per trial: decode 520/720/900 tokens, then re-send prompt + output + a
+follow-up question with input logprobs. Hits reached 576/768/960 tokens on
+~75-token prompts, i.e. GDN state checkpointed **during decode**, the path
+#37818 fixed.
+
+| trial | A: decode-ckpt hit vs cold | B: prefill-ckpt hit vs cold | cold vs cold |
+|---|---|---|---|
+| 0 | mean abs dlogprob 0.108 | 0.077 | 0.000 |
+| 1 | 0.102 | 0.120 | 0.000 |
+| 2 | 0.057 | 0.090 | 0.000 |
+
+A sits inside B's spread. B uses the prefill checkpoint path, which #37818
+never touched, so the decode checkpoint is now as good as the prefill one.
+Cold vs cold is exactly 0: a drained replica is deterministic. A hit is never
+bit-identical to a cold run (~0.1 nats mean over the 25 follow-up tokens; the
+greedy continuation diverged at token 20 in trial 1 for A and B alike).
+Not shown: that the probe would have failed on 0.5.19. That image can't run
+next to the live pair (no GPU memory), so its sensitivity is argued, not
+demonstrated.
+
+## HiCache probe — cache hits are 4-6x faster
+
+`hicache_probe_r1_v0520.json` vs `hicache_probe_r1_dflash2_final.json`:
+
+| step | 0.5.19 | 0.5.20 | |
+|---|---|---|---|
+| cold 45K prefill | 14.33 s | 14.14 s | -1.3%, inside the 1.5% floor |
+| 52K cold prefills (4 evictors) | 17.04-17.84 s | 16.86-17.09 s | -1 to -4% |
+| device hit, 45K cached | 1.44 s | **0.22 s** | 6.5x |
+| host reload after eviction | 1.73 s | **0.42 s** | 4.1x |
+
+On 0.5.19 DFlash2 had added ~0.8 s to every hit (below MTP's 0.50 s); on
+0.5.20 a hit is faster than it was with MTP. **Cause not attributed:** no
+release-note entry claims it, the prefill-graph config is identical (same 42
+sizes), and the 710-line `dflash_worker_v2.py` diff was not bisected. Cold
+prefill (where #36267 would show) moved inside the noise floor.
+
+## spec_eval — correctness unchanged, decode neutral, cached TTFT down
+
+`spec_eval_r1_v0520.json` (`--rounds 3`) vs `spec_eval_r1_dflash2_final.json`.
+Correctness: greedy 12/12 ok (unchanged), 0 cross-request leaks, serial greedy
+determinism 2/2. Production sampling: kv/order/arith 9/9 ok, seq truncated 3/3
+at the 8,000-token cap (was 2/3; the model's reasoning length, as in every
+earlier run).
+
+| phase | aggregate tok/s | accept length | TTFT median |
+|---|---|---|---|
+| short c=1 | 69.6 → 76.2 | 3.25 → 3.40 | 0.19 → 0.12 s |
+| short c=4 | 242.7 → 234.5 | 3.37 → 3.30 | 0.20 → 0.16 s |
+| ~55K c=1 | 61.1 → 63.9 | 3.16 → 3.10 | 0.48 → 0.23 s |
+| ~55K c=4 | 184.9 → 201.9 | 3.21 → 3.29 | 1.57 → 0.98 s |
+
+Decode moves with accept length (production sampling, n=4-8 per cell). Per
+unit of accept length the change is -1% to +7%. Read it as **no regression**,
+not as a speedup. The ~55K TTFT drop is the faster cache hit above: those
+phases share a cached prefix.
+
+## Other 0.5.20 items
+
+- **New metrics** (#37461/#37636): `sglang:scheduler_idle_seconds_total`,
+  `sglang:scheduler_process_cpu_seconds_total`,
+  `sglang:scheduler_stage_seconds_total{category}` are scraped. No dashboard
+  panel yet. Nothing else was added or removed. `cached_tokens_total`,
+  `evicted_tokens_total` and `load_back_*` are created on first increment, so
+  they vanish after a restart until traffic arrives, then come back.
+- **HRRN** (#32911) not trialled: in 7 days only 38 queue waits over 1 s
+  overlapped another waiting request (~10 min in total, all 2026-09-16..18, the
+  orphaned-request period). The policy only reorders a queue at least two deep.
+  Revisit if the batch tier creates real queues.
+- **`/v1/responses` store off:** 11 calls in 30 days (`gateway.requests`),
+  last 2026-09-17. Not tested live.
+- **Upstream items from `HICACHE_DFLASH2.md`**: #36548, #38009, #36014, #30314
+  are all still open at 0.5.20. #36548's confirmed repro is NVFP4 with an FP4
+  `lm_head`; the reporter's mitigation was a BF16 `lm_head`. We run BF16 on
+  A100, and spec_eval's order/kv tasks stayed clean.
