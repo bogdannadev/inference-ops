@@ -77,8 +77,8 @@ im.thumbnail((1280, 1280)); im.save(view_path, quality=85)
 ```
 
 `-auto-orient` / `exif_transpose` matter: phone photos store their rotation in
-EXIF, and neither OpenCode nor the server applies it, so without this step
-portrait photos arrive sideways.
+EXIF, and OpenCode drops it when it shrinks an image before sending, so without
+this step portrait photos arrive sideways.
 
 ## Step 2 — Plan the batches
 
