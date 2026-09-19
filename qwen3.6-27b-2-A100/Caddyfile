@@ -275,8 +275,8 @@ import /etc/caddy/private/allowlists.caddy
 	# turn. Clients shrink images before sending (1600 px long side, JPEG; see
 	# docs/opencode-skills/image-batches/), which fits a batch of ~6 plus a
 	# few full-resolution crops. The engine caps each image at 2 MP and 16 per
-	# request (docker-compose.yml, "Image input"). The cap stays because the
-	# engine tokenises a body before it can refuse it for length.
+	# request (docker-compose.yml, "Image input"). The cap stays as the outer
+	# bound on what one request can carry.
 	#
 	# NOTE this is per-site. The direct model hostname deliberately has NO cap,
 	# because OCR traffic sends base64 images inline and blew past the old
