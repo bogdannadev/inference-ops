@@ -8,6 +8,7 @@
 #
 #   ./deploy/roll-replica.sh r1        # apply current compose config to r1
 #   ./deploy/roll-replica.sh r0
+#   NO_REGISTER=1 ./deploy/roll-replica.sh r1   # roll, but leave it drained
 #
 # WHY THIS EXISTS (measured 2026-07-31b)
 #
@@ -154,6 +155,17 @@ while :; do
 done
 
 # --- 4. re-register -------------------------------------------------------
+# NO_REGISTER=1 leaves the replica out of the router (a trial config that has
+# to pass drained gates first); put it back later with
+# ./deploy/drain-replica.sh <replica> restore
+if [ "${NO_REGISTER:-0}" = "1" ]; then
+  say "NO_REGISTER=1: $REPLICA is healthy but stays out of the router"
+  workers_json | python3 -c "
+import json,sys
+for w in json.load(sys.stdin)['workers']:
+    print(f\"  {w['url']:<32} healthy={w['is_healthy']} load={w['load']}\")"
+  exit 0
+fi
 say "Re-registering $REPLICA with the router"
 code=$(rcurl -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/workers \
         -H 'Content-Type: application/json' -d "{\"url\":\"$URL\"}")

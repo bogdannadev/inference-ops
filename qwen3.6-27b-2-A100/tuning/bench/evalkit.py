@@ -37,8 +37,8 @@ class Worker:
         r = c.getresponse()
         return r.status, r.read().decode()
 
-    def post_raw(self, path, body=None):
-        c = self._conn(120)
+    def post_raw(self, path, body=None, timeout=120):
+        c = self._conn(timeout)
         c.request("POST", path, body=json.dumps(body) if body else None, headers=self._headers())
         r = c.getresponse()
         return r.status, r.read().decode()
