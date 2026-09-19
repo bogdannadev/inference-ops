@@ -1,0 +1,100 @@
+{
+ "label": "GHL_lazy",
+ "started": "2026-09-19T14:03:52Z",
+ "trials": [
+  {
+   "topic": "the history of suspension bridges",
+   "len_p": 73,
+   "len_o": 520,
+   "len_q": 26,
+   "t1_secs": 6.49,
+   "A_decode_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.10786,
+    "max_abs_dlogprob": 0.36326,
+    "gen_first_divergence": 30,
+    "cached": 576
+   },
+   "B_prefill_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.06544,
+    "max_abs_dlogprob": 0.35384,
+    "gen_first_divergence": 30,
+    "cached": 576
+   },
+   "C2_cold": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.0,
+    "max_abs_dlogprob": 0.0,
+    "gen_first_divergence": null,
+    "cached": 0
+   },
+   "C1_cached": 0,
+   "hit_reaches_decoded_tokens": true,
+   "verdict": "PASS"
+  },
+  {
+   "topic": "how a compiler turns source code into machine code",
+   "len_p": 77,
+   "len_o": 720,
+   "len_q": 26,
+   "t1_secs": 9.39,
+   "A_decode_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.15423,
+    "max_abs_dlogprob": 0.70005,
+    "gen_first_divergence": null,
+    "cached": 768
+   },
+   "B_prefill_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.09253,
+    "max_abs_dlogprob": 0.74906,
+    "gen_first_divergence": null,
+    "cached": 768
+   },
+   "C2_cold": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.0,
+    "max_abs_dlogprob": 0.0,
+    "gen_first_divergence": null,
+    "cached": 0
+   },
+   "C1_cached": 0,
+   "hit_reaches_decoded_tokens": true,
+   "verdict": "PASS"
+  },
+  {
+   "topic": "the water cycle and the ways cities manage stormwater",
+   "len_p": 78,
+   "len_o": 900,
+   "len_q": 26,
+   "t1_secs": 12.85,
+   "A_decode_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.16453,
+    "max_abs_dlogprob": 0.86932,
+    "gen_first_divergence": null,
+    "cached": 960
+   },
+   "B_prefill_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.06835,
+    "max_abs_dlogprob": 0.25,
+    "gen_first_divergence": null,
+    "cached": 960
+   },
+   "C2_cold": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.0,
+    "max_abs_dlogprob": 0.0,
+    "gen_first_divergence": null,
+    "cached": 0
+   },
+   "C1_cached": 0,
+   "hit_reaches_decoded_tokens": true,
+   "verdict": "PASS"
+  }
+ ],
+ "verdict": "PASS"
+}

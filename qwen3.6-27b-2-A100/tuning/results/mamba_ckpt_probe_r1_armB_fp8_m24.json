@@ -1,0 +1,100 @@
+{
+ "label": "armB_fp8_m24",
+ "started": "2026-09-19T09:59:29Z",
+ "trials": [
+  {
+   "topic": "the history of suspension bridges",
+   "len_p": 73,
+   "len_o": 520,
+   "len_q": 26,
+   "t1_secs": 6.26,
+   "A_decode_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.20141,
+    "max_abs_dlogprob": 0.96128,
+    "gen_first_divergence": null,
+    "cached": 576
+   },
+   "B_prefill_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.08828,
+    "max_abs_dlogprob": 0.37621,
+    "gen_first_divergence": null,
+    "cached": 576
+   },
+   "C2_cold": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.0,
+    "max_abs_dlogprob": 0.0,
+    "gen_first_divergence": null,
+    "cached": 0
+   },
+   "C1_cached": 0,
+   "hit_reaches_decoded_tokens": true,
+   "verdict": "PASS"
+  },
+  {
+   "topic": "how a compiler turns source code into machine code",
+   "len_p": 77,
+   "len_o": 720,
+   "len_q": 26,
+   "t1_secs": 9.41,
+   "A_decode_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.22562,
+    "max_abs_dlogprob": 1.06963,
+    "gen_first_divergence": null,
+    "cached": 768
+   },
+   "B_prefill_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.09075,
+    "max_abs_dlogprob": 0.49818,
+    "gen_first_divergence": null,
+    "cached": 768
+   },
+   "C2_cold": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.0,
+    "max_abs_dlogprob": 0.0,
+    "gen_first_divergence": null,
+    "cached": 0
+   },
+   "C1_cached": 0,
+   "hit_reaches_decoded_tokens": true,
+   "verdict": "PASS"
+  },
+  {
+   "topic": "the water cycle and the ways cities manage stormwater",
+   "len_p": 78,
+   "len_o": 900,
+   "len_q": 26,
+   "t1_secs": 12.88,
+   "A_decode_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.12327,
+    "max_abs_dlogprob": 1.10871,
+    "gen_first_divergence": null,
+    "cached": 960
+   },
+   "B_prefill_ckpt_hit": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.17315,
+    "max_abs_dlogprob": 1.66225,
+    "gen_first_divergence": null,
+    "cached": 960
+   },
+   "C2_cold": {
+    "n_lp": 25,
+    "mean_abs_dlogprob": 0.0,
+    "max_abs_dlogprob": 0.0,
+    "gen_first_divergence": null,
+    "cached": 0
+   },
+   "C1_cached": 0,
+   "hit_reaches_decoded_tokens": true,
+   "verdict": "PASS"
+  }
+ ],
+ "verdict": "PASS"
+}
