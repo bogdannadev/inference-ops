@@ -31,7 +31,7 @@
 # HiCache + DFlash2 — APPLIED 2026-09-13. Full record, measurements and the
 # memory walk that produced these numbers: tuning/docs/HICACHE_DFLASH2.md
 #
-#   --enable-hierarchical-cache --hicache-ratio 3
+#   --enable-hierarchical-cache --hicache-ratio 3 (8 since 2026-09-19, below)
 #       Host-RAM tier for the radix cache (KV + Mamba states), 3x the device
 #       pool, ~52 GB pinned per replica (KV 35.9 + Mamba 10.2 + draft KV 5.6).
 #       Re-enabled because the workload
@@ -67,6 +67,31 @@
 #       4096-token chunks fit; cold 45K TTFT unchanged (14.2 s both).
 #       Stress: 160K cold prompt + 3x30K decoding, twice, no OOM.
 #   BOOT CHECK: max_total_num_tokens >= 169000 (expect 182528).
+#
+#   2026-09-19 evening — cache retention and stream freeze
+#   (tuning/docs/TRIAL_V0520_LEVERS.md, measured on drained r1):
+#   --max-mamba-cache-size 43 (pinned; the ratio default gave the same)
+#       A prefix hit needs a GDN state at the match point, and that tier (not
+#       KV) is what runs out: a 41K agent context holds several state slots
+#       (one checkpoint per prefill chunk). 24 slots kept 2 such contexts per
+#       replica, 43 keep 4. KV in use: 7-day p99 116-131K of 182,528.
+#   --hicache-ratio 8 (was 3)
+#       Host GDN states = slots x ratio (129 -> 344). Replay with 120 other
+#       requests between an agent's turns: hit ratio 0.16 -> 0.98, 0.7 s per
+#       45K turn instead of ~13 s. ~138 GB pinned host RAM per replica (KV 95.7
+#       + GDN 27.1 + draft 15.0); boot ~250 s (was ~180 s).
+#   --prefill-decode-interval 1
+#       One decode round after every prefill chunk. Without it the scheduler
+#       runs a long prefill to completion and every other stream on the
+#       replica freezes for its duration (67.8 s at 128K); with it the longest
+#       gap is 2.6 s, prefill +1.9%.
+#   Tried and rejected the same day: fp8 KV (+11-20% cold prefill on SM80,
+#   capacity that was not binding; live 16:05-~21:00), chunk 2048 (halves
+#   contexts kept), chunk 8192 (freeze 2.6 -> 5.0 s, no capacity gain), SLRU
+#   (GDN tier is always LRU), mem 0.93, extra_buffer_lazy.
+#   --schedule-policy hrrn (was lpm), operator decision. v0.5.20 #32911:
+#       highest response ratio next, aged by prefill tokens processed.
+#       Not A/B tested here (7-day queue contention was ~10 min in total).
 #
 #   ROLLBACK: restore the four EAGLE flags (algorithm EAGLE, num-draft-tokens
 #   6, num-steps 5, eagle-topk 1), mem-fraction 0.92, chunked/max prefill 16384;
@@ -783,18 +808,20 @@ services:
       --mm-feature-transport cpu
       --enable-session-radix-cache
       --enable-hierarchical-cache
-      --hicache-ratio 3
+      --hicache-ratio 8
+      --max-mamba-cache-size 43
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
       --page-size 64
       --chunked-prefill-size 4096
+      --prefill-decode-interval 1
       --max-prefill-tokens 4096
       --max-running-requests 4
       --max-queued-requests 32
       --cuda-graph-max-bs-decode 4
       --cuda-graph-max-bs-prefill 2048
-      --schedule-policy lpm
+      --schedule-policy hrrn
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
@@ -934,18 +961,20 @@ services:
       --mm-feature-transport cpu
       --enable-session-radix-cache
       --enable-hierarchical-cache
-      --hicache-ratio 3
+      --hicache-ratio 8
+      --max-mamba-cache-size 43
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
       --page-size 64
       --chunked-prefill-size 4096
+      --prefill-decode-interval 1
       --max-prefill-tokens 4096
       --max-running-requests 4
       --max-queued-requests 32
       --cuda-graph-max-bs-decode 4
       --cuda-graph-max-bs-prefill 2048
-      --schedule-policy lpm
+      --schedule-policy hrrn
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
