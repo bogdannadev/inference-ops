@@ -52,8 +52,36 @@
 #     clients already send it on ai-chat, so there it is proven accepted.
 #   - NOT ai-completions: no chat history, so no turn to re-poison.
 #
-# This stops NEW poisonings. It cannot heal a session already carrying the
-# markup — that history lives on the client and still needs a fresh session.
+# ⚠ MEASURED 2026-09-21, AFTER APPLYING: THIS DOES NOT COVER LARGE BODIES.
+#
+# The rule is live and correct (Envoy ECDS holds it bound to ai-chat,
+# last_update_success 1, update_rejected 0) but a wasm plugin has to buffer the
+# whole request body to rewrite it, and this listener runs with Istio's default
+# per_connection_buffer_limit_bytes: 32768. Past that the buffering is abandoned
+# and the body is forwarded UNMODIFIED, with no error and no log line — FAIL_OPEN
+# means a silent no-op. Two designer requests 76 ms apart on this very route:
+#
+#     2,632 B  -> engine saw skip_special_tokens: True   (rewritten)
+#    26,567 B  -> engine saw skip_special_tokens: False  (untouched)
+#
+# Every poisoned body in the incident is 404,877-545,051 B, so none of them would
+# ever be rewritten. The exact cut-off is between 2.6 KB and 26.5 KB and has not
+# been bisected.
+#
+# KEPT ANYWAY because it is free and it does cover the small side-calls (titles,
+# summaries, the -fast model), whose replies are the cheapest to re-poison from.
+# But it is NOT the fix, and the incident doc's §8 item 1 stays OPEN. Do not
+# raise the buffer limit to "fix" this: that would fully buffer every agent
+# request up to the 4 MB cap before forwarding, paying that memory per concurrent
+# request and adding it to TTFT. The enforcement point has to be the router or
+# the engine, which already hold the whole request.
+#
+# Same mechanism, unverified, with a billing edge: request-validation bounds
+# max_tokens on this route the same way, so it is probably blind above the same
+# threshold. Only two 422s exist in the whole access log, both 85 B test calls.
+#
+# It cannot heal a session already carrying the markup either — that history
+# lives on the client and still needs a fresh session.
 #
 # ---------------------------------------------------------------------------
 # 2. Default "stream": false on /v1/responses.

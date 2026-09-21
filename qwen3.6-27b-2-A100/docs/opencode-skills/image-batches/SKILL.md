@@ -92,12 +92,12 @@ Three things follow, and they decide what you do:
   history to appear, so the batching this skill already asks for is also the
   cheapest protection.
 
-**Server-side, since 2026-09-21** the gateway forces `skip_special_tokens: true`
-on every chat request, which stops the server echoing this markup back into a
-reply at all — the path that caused every occurrence so far. Thinking blocks and
-tool calls are unaffected. So if you still hit this on a session started after
-that date, the markup came from something **you** put in: a file that was read,
-or text that was pasted. Go to step 4.
+**Server-side there is a partial guard, and you should not rely on it.** Since
+2026-09-21 the gateway forces `skip_special_tokens: true` on chat requests, which
+stops the server echoing this markup into a reply. But it only applies to small
+request bodies (roughly under 32 KB), and an image session is far larger than
+that, so **for the sessions this skill is about, the guard does not apply.**
+Assume the failure is still possible and follow the steps above.
 
 ## Step 1 — Prepare the images
 
