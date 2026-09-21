@@ -83,6 +83,45 @@ image is decoded*. Different failure, and 2 is nowhere near 16.
 **It is also not context overflow.** ~96.6k prompt tokens + 8,192 max output
 against `--context-length 169000`. Not close.
 
+### How an extra placeholder gets in — proven 2026-09-21
+
+The tokenizer converts the placeholder's **literal text** into the real
+placeholder token. Measured offline against the pinned image
+(`AutoTokenizer.from_pretrained("Qwen/Qwen3.8-27B")`, counting id 248056):
+
+| IMAGE tokens | input text |
+|---|---|
+| 0 | plain prose, no markup |
+| **1** | the delimited placeholder inside ordinary prose |
+| **1** | the full vision markup inside ordinary prose |
+| **1** | the same, inside a fenced code block |
+| 0 | the same with spaces inserted between the delimiters |
+
+So **any ordinary text carrying that markup claims an image nobody attached**,
+and a code fence does not protect it. Three consequences:
+
+1. The poison is **text in the history**, not an image. It is resent every turn,
+   so the session is broken permanently — exactly the identical 544,902-byte
+   body, 11 times.
+2. Retrying can never succeed. Deterministic on every replica.
+3. The only fix is to remove the text or start a new session.
+
+Vision token ids for these weights: `vision_start` 248053, `vision_end` 248054,
+`vision_pad` 248055, `image_pad` **248056**, `video_pad` 248057.
+
+**⚠ Writing hazard.** Any file containing the delimited markup poisons a session
+the moment an agent reads it — a tokenizer config, a chat template, model docs,
+or a note quoting the error. That is why every diagram in this document writes
+`[IMG]` and the literal form appears nowhere in this repo (verified by grep).
+Search for the bare substring `image_pad`, never the delimited form, and do it
+in a terminal rather than through an agent.
+
+**No engine-level mitigation exists.** SGLang exposes no `split_special_tokens`
+equivalent on `launch_server`, so user text can always inject control tokens.
+The same vector applies to `<|im_start|>`-class tokens, which means user text
+can break out of the chat template — a prompt-injection surface worth its own
+assessment, not folded into this incident.
+
 ## 3. Why that turn and not the one before
 
 The previous turn finished at 19:34:56.560 with an unusually long **11,202-token
@@ -90,12 +129,22 @@ reply**; the first 500 started at 19:34:56.727, **167 ms later**. The failing
 request is therefore precisely the first one to carry that reply in its history,
 and the body jumped 497,302 → 544,902 B (+47.6 KB) across that boundary.
 
-Leading explanation: that reply put image placeholder markup into its text,
-which re-tokenized into IMAGE tokens with no payload behind them.
+The mechanism is proven (§2): placeholder markup in ordinary text becomes a real
+IMAGE token. What is **not** proven is which message carried it in.
 
-**Unproven, and it cannot be proven after the fact** — bodies are not logged
-(`--log-requests-level 1`), so the message that introduced the extra placeholder
-is unrecoverable. Recording the offending body would require a reproduction.
+Note that `skip_special_tokens: True` strips genuine special tokens from model
+output, so the model emitting the token *id* is ruled out. Two paths remain:
+
+- **A file the agent read** — a tokenizer config, a chat template, model docs,
+  or a subagent note quoting an error. One `read` poisons the session for good.
+  This is the most likely path, and a `grep -rn image_pad` over the project
+  finds it.
+- **The model spelling the markup out character by character** in that
+  11,202-token reply, which a long technical answer can do.
+
+Bodies are not logged (`--log-requests-level 1`), so the specific message is
+unrecoverable after the fact. The project-level grep is the decisive test, and
+it is the first thing to run when a consumer reports this.
 
 ## 4. The amplifier: retries × circuit breaker
 
@@ -283,11 +332,25 @@ Ranked by leverage.
    the only reason a replica sat out overnight unnoticed. Zero risk, and it
    catches every future instance of this whatever the trigger.
 
-2. **Break the amplification.** Raise `--cb-failure-threshold` or cut
-   `--retry-max-retries` so two bad requests cannot kill a replica. Retrying a
-   deterministic 500 five times has no upside, and this build has **no
-   status-based retry filter** — only counts and `--disable-retries`
-   (equivalent to `retry_max_retries=1`).
+2. ~~**Break the amplification.**~~ **APPLIED 2026-09-21 07:10 UTC** (commit
+   `af8b24e`): `--retry-max-retries 1`, `--cb-failure-threshold 10` (pinned,
+   unchanged in value), `--cb-success-threshold 1`. A deterministic 500 now
+   costs 1 failure credit instead of 5, so it takes ten requests per worker
+   rather than two, and 11 credits can never open both breakers. Applied by
+   recreating the router alone (`up -d --no-deps`) in a window with 0 in-flight
+   and 0 queued requests; both workers re-registered healthy, and the recreate
+   also cleared r0's stuck `half_open`. Rationale is in the router block of
+   `../docker-compose.yml`.
+
+   Replaying this incident under the new settings: designer still sees 11 × 500,
+   **but no 503, no fleet outage, and no stranded replica** — the second worker
+   is never touched. It is blast-radius containment, not a fix.
+
+   **Also fixed the client side:** `docs/opencode-skills/image-batches/SKILL.md`
+   told the agent to "wait 30 seconds and retry once" on a 500. For this failure
+   that is exactly wrong — it cannot succeed and it feeds the amplification. The
+   skill now separates 503 (retry once) from 500 (never retry) and carries a
+   "Poisoned sessions" section.
 
 3. **File the 400-not-500 bug upstream** with the serving-path traceback. A
    malformed prompt is a client error. A 4xx is never retried and never reaches

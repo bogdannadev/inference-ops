@@ -6,7 +6,7 @@ tool, so an installed skill costs nothing until a task needs it.
 
 | skill | use it when | why it exists |
 |---|---|---|
-| [image-batches](image-batches/SKILL.md) | a task involves images, especially more than 3, HEIC photos, or small print | OpenCode resends every image in the history on every turn, the gateway caps a request body at 4 MB, the engine allows 16 images per request and caps each at 2 MP. The skill keeps images out of the main session, reads them in subagent batches, and crops regions at full resolution when text is too small |
+| [image-batches](image-batches/SKILL.md) | a task involves images, especially more than 3, HEIC photos, or small print | OpenCode resends every image in the history on every turn, the gateway caps a request body at 4 MB, the engine allows 16 images per request and caps each at 2 MP. The skill keeps images out of the main session, reads them in subagent batches, and crops regions at full resolution when text is too small. It also carries the rule for a session poisoned by special-token markup, which fails every turn forever and must never be retried |
 
 ## Install in the OpenCode desktop app (copy from GitHub)
 

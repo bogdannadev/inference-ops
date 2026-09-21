@@ -33,6 +33,50 @@ batches, write text notes, and the main session works from the notes only.
    subagent: resuming brings all of its images back into the request.
 3. At most **2 subagents at a time**.
 4. Never guess text you cannot read. Zoom (step 4) or report it as unreadable.
+5. Never copy special-token markup into a note, a file or a reply. See below.
+
+## Poisoned sessions — the one failure you must not retry
+
+The server renders each image into the prompt as a placeholder token, and
+expects exactly one attached image per placeholder. The tokenizer also converts
+that placeholder's **literal text** into a real placeholder token — even inside
+a fenced code block. So ordinary text containing it claims an image that was
+never attached, and from that moment every turn fails with:
+
+```
+500  Mismatch: More 'IMAGE' tokens found than corresponding data provided.
+```
+
+Three things follow, and they decide what you do:
+
+1. The poison is **text in the conversation history**, not an image. It is
+   resent on every turn, so the session stays broken forever.
+2. Retrying can never help — it fails identically on every replica.
+3. The only fix is to remove that text, or start a new session.
+
+### Recovering
+
+1. **Start a new session.** Do not resume the failing one.
+2. **Find the source**, or the new session gets poisoned the same way. In a
+   **terminal — not through the agent** — from the project root:
+
+   ```bash
+   grep -rn image_pad .
+   grep -rn vision_start .
+   ```
+
+   Search for the bare substring only. Never type or paste the full delimited
+   form into a chat: doing so poisons that chat immediately.
+3. If a file contains it, that file must never be read into a session again.
+
+### Avoiding it
+
+- Never `read` a `tokenizer_config.json`, a `chat_template.jinja`, or model
+  documentation that quotes special-token markup. One read poisons the session
+  permanently.
+- When recording an image error in notes, write what it means. Never paste the
+  raw markup — a subagent's note is read back into the main session, which is
+  how one bad batch can poison the whole task.
 
 ## Step 1 — Prepare the images
 
@@ -126,8 +170,13 @@ batch. If a batch fails:
   and run each half in a fresh subagent.
 - "Image count N exceeds limit 16" → too many images in one subagent: split
   the batch, fewer zooms.
-- `500` or `503` → wait 30 seconds and retry once. If it fails again, stop and
-  show the user the exact error.
+- `500` saying "More 'IMAGE' tokens found than corresponding data provided" →
+  the session history is poisoned. **Do not retry**: it fails identically every
+  time, on every server replica, forever. See "Poisoned sessions" above.
+- `503` → the server is briefly out of capacity. Wait 30 seconds, retry once.
+- any other `500` → stop and show the user the exact error. **Do not retry.**
+  A 500 repeated enough times is read by the server as a failing replica and
+  takes capacity away from everyone, including you.
 
 ## Step 4 — Zoom and dense documents
 
