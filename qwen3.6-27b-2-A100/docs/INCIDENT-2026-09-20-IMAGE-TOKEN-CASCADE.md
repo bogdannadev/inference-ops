@@ -15,8 +15,13 @@ next morning, ~10 h later, with r1 serving 100% of traffic.
 > **It recurred twice on 2026-09-21** — §10. The containment applied that
 > morning removed the 503s completely but not the stranded replica (r0 was out
 > 3 h 10 min). The recurrence also disproved the §3 assumption about
-> `skip_special_tokens` and gave the actual mechanism and an actual fix: **§3a**
-> is the section to read if you only read one.
+> `skip_special_tokens` and gave the actual mechanism: **§3a** is the section to
+> read if you only read one.
+>
+> **The root cause is still not fixed.** The mechanism is proven and so is the
+> remedy, but the gateway cannot deliver it — wasm body rewriting stops at a
+> 32 KB buffer limit and every poisoned body is 400–545 KB (§3a). §8 item 1 lists
+> the three layers that could.
 
 Companion docs: `OPERATIONS.md` (rolling a replica), `OBSERVABILITY.md`,
 the router block in `../docker-compose.yml` (policy and admission-control
@@ -226,12 +231,54 @@ It also renders the `im_start` control token to 0 characters, so the same settin
 chat-template breakout **via model output**. Injection from user *input* is a
 separate surface and still unassessed.
 
-**Applied 2026-09-21** — the Higress `transformer` plugin now forces
-`skip_special_tokens: true` on `ai-chat`
-(`../../higress-standalone/config/wasmplugins/transformer.yaml`), which is where
-the reasoning behind the route choice lives. This stops **new** poisonings. It
-cannot heal a session that already carries the markup: that history lives on the
-client and still needs a fresh session.
+### Applied 2026-09-21, and it does NOT work for the bodies that matter
+
+The Higress `transformer` plugin now forces `skip_special_tokens: true` on
+`ai-chat` (`../../higress-standalone/config/wasmplugins/transformer.yaml`). The
+rule is live and correct — Envoy's ECDS dump holds it bound to the `ai-chat`
+route, `last_update_success: 1`, `update_rejected: 0` — **but it silently does not
+apply to large request bodies, and every poisoned body is large.**
+
+Measured immediately after the push. Two `designer` requests, same consumer, same
+route `/v1/chat/completions`, **76 ms apart**:
+
+| gateway time | `bytes_received` | engine saw |
+|---|---|---|
+| 17:51:22.686 | 2,632 | `skip_special_tokens: True` — rewritten |
+| 17:51:22.762 | 26,567 | `skip_special_tokens: False` — **untouched** |
+
+The poisoned bodies in §1 and §10 are **404,877 to 545,051 B**. They would never
+have been rewritten.
+
+**Why.** The gateway listener runs with Istio's default
+`per_connection_buffer_limit_bytes: 32768`. A wasm plugin that rewrites a request
+body has to buffer the whole body first; past that limit the buffering is
+abandoned and the body is forwarded **unmodified and without any error** — the
+plugin is `failStrategy: FAIL_OPEN`, so nothing is logged and nothing is rejected.
+The exact cut-off is somewhere between 2.6 KB and 26.5 KB on this listener
+(Envoy also chunks at 16 KB), and pinning it down needs a deliberate bisect that
+has not been done.
+
+**Consequence — the gateway is the wrong layer for this.** Raising the buffer
+limit enough to cover a 4 MB body would mean fully buffering every agent request
+before forwarding it, paying that memory per concurrent request and adding it to
+TTFT on a node where cold prefill already dominates. The enforcement point has to
+be somewhere that already has the whole request: the router or the engine.
+
+**Open question with a billing edge, worth its own check.**
+`request-validation` bounds `max_tokens` at 70,000 on this same route by the same
+wasm body-buffering mechanism, so it is likely blind above the same threshold —
+i.e. unenforced for exactly the large agent requests it was written to bound. The
+access log has only **two** 422s ever, both deliberate tests at 85 B and 76 B, so
+there is no evidence either way from traffic. This needs a deliberate test, not an
+assumption.
+
+Note what the rule *does* still buy: small requests — titles, summaries, the
+`-fast` model side-calls — are now rewritten, and those are the ones whose replies
+are cheapest to re-poison from. It is not worthless, it is just not the fix.
+
+Either way the rule cannot heal a session that already carries the markup: that
+history lives on the client and still needs a fresh session.
 
 ## 4. The amplifier: retries × circuit breaker
 
@@ -417,11 +464,23 @@ Ranked by leverage. Items 2–4 were the original list, written before §3a was
 known; item 1 was added afterwards and outranks all of them, because it is the
 only one that stops the poison being created in the first place.
 
-1. ~~**Force `skip_special_tokens: true` on `ai-chat`.**~~ **APPLIED 2026-09-21.**
-   Higress `transformer` plugin, `operate: replace` on the request body. Breaks
-   the echo loop in §3a, costs nothing (the tool-call and thinking delimiters are
-   not flagged `special`), and needs no engine change. Does not heal sessions
-   already poisoned.
+1. **Force `skip_special_tokens: true`.** The right fix — it breaks the echo loop
+   in §3a and costs nothing, because the tool-call and thinking delimiters are not
+   flagged `special`. **Applied at the gateway 2026-09-21 and INEFFECTIVE there:**
+   wasm body rewriting stops at the 32 KB connection buffer limit, and every
+   poisoned body is 400–545 KB (§3a). Still **OPEN**, and it needs a layer that
+   already holds the whole request:
+
+   - **the router** — check whether an `smg` WASM plugin can rewrite a request
+     body without the gateway's buffer ceiling. Cheapest if it works; note from
+     prior work that router WASM is stateless per call and `OnResponse` breaks
+     SSE, so a request-only rewrite is the shape to aim for.
+   - **the engine** — a `HookRegistry` plugin forcing the field on
+     `_tokenize_one_request`. Needs a pip-installed wheel and a replica roll, so
+     it bundles with item 4 and the next upgrade.
+   - **the client** — OpenCode sends `false` only when asking for reasoning, and
+     does not need to (§3a). Upstream report or a provider-option override in the
+     generated `opencode.json` would fix it at the source for every consumer.
 
 2. ~~**Alert on `smg_worker_cb_state != 0`.**~~ **APPLIED 2026-09-21** (`ec5879d`).
    `RouterWorkerCircuitOpen` / `RouterAllCircuitsOpen` /
