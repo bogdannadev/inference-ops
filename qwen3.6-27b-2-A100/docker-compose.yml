@@ -738,6 +738,14 @@ services:
     #
     # Caddy's gateway-site body cap was raised to 4MB alongside this.
     #
+    # --mm-processor-worker-num 4 (2026-09-19; the Qwen auto value is 2)
+    #   Threads that resize/normalize images, one request each; a request's
+    #   images still run one after another. Measured offline with this image's
+    #   Qwen2VLImageProcessorPil at the 2 MP cap: 1 -> 2 -> 4 threads =
+    #   2.7 -> 5.5 -> 8.9 images/s (12 MP photos), 13.5 -> 25.9 -> 49.3
+    #   (1280 px, OpenCode). 4 matches --max-running-requests; the cpuset has
+    #   ~19-27 idle cores. Decoding is a separate pool (16 threads, auto).
+    #
     # --tokenizer-metrics-allowed-custom-labels consumer (added 2026-09-05,
     # BOTH replicas).
     #
@@ -798,6 +806,7 @@ services:
       --image-processor-backend pil
       --mm-process-config '{"image":{"size":{"longest_edge":2097152,"shortest_edge":65536}}}'
       --limit-mm-data-per-request '{"image":16}'
+      --mm-processor-worker-num 4
       --trust-remote-code
       --dtype bfloat16
       --tp 1
@@ -951,6 +960,7 @@ services:
       --image-processor-backend pil
       --mm-process-config '{"image":{"size":{"longest_edge":2097152,"shortest_edge":65536}}}'
       --limit-mm-data-per-request '{"image":16}'
+      --mm-processor-worker-num 4
       --trust-remote-code
       --dtype bfloat16
       --tp 1
@@ -1141,6 +1151,54 @@ services:
     #         --request-timeout-secs 900, so the queue gives up long before the
     #         request does.
     #
+    # POISON-PILL CONTAINMENT (added 2026-09-21, after the 2026-09-20 incident —
+    # docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md). All three were previously
+    # unset and running on build defaults.
+    #
+    # The failure that forced this: one malformed multimodal prompt 500s
+    # IDENTICALLY on every replica. The breaker assumes a failure means the
+    # WORKER is sick, so it walked the fleet and marked both replicas broken.
+    # Blast radius is set by how many failure credits a client can spend:
+    #
+    #     cb-failure-threshold / attempts-per-request = requests to kill a worker
+    #
+    #   --retry-max-retries 1
+    #         Was the default 5, i.e. 5 attempts per client request, so TWO bad
+    #         requests opened a worker and four took the fleet. At 1 attempt it
+    #         takes ten. Costs nothing measurable: over the router's first 46 h
+    #         and 939 chat requests, all 44 retries it ever performed were this
+    #         incident and every one failed — a 0% success rate. Router and
+    #         workers share a host bridge (no network to be flaky) and
+    #         roll-replica.sh de-registers before a restart, so the transient
+    #         failures retries exist for barely occur here. OpenCode also
+    #         retries, so this layer was the redundant one.
+    #
+    #   --cb-failure-threshold 10
+    #         Unchanged in value, now PINNED. The docs site and `--help`
+    #         disagree on this default (5 vs 10), so it must not be left
+    #         implicit. Kept rather than raised because the breaker still earns
+    #         its place: the worker /health probe is a 1-token generation with
+    #         no image, so it is blind to image-preprocess faults, long-context
+    #         faults and host-side exhaustion on ONE replica. Without a breaker
+    #         such a worker is never evicted and silently eats half of traffic.
+    #
+    #   --cb-success-threshold 1
+    #         Was 3. This is the recovery deadlock, not the outage: after the
+    #         incident r0 sat in half_open for >10 h because closing needs
+    #         consecutive successes while cache_aware keeps routing to the WARM
+    #         replica, so r0 was never probed. One success now closes it.
+    #
+    # NOT changed, deliberately: --disable-circuit-breaker. It looks tempting
+    # and is a bad trade — it swaps a bounded, loud, self-recovering failure
+    # (fleet 503) for an unbounded silent one (a zombie replica serving errors
+    # forever). Retries do not cover for it either: under cache_aware they
+    # re-select the same worker, proven by the 16 s gap between the two breaker
+    # opens on 2026-09-20.
+    #
+    # This is blast-radius containment, NOT a fix. The root cause is SGLang
+    # returning 500 for what is a client error; a 4xx is never retried and never
+    # reaches the breaker. See the doc for the upstream issue to track.
+    #
     # NOTE the flags below carry no inline comments on purpose: `command: >` is
     # a YAML folded scalar, where a `#` is literal text rather than a comment
     # and compose rejects the result as an invalid command line.
@@ -1154,6 +1212,9 @@ services:
       --max-concurrent-requests 16
       --queue-size 64
       --queue-timeout-secs 300
+      --retry-max-retries 1
+      --cb-failure-threshold 10
+      --cb-success-threshold 1
       --prometheus-host 0.0.0.0
       --prometheus-port 29000
       --request-id-headers x-request-id x-trace-id x-correlation-id
