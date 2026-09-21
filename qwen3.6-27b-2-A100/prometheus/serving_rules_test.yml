@@ -174,14 +174,20 @@ tests:
     name: wrong-key bursts per host
 
     input_series:
-      # 280 401s in an hour on the direct hostname: a burst.
-      - series: 'caddy_http_request_duration_seconds_count{code="401",host="model.example.com",server="srv1",handler="subroute"}'
+      # 300 bad POSTs in an hour on the direct hostname: a real stale-key
+      # client, and the only thing this rule is meant to catch.
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="model.example.com",method="POST",server="srv1",handler="subroute"}'
         values: '0+5x70'
-      # A few an hour on the gateway: not a burst.
-      - series: 'caddy_http_request_duration_seconds_count{code="401",host="gateway.example.com",server="srv1",handler="subroute"}'
+      # A path scanner sweeping .env files at the SAME hostname, an order of
+      # magnitude louder, all GET. Must NOT fire: it is refused before routing
+      # and there is nothing to do about it. This is the 2026-09-21 fix.
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="model.example.com",method="GET",server="srv1",handler="subroute"}'
+        values: '0+50x70'
+      # A few an hour on the gateway: under the threshold of 5.
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="gateway.example.com",method="POST",server="srv1",handler="subroute"}'
         values: '0+0.05x70'
       # _other is scanners hitting the bare IP; ignored.
-      - series: 'caddy_http_request_duration_seconds_count{code="401",host="_other",server="srv1",handler="subroute"}'
+      - series: 'caddy_http_request_duration_seconds_count{code="401",host="_other",method="POST",server="srv1",handler="subroute"}'
         values: '0+10x70'
       - series: 'gateway_usage_error_requests{window="1h",consumer="unauthenticated",cause="no_key",job="engine-usage"}'
         values: '60x70'
@@ -195,14 +201,18 @@ tests:
               node: a100
               host: model.example.com
             exp_annotations:
-              summary: "model.example.com: 300 wrong-key requests in the last hour"
+              summary: "model.example.com: 300 wrong-key API calls in the last hour"
               description: >-
-                Something is presenting a bad key at model.example.com over and
-                over: a client with a stale key, or someone guessing. The shared
-                edge keys are long, so guessing will not succeed, but the source
-                should be found. docker logs on the Caddy container, filtered for
-                this host and status 401, shows the address. For the gateway
-                hostname, /errors unauthenticated in the bot lists them.
+                A client is POSTing a bad key at model.example.com. POST-only on
+                purpose: GET 401s here are path scanners probing for .env files,
+                which are refused before routing and need no action. Tell them
+                apart before digging — a scanner fires at BOTH shared-key hostnames
+                in the same minute with a low count, a real stale-key client hits
+                one hostname and keeps going. Find it with docker logs on the Caddy
+                container filtered to this host and status 401; the client_ip is in
+                each line. For the gateway hostname, /errors unauthenticated in the
+                bot lists them. Caddy logs only to stdout, so recreating the
+                container loses the evidence — look before rolling anything.
       - eval_time: 70m
         alertname: GatewayWrongKeyBurst
         exp_alerts:
@@ -214,3 +224,112 @@ tests:
               description: >-
                 Per-key gateway hostname. /errors unauthenticated in the bot lists
                 the requests with the client address.
+
+  # ---------------------------------------------------------------------------
+  # Router circuit breakers (2026-09-21). smg_worker_cb_state: 0 closed,
+  # 1 open, 2 half_open. The per-worker rules are bare comparisons, so the
+  # alert carries every label the series had.
+  - interval: 1m
+    name: one worker's breaker open
+
+    input_series:
+      - series: 'smg_worker_cb_state{worker="http://r0:8001",job="sglang-router"}'
+        values: '1x40'
+      - series: 'smg_worker_cb_state{worker="http://r1:8002",job="sglang-router"}'
+        values: '0x40'
+
+    alert_rule_test:
+      # Under `for: 2m` nothing has fired yet.
+      - eval_time: 1m
+        alertname: RouterWorkerCircuitOpen
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RouterWorkerCircuitOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              worker: "http://r0:8001"
+              job: sglang-router
+            exp_annotations:
+              summary: "http://r0:8001: circuit breaker open, taking no traffic"
+              description: >-
+                This worker is excluded from routing, so the node is serving on
+                what is left. Ten failures in a 120 s window open a breaker.
+                Engine logs for that replica say whether it is really failing.
+      # One of two workers open is not a service outage.
+      - eval_time: 10m
+        alertname: RouterAllCircuitsOpen
+        exp_alerts: []
+      # Open is not half-open.
+      - eval_time: 40m
+        alertname: RouterWorkerCircuitHalfOpen
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------------
+  - interval: 1m
+    name: every breaker open is an outage
+
+    input_series:
+      - series: 'smg_worker_cb_state{worker="http://r0:8001",job="sglang-router"}'
+        values: '1x40'
+      - series: 'smg_worker_cb_state{worker="http://r1:8002",job="sglang-router"}'
+        values: '1x40'
+
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RouterAllCircuitsOpen
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: a100
+            exp_annotations:
+              summary: "Router: every worker's circuit breaker is open — serving is down"
+              description: >-
+                The router has no worker it will send to and is answering 503
+                no_available_workers. Check whether the workers are actually sick
+                (docker logs on each engine) before restarting anything: a request
+                that fails identically on every replica opens every breaker while
+                the engines are healthy and idle. Breakers half-open 60 s after the
+                last failure and close on the first success, so this clears itself
+                once the failing client stops.
+
+  # ---------------------------------------------------------------------------
+  # The 2026-09-20 aftermath: r0 stranded in half_open because cache_aware
+  # sent it nothing to probe with. Must stay quiet for the first half hour.
+  - interval: 1m
+    name: breaker stuck half-open
+
+    input_series:
+      - series: 'smg_worker_cb_state{worker="http://r0:8001",job="sglang-router"}'
+        values: '2x60'
+      - series: 'smg_worker_cb_state{worker="http://r1:8002",job="sglang-router"}'
+        values: '0x60'
+
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RouterWorkerCircuitHalfOpen
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: RouterWorkerCircuitHalfOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              worker: "http://r0:8001"
+              job: sglang-router
+            exp_annotations:
+              summary: "http://r0:8001: circuit breaker stuck half-open for 30m"
+              description: >-
+                Half-open is a normal state for seconds, not half an hour. It
+                admits probes only and closes on the first success, so being stuck
+                here means the policy is not sending this worker any traffic to
+                probe with — cache_aware prefers whichever replica is warm, which
+                is exactly how r0 stayed out for 10 h on 2026-09-20. Re-register it
+                to reset: GET /workers, DELETE /workers/<id>, POST /workers (this
+                is what deploy/roll-replica.sh does). Do not restart the router;
+                that drops in-flight requests on every replica.
+      # Half-open is not open.
+      - eval_time: 35m
+        alertname: RouterWorkerCircuitOpen
+        exp_alerts: []

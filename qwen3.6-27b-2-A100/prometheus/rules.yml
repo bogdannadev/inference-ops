@@ -331,6 +331,70 @@ groups:
             502/503 or another 5xx from the gateway, router or engine. /errors
             {{ $labels.consumer }} lists them with request ids for /trace.
 
+      # -----------------------------------------------------------------------
+      # Router circuit breakers (2026-09-21, after the 2026-09-20 incident:
+      # docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md).
+      #
+      # Nothing watched these, which is the only reason a replica sat out of
+      # rotation from 19:36 until the next morning with no one noticing. The
+      # breaker is per worker; smg_worker_cb_state is 0 closed, 1 open,
+      # 2 half_open. A worker whose breaker is open gets NO traffic, and on a
+      # two-replica node that is half the capacity gone.
+      #
+      # These say nothing about worker health: a breaker opens on failures the
+      # router saw, which may be the worker's fault or the request's. A
+      # deterministic 500 (a malformed prompt) trips every replica in turn
+      # while all of them are perfectly healthy.
+      # -----------------------------------------------------------------------
+      - alert: RouterAllCircuitsOpen
+        expr: |
+          count(smg_worker_cb_state == 1) == count(smg_worker_cb_state)
+        for: 1m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "Router: every worker's circuit breaker is open — serving is down"
+          description: >-
+            The router has no worker it will send to and is answering 503
+            no_available_workers. Check whether the workers are actually sick
+            (docker logs on each engine) before restarting anything: a request
+            that fails identically on every replica opens every breaker while
+            the engines are healthy and idle. Breakers half-open 60 s after the
+            last failure and close on the first success, so this clears itself
+            once the failing client stops.
+      - alert: RouterWorkerCircuitOpen
+        expr: |
+          smg_worker_cb_state == 1
+        for: 2m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.worker }}: circuit breaker open, taking no traffic"
+          description: >-
+            This worker is excluded from routing, so the node is serving on
+            what is left. Ten failures in a 120 s window open a breaker.
+            Engine logs for that replica say whether it is really failing.
+      - alert: RouterWorkerCircuitHalfOpen
+        expr: |
+          smg_worker_cb_state == 2
+        for: 30m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.worker }}: circuit breaker stuck half-open for 30m"
+          description: >-
+            Half-open is a normal state for seconds, not half an hour. It
+            admits probes only and closes on the first success, so being stuck
+            here means the policy is not sending this worker any traffic to
+            probe with — cache_aware prefers whichever replica is warm, which
+            is exactly how r0 stayed out for 10 h on 2026-09-20. Re-register it
+            to reset: GET /workers, DELETE /workers/<id>, POST /workers (this
+            is what deploy/roll-replica.sh does). Do not restart the router;
+            that drops in-flight requests on every replica.
+
   # ---------------------------------------------------------------------------
   # Unauthenticated traffic (2026-09-17).
   #
@@ -341,25 +405,54 @@ groups:
   # Caddy now access-logs both sites, so `docker logs` on Caddy names the
   # source; the gateway's own 401s carry client_ip in gateway.requests and the
   # bot's `/errors unauthenticated` lists them.
+  #
+  # ANSWERED 2026-09-21, and the rule was wrong. The access log showed the
+  # bursts are commodity path scanning: one source sweeping ~274 distinct
+  # secret-file paths (.env and friends) with GET, at both hostnames, with
+  # rotating user agents. Every request is refused in ~80us and nothing is
+  # reachable. They are counted as "wrong key" only because the site's auth
+  # gate runs BEFORE the path gate, so a probe of an unknown path never gets
+  # as far as the 404 and is recorded as a 401.
+  #
+  # The metric has no path label (code/handler/host/instance/job/method/node/
+  # server), so the rule cannot tell a scanner from a client. `method` can:
+  # the scanner GETs, and every API a real client calls on these hostnames is
+  # a POST. Over the 17 days to 2026-09-21 the unfiltered rule crossed its
+  # threshold on 11 days; filtered to POST, on 1 — the one real stale-key
+  # client (306 bad POSTs in an hour on the model hostname, 2026-09-18 08:20
+  # UTC), which had been indistinguishable from the noise.
+  #
+  # Threshold is 5, not 100, deliberately: a stale-key cron or a mis-configured
+  # client may only manage a handful an hour, and at 100 it would never be
+  # seen. The cost is that low-volume scanner POSTs still get through — 8
+  # episodes on 3 of those 17 days. They are easy to recognise; see the alert
+  # description.
+  #
+  # NOT covered, on purpose: a stale-key client that only calls /v1/models,
+  # which is a GET. It burns no capacity, so it is not worth the noise.
   # ---------------------------------------------------------------------------
   - name: edge-auth
     rules:
       - alert: EdgeWrongKeyBurst
         expr: |
-          sum by (host) (increase(caddy_http_request_duration_seconds_count{code="401",host!="_other"}[1h])) > 100
+          sum by (host) (increase(caddy_http_request_duration_seconds_count{code="401",host!="_other",method="POST"}[1h])) > 5
         for: 5m
         labels:
           severity: warning
           node: a100
         annotations:
-          summary: "{{ $labels.host }}: {{ $value | printf \"%.0f\" }} wrong-key requests in the last hour"
+          summary: "{{ $labels.host }}: {{ $value | printf \"%.0f\" }} wrong-key API calls in the last hour"
           description: >-
-            Something is presenting a bad key at {{ $labels.host }} over and
-            over: a client with a stale key, or someone guessing. The shared
-            edge keys are long, so guessing will not succeed, but the source
-            should be found. docker logs on the Caddy container, filtered for
-            this host and status 401, shows the address. For the gateway
-            hostname, /errors unauthenticated in the bot lists them.
+            A client is POSTing a bad key at {{ $labels.host }}. POST-only on
+            purpose: GET 401s here are path scanners probing for .env files,
+            which are refused before routing and need no action. Tell them
+            apart before digging — a scanner fires at BOTH shared-key hostnames
+            in the same minute with a low count, a real stale-key client hits
+            one hostname and keeps going. Find it with docker logs on the Caddy
+            container filtered to this host and status 401; the client_ip is in
+            each line. For the gateway hostname, /errors unauthenticated in the
+            bot lists them. Caddy logs only to stdout, so recreating the
+            container loses the evidence — look before rolling anything.
 
       - alert: GatewayWrongKeyBurst
         expr: |
