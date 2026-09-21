@@ -309,6 +309,22 @@ x-replica-common: &replica-common
     - PYTHONWARNINGS=ignore::SyntaxWarning
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+    # Loads ./deploy/enginepatch/sitecustomize.py at interpreter startup (`site`
+    # imports sitecustomize for anything on PYTHONPATH). Two upstream bugs are
+    # patched there: chat requests get skip_special_tokens forced to true, and a
+    # placeholder/payload mismatch becomes a 400 instead of a 500.
+    #
+    # This is the fix for the poisoning incident
+    # (docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md §3a). The gateway cannot
+    # do it: a wasm body rewrite dies at the 32 KB connection buffer limit and
+    # every poisoned body is 400-545 KB. The engine holds the whole request.
+    #
+    # deploy/enginepatch/README.md has the rationale, the per-replica
+    # verification, and when to delete this. verify.py runs the assertions
+    # against the pinned image with no GPU — run it on every version bump,
+    # because a moved patch point degrades to a silent no-op.
+    - PYTHONPATH=/opt/enginepatch
+
     # Hugging Face auth
     - HF_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
     - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
@@ -563,6 +579,10 @@ services:
       # as a dist-packages PACKAGE, not a ~/.cache directory.
       - sglang_kernel_cache_r0:/root/.cache/sglang
       - ./logs/r0:/app/logs
+      # Engine patch, loaded via PYTHONPATH=/opt/enginepatch (see the
+      # environment block in x-replica-common). Read-only: the container must
+      # never be able to rewrite its own patch.
+      - ./deploy/enginepatch:/opt/enginepatch:ro
       - /etc/localtime:/etc/localtime:ro
 
     deploy:
@@ -940,6 +960,8 @@ services:
       # as a dist-packages PACKAGE, not a ~/.cache directory.
       - sglang_kernel_cache_r1:/root/.cache/sglang
       - ./logs/r1:/app/logs
+      # Engine patch — see the r0 block above and deploy/enginepatch/README.md.
+      - ./deploy/enginepatch:/opt/enginepatch:ro
       - /etc/localtime:/etc/localtime:ro
 
     deploy:
