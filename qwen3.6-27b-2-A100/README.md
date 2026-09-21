@@ -174,6 +174,10 @@ The in-repo `docs/` directory is the operational manual for this node:
 - **[docs/opencode-skills/](docs/opencode-skills/README.md)** — OpenCode skills
   a customer installs alongside that config; `image-batches` reads large image
   sets in subagent batches within the 4 MB body / 16-image / 2 MP limits
+- **[docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md](docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md)**
+  — one malformed image prompt 500s on every replica, and the router's default
+  retries × circuit breaker turn it into a fleet-wide 503. Why the shape is
+  independent of the routing policy, and the three-clock trap in the logs
 
 - **[tuning/docs/UPGRADE_QWEN3.8.md](tuning/docs/UPGRADE_QWEN3.8.md)** —
   2026-08-15 Qwen3.6 → Qwen3.8 weights swap: why no engine change, why the
