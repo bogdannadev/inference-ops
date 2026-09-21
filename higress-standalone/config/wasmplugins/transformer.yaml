@@ -1,4 +1,63 @@
-# Default "stream": false on /v1/responses.
+# Two request-body defaults the clients get wrong.
+#
+# ---------------------------------------------------------------------------
+# 1. Force "skip_special_tokens": true on /v1/chat/completions  (2026-09-21)
+# ---------------------------------------------------------------------------
+#
+# This closes the loop that broke one consumer's sessions three times in two
+# days. See ../../qwen3.6-27b-2-A100/docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md.
+#
+# The engine renders a special token the model emitted back into the reply TEXT
+# when the request says skip_special_tokens: false. The client stores that text
+# in the conversation history and resends it next turn, where the tokenizer
+# turns it straight back into the real token. For a vision placeholder that
+# means the prompt claims an image nobody attached, and every turn from then on
+# fails with 500 "More 'IMAGE' tokens found than corresponding data provided" —
+# forever, on every replica, because the poison is text in the history.
+#
+# Measured in the r0 container against the pinned weights (id 248056):
+#   decode(skip_special_tokens=False) -> 13 chars, and re-encoding those 13
+#     chars gives exactly [248056]          <- the round trip is exact
+#   decode(skip_special_tokens=True)  -> 0 chars
+#
+# The API default is already true (ChatCompletionRequest in protocol.py). The
+# clients send false explicitly: 862 of 862 requests with require_reasoning=True
+# since 2026-09-19, every consumer, because OpenCode / @ai-sdk/openai-compatible
+# wants to parse the thinking block itself.
+#
+# IT DOES NOT NEED TO. skip_special_tokens strips only tokens flagged
+# `special: true` in added_tokens_decoder, and for these weights that split is
+# exactly the one we want:
+#
+#   stripped   <|im_*|>, <|object_ref_*|>, <|box_*|>, <|quad_*|>, all five
+#              vision ids 248053-57, all audio/tts
+#   survives   <tool_call> 248058, </tool_call>, <tool_response>, <think>
+#              248068, </think>, <|fim_*|>, <|repo_name|>, <|file_sep|>
+#
+# Verified by decoding each one: <tool_call> and </think> come back intact, so
+# --tool-call-parser qwen3_coder and --reasoning-parser qwen3 are untouched.
+# The client's false buys nothing and costs the echo loop.
+#
+# `replace` also adds the key when it is absent (plugin README, "Replace"), so
+# one rule covers clients that send it and clients that do not.
+#
+# ai-chat ONLY, deliberately:
+#   - it carries 100% of the affected traffic; /v1/chat/completions is what
+#     every OpenCode consumer uses.
+#   - request-validation already buffers the body on this route to check
+#     max_tokens, so the buffering cost is paid either way. Still worth
+#     re-measuring TTFT with a large prompt, same caveat as that plugin.
+#   - NOT ai-responses: it is unproven whether SGLang's Responses handler
+#     accepts this field, and a rejected field would 400 the whole route. The
+#     clients already send it on ai-chat, so there it is proven accepted.
+#   - NOT ai-completions: no chat history, so no turn to re-poison.
+#
+# This stops NEW poisonings. It cannot heal a session already carrying the
+# markup — that history lives on the client and still needs a fresh session.
+#
+# ---------------------------------------------------------------------------
+# 2. Default "stream": false on /v1/responses.
+# ---------------------------------------------------------------------------
 #
 # The OpenAI API defaults stream to false and the OpenAI SDKs omit the field
 # for non-streaming calls. SGLang 0.5.19's Responses handler passes the
@@ -23,6 +82,17 @@ spec:
   priority: 50
   defaultConfigDisable: true
   matchRules:
+    - ingress:
+        - ai-chat
+      configDisable: false
+      config:
+        reroute: false
+        reqRules:
+          - operate: replace
+            body:
+              - key: skip_special_tokens
+                newValue: "true"
+                value_type: boolean
     - ingress:
         - ai-responses
       configDisable: false

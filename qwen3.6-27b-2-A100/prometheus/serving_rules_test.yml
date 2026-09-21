@@ -239,8 +239,9 @@ tests:
         values: '0x40'
 
     alert_rule_test:
-      # Under `for: 2m` nothing has fired yet.
-      - eval_time: 1m
+      # `for: 1m` needs the condition to hold across one full minute, so the
+      # very first sample has not fired yet.
+      - eval_time: 0m
         alertname: RouterWorkerCircuitOpen
         exp_alerts: []
       - eval_time: 10m
@@ -257,6 +258,11 @@ tests:
                 This worker is excluded from routing, so the node is serving on
                 what is left. Ten failures in a 120 s window open a breaker.
                 Engine logs for that replica say whether it is really failing.
+                An open breaker advances only when a request arrives, and
+                cache_aware sends none to an excluded replica, so this can sit
+                for hours on an idle node — r0 was out 3 h 10 min on 2026-09-21
+                that way. Re-register the worker to reset it (see
+                RouterWorkerCircuitHalfOpen).
       # One of two workers open is not a service outage.
       - eval_time: 10m
         alertname: RouterAllCircuitsOpen
@@ -332,4 +338,57 @@ tests:
       # Half-open is not open.
       - eval_time: 35m
         alertname: RouterWorkerCircuitOpen
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------------
+  # RouterCircuitTripped (2026-09-21): the recency backstop. A trip that opens
+  # and heals inside RouterWorkerCircuitOpen's `for:` window still cost capacity,
+  # so this must fire on a brief open — and must go quiet again only because the
+  # open window aged out of the lookback, not because anything healed.
+  #
+  # The first attempt used increase() on smg_worker_cb_transitions_total{to="open"}
+  # and was silently broken: the router creates that counter series on the first
+  # transition, so it appears already at 1 with no 0 -> 1 edge. This test uses the
+  # state gauge, and deliberately includes a SHORT open window (2 samples) that a
+  # 2-minute `for:` on the state rule would have stepped straight over.
+  - interval: 1m
+    name: a brief breaker open is still caught
+
+    input_series:
+      # r0: closed, open for 2 minutes only, then closed again.
+      - series: 'smg_worker_cb_state{worker="http://r0:8001",job="sglang-router"}'
+        values: '0x9 1 1 0x40'
+      - series: 'smg_worker_cb_state{worker="http://r1:8002",job="sglang-router"}'
+        values: '0x52'
+
+    alert_rule_test:
+      # Nothing has tripped yet.
+      - eval_time: 5m
+        alertname: RouterCircuitTripped
+        exp_alerts: []
+      # The 2-minute open window is inside the 15m lookback.
+      - eval_time: 15m
+        alertname: RouterCircuitTripped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: a100
+              worker: "http://r0:8001"
+              job: sglang-router
+            exp_annotations:
+              summary: "http://r0:8001: circuit breaker was open in the last 15 min"
+              description: >-
+                The router counted 10 failures in 120 s for this worker and cut it
+                out of rotation. Healthy workers do not trip: check first whether
+                one client is resending a request that fails identically on every
+                replica, which is what happened on 2026-09-20 and twice on
+                2026-09-21 (docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md). A
+                malformed-prompt 500 costs 1 credit per request since af8b24e, so
+                ten client requests trip one worker. `/errors <consumer>` in the
+                bot lists the 5xx with request ids.
+      # That 2-minute open never satisfied the state rule's 1-minute `for:` plus
+      # evaluation alignment reliably — this is exactly the gap it covers.
+      # Once aged out of the lookback: RESOLVED means "not recently", not "fixed".
+      - eval_time: 40m
+        alertname: RouterCircuitTripped
         exp_alerts: []

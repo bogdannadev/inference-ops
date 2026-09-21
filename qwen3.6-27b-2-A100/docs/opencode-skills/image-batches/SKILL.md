@@ -56,9 +56,19 @@ Three things follow, and they decide what you do:
 
 ### Recovering
 
-1. **Start a new session.** Do not resume the failing one.
-2. **Find the source**, or the new session gets poisoned the same way. In a
-   **terminal — not through the agent** — from the project root:
+1. **Start a new session.** Do not resume the failing one. Resuming it later —
+   even the next day — fails exactly the same way: the poison travels with the
+   history, not with the moment.
+2. **Do not retry the failing turn.** Not after a pause, not "once more". It
+   fails identically on every replica, every time, and the retries take a
+   serving replica out of rotation for the other users on this node.
+3. **Where it came from — usually the model's own previous reply.** The most
+   common source is a long answer in which the model spelled the markup out,
+   which OpenCode then stored in the history verbatim. In that case there is
+   **nothing to find on disk**, and that is the expected outcome, not a failed
+   search. Starting a new session is the whole fix.
+4. **Only if you also fed it in yourself**, check for a file that carries it. In
+   a **terminal — not through the agent** — from the project root:
 
    ```bash
    grep -rn image_pad .
@@ -66,8 +76,9 @@ Three things follow, and they decide what you do:
    ```
 
    Search for the bare substring only. Never type or paste the full delimited
-   form into a chat: doing so poisons that chat immediately.
-3. If a file contains it, that file must never be read into a session again.
+   form into a chat: doing so poisons that chat immediately. An empty result
+   here is normal — see step 3.
+5. If a file does contain it, that file must never be read into a session again.
 
 ### Avoiding it
 
@@ -77,6 +88,16 @@ Three things follow, and they decide what you do:
 - When recording an image error in notes, write what it means. Never paste the
   raw markup — a subagent's note is read back into the main session, which is
   how one bad batch can poison the whole task.
+- Keep image tasks in short sessions. The failure needs a long reply and a long
+  history to appear, so the batching this skill already asks for is also the
+  cheapest protection.
+
+**Server-side, since 2026-09-21** the gateway forces `skip_special_tokens: true`
+on every chat request, which stops the server echoing this markup back into a
+reply at all — the path that caused every occurrence so far. Thinking blocks and
+tool calls are unaffected. So if you still hit this on a session started after
+that date, the markup came from something **you** put in: a file that was read,
+or text that was pasted. Go to step 4.
 
 ## Step 1 — Prepare the images
 
