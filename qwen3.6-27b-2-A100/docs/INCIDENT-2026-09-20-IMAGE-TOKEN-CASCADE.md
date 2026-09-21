@@ -12,9 +12,17 @@ fleet-wide 503. The engines were healthy throughout and never came under load.
 The lasting damage was not the 90 s: r0's breaker was still `half_open` the
 next morning, ~10 h later, with r1 serving 100% of traffic.
 
+> **It recurred twice on 2026-09-21** — §10. The containment applied that
+> morning removed the 503s completely but not the stranded replica (r0 was out
+> 3 h 10 min). The recurrence also disproved the §3 assumption about
+> `skip_special_tokens` and gave the actual mechanism and an actual fix: **§3a**
+> is the section to read if you only read one.
+
 Companion docs: `OPERATIONS.md` (rolling a replica), `OBSERVABILITY.md`,
-and the router block in `../docker-compose.yml` (policy and admission-control
-rationale).
+the router block in `../docker-compose.yml` (policy and admission-control
+rationale), and
+`../../higress-standalone/config/wasmplugins/transformer.yaml` (the
+`skip_special_tokens` rule and why it is scoped to `ai-chat`).
 
 ## 1. Timeline
 
@@ -116,11 +124,24 @@ or a note quoting the error. That is why every diagram in this document writes
 Search for the bare substring `image_pad`, never the delimited form, and do it
 in a terminal rather than through an agent.
 
-**No engine-level mitigation exists.** SGLang exposes no `split_special_tokens`
-equivalent on `launch_server`, so user text can always inject control tokens.
-The same vector applies to `<|im_start|>`-class tokens, which means user text
-can break out of the chat template — a prompt-injection surface worth its own
-assessment, not folded into this incident.
+The rule covers **every** token flagged `special: true`, not just the vision
+ones: `im_start`/`im_end`, `object_ref_*`, `box_*`, `quad_*`, the five vision ids
+and the audio/tts set (full split in §3a). Write those bare too — this document
+had two delimited `im_start` literals until 2026-09-21 and no longer does. The
+`tool_call`, `tool_response`, `think`, `fim_*`, `repo_name` and `file_sep` tokens
+are flagged `special: false`, so they are ordinary text and safe to write out.
+
+**No engine *flag* mitigates this.** SGLang exposes no `split_special_tokens`
+equivalent on `launch_server` — `server_args.py` has nothing for
+`skip_special_tokens`, `logit_bias` or disallowed token ids — so user text can
+always inject control tokens. The same vector applies to the `im_start`/`im_end`-class
+tokens, which means user text can break out of the chat template: a
+prompt-injection surface worth its own assessment, not folded into this incident.
+
+**But the request-level control does mitigate it, and §3 originally got this
+wrong.** See §3a: `skip_special_tokens: true` strips exactly the vision and
+`<|...|>` control tokens while leaving the tool-call and thinking delimiters
+intact, and the gateway now forces it.
 
 ## 3. Why that turn and not the one before
 
@@ -132,19 +153,85 @@ and the body jumped 497,302 → 544,902 B (+47.6 KB) across that boundary.
 The mechanism is proven (§2): placeholder markup in ordinary text becomes a real
 IMAGE token. What is **not** proven is which message carried it in.
 
-Note that `skip_special_tokens: True` strips genuine special tokens from model
-output, so the model emitting the token *id* is ruled out. Two paths remain:
+~~Note that `skip_special_tokens: True` strips genuine special tokens from model
+output, so the model emitting the token *id* is ruled out.~~ **This premise was
+wrong — see §3a.** Our traffic sends `false`, and the model echoing the token is
+not only possible, it is the mechanism. The two paths considered here were:
 
 - **A file the agent read** — a tokenizer config, a chat template, model docs,
   or a subagent note quoting an error. One `read` poisons the session for good.
-  This is the most likely path, and a `grep -rn image_pad` over the project
-  finds it.
-- **The model spelling the markup out character by character** in that
-  11,202-token reply, which a long technical answer can do.
+  Judged the most likely path at the time, and a `grep -rn image_pad` over the
+  project finds it.
+- **The model spelling the markup out** in that 11,202-token reply. This is the
+  one that turned out to be right, and it does not need the model to spell
+  anything out character by character — emitting the token itself is enough.
 
 Bodies are not logged (`--log-requests-level 1`), so the specific message is
-unrecoverable after the fact. The project-level grep is the decisive test, and
-it is the first thing to run when a consumer reports this.
+unrecoverable after the fact. The project-level grep is still worth running, but
+it is no longer the decisive test, and for this failure it usually comes back
+empty.
+
+## 3a. The actual source: the engine echoes the token back — PROVEN 2026-09-21
+
+The engine renders a special token the model emitted into the reply **text**
+whenever the request says `skip_special_tokens: false`. The client stores that
+text in the conversation history and resends it on the next turn, where the
+tokenizer converts it straight back into the real token. Closed loop:
+
+```
+  model emits image placeholder token  (id 248056)
+            |
+            |  skip_special_tokens: false
+            v
+  engine renders it into the reply TEXT  (13 characters)
+            |
+            |  OpenCode stores the assistant message verbatim
+            v
+  next turn resends it as ordinary history text
+            |
+            |  tokenizer converts the literal text back to id 248056
+            v
+  prompt now claims an image that was never attached  ->  500, forever
+```
+
+Measured in the r0 container against the pinned weights:
+
+```
+image_pad 248056 in all_special_ids = True
+  decode(skip_special_tokens=False) -> 13 chars, and re-encoding those 13
+    chars gives exactly [248056]        <- the round trip is exact
+  decode(skip_special_tokens=True)  -> 0 chars
+```
+
+**The API default is already `true`** (`ChatCompletionRequest` in
+`protocol.py:932`). The clients send `false` explicitly, and it tracks reasoning
+exactly — from the engine `Receive:` lines since 2026-09-19, `false` on **862 of
+862** requests with `require_reasoning=True`, across every consumer. Nothing in
+this repo sets it, so it is OpenCode / `@ai-sdk/openai-compatible` wanting to
+parse the thinking block itself.
+
+**It does not need to.** `skip_special_tokens` strips only tokens flagged
+`special: true` in `added_tokens_decoder`, and for these weights that split is
+exactly the one we want:
+
+| stripped (`special: true`) | survives (`special: false`) |
+|---|---|
+| `<|im_*|>`, `<|object_ref_*|>`, `<|box_*|>`, `<|quad_*|>`, all five vision ids 248053–57, all audio/tts | `<tool_call>` 248058, `</tool_call>`, `<tool_response>`, `<think>` 248068, `</think>`, `<|fim_*|>`, `<|repo_name|>`, `<|file_sep|>` |
+
+Verified by decoding each one: `<tool_call>` and `</think>` come back intact, so
+`--tool-call-parser qwen3_coder` and `--reasoning-parser qwen3` are untouched.
+The client's `false` buys nothing and costs the echo loop.
+
+It also renders the `im_start` control token to 0 characters, so the same setting closes the
+chat-template breakout **via model output**. Injection from user *input* is a
+separate surface and still unassessed.
+
+**Applied 2026-09-21** — the Higress `transformer` plugin now forces
+`skip_special_tokens: true` on `ai-chat`
+(`../../higress-standalone/config/wasmplugins/transformer.yaml`), which is where
+the reasoning behind the route choice lives. This stops **new** poisonings. It
+cannot heal a session that already carries the markup: that history lives on the
+client and still needs a fresh session.
 
 ## 4. The amplifier: retries × circuit breaker
 
@@ -326,13 +413,38 @@ the dependency is healthy**, and **retry at a single point in the stack**.
 
 ## 8. What to change
 
-Ranked by leverage.
+Ranked by leverage. Items 2–4 were the original list, written before §3a was
+known; item 1 was added afterwards and outranks all of them, because it is the
+only one that stops the poison being created in the first place.
 
-1. **Alert on `smg_worker_cb_state != 0`.** Nothing watches it today; that is
-   the only reason a replica sat out overnight unnoticed. Zero risk, and it
-   catches every future instance of this whatever the trigger.
+1. ~~**Force `skip_special_tokens: true` on `ai-chat`.**~~ **APPLIED 2026-09-21.**
+   Higress `transformer` plugin, `operate: replace` on the request body. Breaks
+   the echo loop in §3a, costs nothing (the tool-call and thinking delimiters are
+   not flagged `special`), and needs no engine change. Does not heal sessions
+   already poisoned.
 
-2. ~~**Break the amplification.**~~ **APPLIED 2026-09-21 07:10 UTC** (commit
+2. ~~**Alert on `smg_worker_cb_state != 0`.**~~ **APPLIED 2026-09-21** (`ec5879d`).
+   `RouterWorkerCircuitOpen` / `RouterAllCircuitsOpen` /
+   `RouterWorkerCircuitHalfOpen` in `../prometheus/rules.yml`. Both trips on
+   2026-09-21 fired correctly, and that is the only reason the recurrence in §10
+   was visible at all. Tightened the same day: `for:` lowered 2m → 1m, and a new
+   `RouterCircuitTripped` fires on
+   `count_over_time((smg_worker_cb_state == 1)[15m:1m]) > 0`, so a breaker that
+   opens and heals quickly cannot slip under the gate. Unit tests in
+   `../prometheus/serving_rules_test.yml`.
+
+   **Trap, found while writing it.** The obvious expression,
+   `increase(smg_worker_cb_transitions_total{to="open"}[15m]) > 0`, is silently
+   broken: the router creates that counter series on the **first** transition, so
+   it appears already at `1` and there is no `0 → 1` edge for `increase()` to
+   measure. Replayed against both real trips (09:19 r1, 14:04 r0) it returned
+   **nothing** for either, while the state subquery returned 7 and 8 samples.
+   `changes()` and `max_over_time`/`min_over_time` on the counter fail identically.
+   A unit test written from the same wrong mental model passes, because a
+   hand-written `values: '0x14 1x30'` series has the edge that reality does not —
+   so the test now models a series that is *created* open.
+
+3. ~~**Break the amplification.**~~ **APPLIED 2026-09-21 07:10 UTC** (commit
    `af8b24e`): `--retry-max-retries 1`, `--cb-failure-threshold 10` (pinned,
    unchanged in value), `--cb-success-threshold 1`. A deterministic 500 now
    costs 1 failure credit instead of 5, so it takes ten requests per worker
@@ -352,10 +464,42 @@ Ranked by leverage.
    skill now separates 503 (retry once) from 500 (never retry) and carries a
    "Poisoned sessions" section.
 
-3. **File the 400-not-500 bug upstream** with the serving-path traceback. A
+4. **File the 400-not-500 bug upstream** with the serving-path traceback. A
    malformed prompt is a client error. A 4xx is never retried and never reaches
    the breaker, so the same request would have produced one failed turn and
-   nothing else. This is the only fix that also covers the next poison pill.
+   nothing else. **Still the only fix that covers the next poison pill**,
+   whatever its origin — item 1 closes the path we know about, not the class.
+
+   It is a one-word change. `serving_base.py handle_request` maps `ValueError` →
+   **400** and `RuntimeError` → 500. The `except StopIteration` branch at
+   `base_processor.py:1495` raises `RuntimeError`, while the `except ValueError`
+   branch immediately below it already raises `ValueError`:
+
+   ```
+   except StopIteration as e:
+       ...
+       raise RuntimeError(   # <- 500; should be ValueError -> 400
+           f"An exception occurred while loading multimodal data: {e}"
+       )
+   except ValueError as e:
+       raise ValueError(     # <- already 400
+           f"An exception occurred while loading multimodal data: {e}"
+       ) from e
+   ```
+
+   **The contrast case is in our own data.** On 2026-09-20 15:26 local the same
+   consumer sent **17 images**, hit `--limit-mm-data-per-request '{"image":16}'`,
+   and got a clean **400**: one attempt, no retry, no breaker credit, one failed
+   turn. Three placeholders against two payloads gets a 500 → eleven failed turns
+   plus a replica out of rotation for three hours. Same consumer, same client,
+   same day; only the status code differs.
+
+   **Not applied locally, deliberately.** Engine plugins load through setuptools
+   `entry_points` (`SGLANG_PLUGINS`), so a `HookRegistry` patch needs a
+   pip-installed wheel in the image — not a bind-mount — and either route means
+   recreating a replica at `start_period` 2400 s. Since item 1 removes the known
+   trigger, this belongs with the next planned SGLang upgrade rather than a roll
+   of its own.
 
 Recovering a stuck replica, cheapest first:
 
@@ -417,7 +561,64 @@ The Higress access log carries fields ClickHouse does not
 (`upstream_service_time`, `bytes_received`, `ai_log`), at
 `/var/log/proxy/access.log*` inside `higress-gateway-1`.
 
-## 10. References
+## 10. Recurrence 2026-09-21 — twice, and what the fix actually bought
+
+Investigated read-only the same evening. Same consumer, same client
+(`opencode/latest/2.0.10/desktop`), same engine error. **Three distinct poisoned
+bodies now exist**, each resent ~11 times byte-identical:
+
+| cluster (UTC) | body | note |
+|---|---|---|
+| 09-20 19:34 | 544,902 B | the original |
+| 09-21 09:16 | 545,051 B | **the same session, resumed the next morning** — +149 B |
+| 09-21 14:00 | 404,877 B | a **second, independent** poisoning |
+
+The middle row is the one to internalise: a poisoned session is not abandoned.
+The user came back to it ~14 h later and OpenCode resent the same history. Any
+guidance that says "start a new session" has to say *and never reopen that one*.
+
+### What `af8b24e` bought
+
+**Worked exactly as designed.** `smg_http_responses_total` has no 503 bucket at
+all. Each cluster opened exactly one breaker at 10 failures, and the 11th request
+landed on the other worker having spent 1 credit there. The fleet never went down.
+Engine-side `Mismatch` counts confirm the arithmetic: 10 on the tripped replica,
+1 on the other, per cluster.
+
+```
+cluster 1 (09:16)   r1: 10 failures -> OPEN     r0: 1  (untouched)
+cluster 2 (14:00)   r0: 10 failures -> OPEN     r1: 1  (untouched)
+```
+
+**Did not fix the stranded replica.** From `smg_worker_cb_state`:
+
+| replica | out of rotation | how |
+|---|---|---|
+| r1 | 09:19 → 10:47 (**88 min**) | 13 min `open`, then ~75 min stuck `half_open` |
+| r0 | 14:04 → 17:14 (**3 h 10 min**) | `open` the entire time |
+
+`--cb-success-threshold 1` cannot help here. An `open` breaker advances to
+`half_open` only when **a request arrives**, and `cache_aware` sends none to an
+excluded replica — the same lazy-state-machine plus affinity deadlock as §6, with
+the roles swapped. r0 closed at 17:14 only when traffic picked up again.
+
+**No user impact, by luck again.** Only **2 requests** arrived in the whole 3 h
+single-replica window (p50 3.1 s, both 200). Compare the preceding two-replica
+window: 239 requests, p50 8.1 s, p90 64 s. A busy afternoon would have halved
+throughput for three hours. Do not read "no impact" as "contained".
+
+### What this changed in the diagnosis
+
+The `skip_special_tokens` premise in §3 was wrong, and the real mechanism is now
+proven end to end — §3a. That is what moved "force `skip_special_tokens: true`"
+to the top of §8, and it is applied.
+
+One reporting gap worth noting: `GatewayServerErrors{consumer="designer"}` fired
+from 09:19 and stayed firing, so consumer-visible detection worked. What was
+missing was any signal tying it to the breaker trips, which is what
+`RouterCircuitTripped` now provides.
+
+## 11. References
 
 - **SGLang Model Gateway docs** (the router was renamed; hence the `smg` module
   name): <https://docs.sglang.io/docs/advanced_features/sgl_model_gateway>.

@@ -363,10 +363,15 @@ groups:
             the engines are healthy and idle. Breakers half-open 60 s after the
             last failure and close on the first success, so this clears itself
             once the failing client stops.
+      # for: 1m, lowered from 2m on 2026-09-21. With --cb-success-threshold 1 a
+      # breaker can open and close again quickly, so a 2 m gate can miss a real
+      # trip entirely. The shortest open window actually observed was 13 min, so
+      # this costs no new noise. RouterCircuitTripped below is the backstop that
+      # cannot be missed at all.
       - alert: RouterWorkerCircuitOpen
         expr: |
           smg_worker_cb_state == 1
-        for: 2m
+        for: 1m
         labels:
           severity: warning
           node: a100
@@ -376,6 +381,46 @@ groups:
             This worker is excluded from routing, so the node is serving on
             what is left. Ten failures in a 120 s window open a breaker.
             Engine logs for that replica say whether it is really failing.
+            An open breaker advances only when a request arrives, and
+            cache_aware sends none to an excluded replica, so this can sit
+            for hours on an idle node — r0 was out 3 h 10 min on 2026-09-21
+            that way. Re-register the worker to reset it (see
+            RouterWorkerCircuitHalfOpen).
+
+      # A trip that already healed still cost capacity, so this fires on a
+      # breaker having been open AT ALL in the last 15 minutes, however briefly —
+      # the thing `RouterWorkerCircuitOpen`'s `for:` can miss.
+      #
+      # NOT `increase(smg_worker_cb_transitions_total{to="open"}[15m]) > 0`, which
+      # was tried first and is silently broken: the router creates that counter
+      # series on the FIRST transition, so it appears already at 1 and there is no
+      # 0 -> 1 edge to measure. Checked against both real trips on 2026-09-21
+      # (09:19 r1, 14:04 r0) — increase() returned nothing for either, while the
+      # subquery below returns 7 and 8 samples respectively. `changes()` and
+      # max/min_over_time on the counter fail the same way. The state gauge is
+      # always present, so it has no such edge case.
+      #
+      # Sliding window: it goes RESOLVED when the open window ages out of the
+      # 15 min lookback, NOT when anything was fixed. Same semantics as the
+      # wrong-key burst rules above. Read the annotation, not the state.
+      - alert: RouterCircuitTripped
+        expr: |
+          count_over_time((smg_worker_cb_state == 1)[15m:1m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "{{ $labels.worker }}: circuit breaker was open in the last 15 min"
+          description: >-
+            The router counted 10 failures in 120 s for this worker and cut it
+            out of rotation. Healthy workers do not trip: check first whether
+            one client is resending a request that fails identically on every
+            replica, which is what happened on 2026-09-20 and twice on
+            2026-09-21 (docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md). A
+            malformed-prompt 500 costs 1 credit per request since af8b24e, so
+            ten client requests trip one worker. `/errors <consumer>` in the
+            bot lists the 5xx with request ids.
       - alert: RouterWorkerCircuitHalfOpen
         expr: |
           smg_worker_cb_state == 2
