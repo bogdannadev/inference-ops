@@ -1,6 +1,6 @@
 # Incident 2026-09-20: one malformed image prompt took both replicas out
 
-**2026-09-20 19:34:56–19:36:28 UTC. Consumer `designer`, OpenCode desktop
+**2026-09-20 19:34:56–19:36:28 UTC. One consumer key, OpenCode desktop
 2.0.10. 4 × 500 then 7 × 503 at the gateway. No other consumer was sending, so
 user-visible impact was one person for 90 s.**
 
@@ -342,7 +342,7 @@ Ranked by leverage.
    also cleared r0's stuck `half_open`. Rationale is in the router block of
    `../docker-compose.yml`.
 
-   Replaying this incident under the new settings: designer still sees 11 × 500,
+   Replaying this incident under the new settings: that client still sees 11 × 500,
    **but no 503, no fleet outage, and no stranded replica** — the second worker
    is never touched. It is blast-radius containment, not a fix.
 
