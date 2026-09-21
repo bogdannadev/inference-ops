@@ -2109,7 +2109,16 @@ sealed class Worker(
            first token can take a couple of minutes when the
            server is busy; that is normal, not a hang. Report the
            exit status and the reply.
-        8. Then tell me to restart opencode and select
+        8. Install the image-batches skill. It keeps image work
+           inside this server's limits and says what to do when
+           a session stops working:
+           - mkdir -p ~/.config/opencode/skills/image-batches
+           - save this page into that folder as SKILL.md:
+             https://raw.githubusercontent.com/bogdannadev/inference-ops/master/qwen3.6-27b-2-A100/docs/opencode-skills/image-batches/SKILL.md
+           - check: opencode debug skill > /tmp/skills.json
+             then grep -c image-batches /tmp/skills.json
+             (piping it straight into grep truncates it)
+        9. Then tell me to restart opencode and select
            qwen-gw/MODEL with /models. Change none of my other
            settings.
 
