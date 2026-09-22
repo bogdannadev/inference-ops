@@ -46,6 +46,23 @@ for label, raiser, expect, code in (("placeholder mismatch", mismatch, ValueErro
     except Exception as e:
         raise SystemExit(f"{label}: got {type(e).__name__}, wanted {expect.__name__}")
 
+# --- patch 2's message: actionable, and free of the markup it warns about ---
+# The body is stored in the client's conversation history, so markup in it would
+# poison the session it is telling the user to abandon. Upstream's own string is
+# empty for this branch, which is what made the 400 useless.
+msg = None
+try:
+    asyncio.run(stub(mismatch).legacy_load_mm_data())
+except ValueError as e:
+    msg = str(e)
+assert msg, "mismatch raised no message"
+assert len(msg) > 80, f"mismatch message too terse to act on ({len(msg)} chars)"
+assert "new conversation" in msg, "mismatch message does not say what to do"
+assert "Retrying cannot help" in msg, "mismatch message does not forbid the retry"
+for poison in ("image_pad", "vision_start", "vision_end", "video_pad", "<|"):
+    assert poison not in msg, f"mismatch message contains {poison!r} — it would poison the reply"
+print("patch2  message actionable, markup-free : OK")
+
 # idempotent: a second install must not double-wrap
 assert sitecustomize._patch_proto.__module__ == "sitecustomize"
 print("OK")

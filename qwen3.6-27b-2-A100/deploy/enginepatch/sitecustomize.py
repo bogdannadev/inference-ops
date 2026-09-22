@@ -35,6 +35,27 @@ TARGET_MM = "sglang.srt.multimodal.processors.base_processor"
 
 _done = set()
 
+# What the client is told when its history claims an image it never attached.
+#
+# Upstream's string is useless here: base_processor formats it as
+# f"...: {e}" where e is a bare StopIteration carrying no args, so the body
+# reads "An exception occurred while loading multimodal data:" and stops. Every
+# log line from the 2026-09-22 burst ends in that dangling colon. The user sees
+# a blank error and does the one thing that cannot work -- retries.
+#
+# This string is returned to the client, which stores it in the conversation
+# history. So it MUST NOT contain special-token markup in any form: writing the
+# literal placeholder here would poison the very session it is telling the user
+# to abandon. Plain words only -- see docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md.
+_MISMATCH_MESSAGE = (
+    "This conversation contains an image placeholder with no image attached, "
+    "so it cannot be processed. The usual cause is image-placeholder markup "
+    "that entered the conversation as ordinary text, most often in an earlier "
+    "model reply, and it is resent with the history on every turn. Retrying "
+    "cannot help: it fails identically every time, on every replica. Start a "
+    "new conversation -- this history cannot be repaired by resending it."
+)
+
 
 def _patch_proto(module):
     """Force skip_special_tokens=True. Returns True once actually applied."""
@@ -72,6 +93,10 @@ def _patch_mm(module):
     StopIteration -- the payload iterator running dry, i.e. more placeholders than
     images. Every other RuntimeError from this function (a GPU OOM in image
     preprocessing, for one) stays a 500 so it keeps alerting.
+
+    The upstream text is replaced rather than wrapped, because it is empty for
+    this branch; see _MISMATCH_MESSAGE. The original stays reachable as
+    __cause__ for the server-side traceback.
     """
     cls = getattr(module, "BaseMultimodalProcessor", None)
     if cls is None or not hasattr(cls, "legacy_load_mm_data"):
@@ -85,7 +110,7 @@ def _patch_mm(module):
             return await original(self, *args, **kwargs)
         except RuntimeError as exc:
             if isinstance(exc.__context__, StopIteration):
-                raise ValueError(str(exc)) from exc
+                raise ValueError(_MISMATCH_MESSAGE) from exc
             raise
 
     cls.legacy_load_mm_data = legacy_load_mm_data
