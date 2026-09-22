@@ -4544,8 +4544,9 @@ sealed class LimiterSync(IHttpClientFactory http, KeyStore keys, Ledger ledger, 
                     var err = await put.Content.ReadAsStringAsync(ct);
                     throw new InvalidOperationException($"PUT HTTP {(int)put.StatusCode}: {(err.Length > 200 ? err[..200] : err)}");
                 }
-                log.LogInformation("limiter rules pushed: {Daily} daily, {Minute} per-minute, enabled={Enabled}, scope={Scope}",
-                    daily.Count, minute.Count, enabled, Scope is null ? "all" : string.Join(",", Scope));
+                log.LogInformation("limiter rules pushed: {Daily} daily, {Minute} per-minute, enabled={Enabled}, scope={Scope}; limits: {Limits}",
+                    daily.Count, minute.Count, enabled, Scope is null ? "all" : string.Join(",", Scope),
+                    RenderLimits(daily, minute));
             }
 
             _limited = daily.Keys.Union(minute.Keys).Count();
@@ -4559,6 +4560,28 @@ sealed class LimiterSync(IHttpClientFactory http, KeyStore keys, Ledger ledger, 
         }
         finally { _lock.Release(); }
     }
+
+    // The limit VALUES, not just how many there are.
+    //
+    // A 429 can only be explained against the limits that were in force at that
+    // moment, and these rules are rewritten on every key or policy change —
+    // twice inside fifteen minutes on 2026-09-22. Logging counts alone made
+    // five refusals permanently unexplainable: the policy read hours later was
+    // not the policy that produced them, and nothing anywhere held the old one.
+    // Redis keeps the per-minute counter for 60 s and the daily one for 24 h,
+    // so this log line is the only durable record of the other half of the
+    // comparison.
+    //
+    // Emitted only when the fingerprint actually changed, so it stays quiet:
+    // one line per real policy edit, "<name>=<daily>/<tpm>", '-' for absent.
+    private static string RenderLimits(SortedDictionary<string, long> daily,
+                                       SortedDictionary<string, long> minute)
+        => string.Join(" ", daily.Keys.Union(minute.Keys)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .Select(n => $"{n}="
+                + (daily.TryGetValue(n, out var d) ? d.ToString(CultureInfo.InvariantCulture) : "-")
+                + "/"
+                + (minute.TryGetValue(n, out var m) ? m.ToString(CultureInfo.InvariantCulture) : "-")));
 
     private static JsonObject Render(SortedDictionary<string, long> daily, SortedDictionary<string, long> minute, JsonNode redis)
     {
