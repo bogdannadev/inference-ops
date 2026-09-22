@@ -9,6 +9,9 @@ merged.yml
 # Runtime data — never commit
 langfuse-data/
 logs/
+# Engine stderr captured by deploy/roll-replica.sh before each recreation.
+# Separate from logs/ because that one is root-owned by the container.
+logs-archive/
 grafana_data/
 
 # Python bytecode from local syntax checks
