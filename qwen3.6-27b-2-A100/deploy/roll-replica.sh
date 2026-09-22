@@ -131,13 +131,36 @@ else
   echo "not registered in the router; nothing to drain"
 fi
 
-# --- 2. roll --------------------------------------------------------------
+# --- 2. archive the logs --------------------------------------------------
+# --force-recreate destroys the old container and its stderr with it, and that
+# stderr is the ONLY durable record of a request that failed inside the engine:
+# engine.requests has no row for one that died before generation (no response
+# id to join on), and the request-metrics files carry completed requests only.
+# Measured cost of not having this, 2026-09-22: the roll that fixed the
+# image-token poisoning erased the 22 tracebacks that diagnosed it, and took
+# two unexplained 400s with them.
+#
+# logs/ is root-owned (the container writes it), so this cannot go there —
+# hence logs-archive/, created by this script and owned by whoever runs it.
+say "Archiving $SVC stderr before recreation"
+ARCHIVE_DIR="logs-archive/$REPLICA"
+ARCHIVE="$ARCHIVE_DIR/$(date -u +%Y%m%dT%H%M%SZ)-pre-roll.log"
+if mkdir -p "$ARCHIVE_DIR" && docker logs "$SVC" > "$ARCHIVE" 2>&1; then
+  gzip -f "$ARCHIVE"
+  echo "wrote $(du -h "$ARCHIVE.gz" | cut -f1) to $ARCHIVE.gz"
+else
+  # Never abort the roll over a failed archive: losing the logs is bad, not
+  # rolling a replica that needs rolling is worse.
+  echo "WARNING: could not archive $SVC stderr — rolling anyway" >&2
+fi
+
+# --- 3. roll --------------------------------------------------------------
 # NEVER --remove-orphans: it would delete qwen3-emb, grafana, prometheus, dcgm.
 # The orphan warning on every compose command here is expected; ignore it.
 say "Recreating $SVC"
 docker compose up -d --no-deps $RECREATE "$SVC"
 
-# --- 3. wait for the container ------------------------------------------
+# --- 4. wait for the container ------------------------------------------
 say "Waiting for $SVC to report healthy (up to ${HEALTH_TIMEOUT}s)"
 t0=$(date +%s)
 while :; do
@@ -154,7 +177,7 @@ while :; do
   sleep 10
 done
 
-# --- 4. re-register -------------------------------------------------------
+# --- 5. re-register -------------------------------------------------------
 # NO_REGISTER=1 leaves the replica out of the router (a trial config that has
 # to pass drained gates first); put it back later with
 # ./deploy/drain-replica.sh <replica> restore
@@ -176,7 +199,7 @@ for _ in $(seq 1 12); do
   sleep 5
 done
 
-# --- 5. verify ------------------------------------------------------------
+# --- 6. verify ------------------------------------------------------------
 say "Final router view"
 workers_json | python3 -c "
 import json,sys
