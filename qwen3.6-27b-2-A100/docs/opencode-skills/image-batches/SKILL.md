@@ -44,8 +44,15 @@ a fenced code block. So ordinary text containing it claims an image that was
 never attached, and from that moment every turn fails with:
 
 ```
-500  Mismatch: More 'IMAGE' tokens found than corresponding data provided.
+400  This conversation contains an image placeholder with no image attached,
+     so it cannot be processed. ... Retrying cannot help: it fails identically
+     every time, on every replica. Start a new conversation — this history
+     cannot be repaired by resending it.
 ```
+
+Older sessions, and any server not yet carrying this message, show the same
+failure as a bare `500  Mismatch: More 'IMAGE' tokens found than corresponding
+data provided.` Treat both identically.
 
 Three things follow, and they decide what you do:
 
@@ -92,12 +99,22 @@ Three things follow, and they decide what you do:
   history to appear, so the batching this skill already asks for is also the
   cheapest protection.
 
-**Server-side there is a partial guard, and you should not rely on it.** Since
-2026-09-21 the gateway forces `skip_special_tokens: true` on chat requests, which
-stops the server echoing this markup into a reply. But it only applies to small
-request bodies (roughly under 32 KB), and an image session is far larger than
-that, so **for the sessions this skill is about, the guard does not apply.**
-Assume the failure is still possible and follow the steps above.
+**Server-side the echo loop is now closed — but that is not the whole problem.**
+Since 2026-09-22 the engine forces `skip_special_tokens: true` on every chat
+request, whatever the client asks for and whatever the body size, so the server
+no longer renders this markup into a reply. (An earlier gateway-level attempt
+did have a ~32 KB size limit and never covered image sessions; it has been
+superseded, and any advice you have seen about that limit is out of date.)
+
+What it does **not** do:
+
+- It cannot clean a conversation poisoned before the change. Those sessions stay
+  broken forever and must still be abandoned.
+- It cannot stop markup you feed in yourself, by reading a file that contains it.
+
+So the rules above stand unchanged. The failure is now a `400` rather than a
+`500`, which means the server no longer wastes retries on it — but for you the
+handling is identical: do not retry, start a new session.
 
 ## Step 1 — Prepare the images
 
@@ -191,9 +208,11 @@ batch. If a batch fails:
   and run each half in a fresh subagent.
 - "Image count N exceeds limit 16" → too many images in one subagent: split
   the batch, fewer zooms.
-- `500` saying "More 'IMAGE' tokens found than corresponding data provided" →
-  the session history is poisoned. **Do not retry**: it fails identically every
-  time, on every server replica, forever. See "Poisoned sessions" above.
+- `400` saying "contains an image placeholder with no image attached" (or, on
+  an older server, `500` saying "More 'IMAGE' tokens found than corresponding
+  data provided") → the session history is poisoned. **Do not retry**: it fails
+  identically every time, on every server replica, forever. See "Poisoned
+  sessions" above.
 - `503` → the server is briefly out of capacity. Wait 30 seconds, retry once.
 - any other `500` → stop and show the user the exact error. **Do not retry.**
   A 500 repeated enough times is read by the server as a failing replica and
