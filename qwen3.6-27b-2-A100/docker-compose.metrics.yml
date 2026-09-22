@@ -52,12 +52,19 @@ services:
 
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=30d
+      # 180d since 2026-09-20. 30d was costing real history: the August usage
+      # record was expiring a day at a time, and it is the only surviving
+      # source for anything before ClickHouse started (2026-09-04) — the early
+      # gateway log, which engine.requests was backfilled from, caught ~7% of
+      # the traffic Prometheus counted. Usage evidence outlives an incident.
+      - --storage.tsdb.retention.time=180d
       # Second retention bound, on size. `retention.time` alone is open-ended
       # in bytes: a cardinality mistake — a new label with unbounded values —
-      # fills the disk long before 30 days elapse. Whichever limit trips first
-      # wins. 20 GiB is generous against the current ~5k series.
-      - --storage.tsdb.retention.size=20GB
+      # fills the disk long before 180 days elapse. Whichever limit trips first
+      # wins. 30 days of the current series cost 2.8 GB, so 180 days lands near
+      # 17 GB and the old 20 GB cap would have silently become the real limit;
+      # 60 GB keeps time the binding constraint, against 1.1 TB free.
+      - --storage.tsdb.retention.size=60GB
       - --web.listen-address=0.0.0.0:9090
       # Lets `curl -X POST http://127.0.0.1:9090/-/reload` apply scrape and
       # rule changes in place. Without it, editing prometheus.yml means either
