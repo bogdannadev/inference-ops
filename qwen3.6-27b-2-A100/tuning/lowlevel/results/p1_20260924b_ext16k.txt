@@ -1,0 +1,46 @@
+trace   logs/r1/profile_p1/20260924b/ext16k/1790197568.7341344-TP-0.trace.json.gz
+kernels 7,145   kernel time 7.344 s   window 7.443 s
+active  7.413 s   busy 99.1%   in-step bubbles (<1 ms) 0.9%   no-load gaps 0.029 s
+bubbles by gap size (share of active):  <2us 0.1%  2-10us 0.0%  10-100us 0.2%  0.1-1ms 0.6%
+
+bucket           share of kernel time
+  attention        48.53%       3564.2 ms
+  gemm             45.73%       3358.0 ms
+  gdn_chunk         2.19%        160.6 ms
+  norm_rope         1.27%         93.0 ms
+  elementwise       1.11%         81.4 ms
+  copy              0.72%         52.5 ms
+  conv1d            0.44%         32.4 ms
+  other             0.02%          1.7 ms
+
+top 30 kernels (name, grid)                                                   count    total ms   mean us  share  regs
+  flashinfer::BatchPrefillWithPagedKVCacheKernel<…>                                  1536      64     3564.0   55687.0 48.53%   239
+  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_stages_64x3_tn                        4352     256     1569.1    6129.2 21.37%   238
+  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn                         640     260      778.1    2992.6 10.60%   238
+  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_stages_64x3_tn                        2048     192      544.2    2834.3  7.41%   238
+  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_stages_64x3_tn                         640     256      275.8    1077.4  3.76%   238
+  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_stages_64x3_tn                        1792      64      168.5    2632.8  2.29%   238
+  sglang::act_and_mul_kernel<…>                                                     34816     256       63.2     246.9  0.86%    28
+  kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKernel_object_a   2048     512       49.6      96.8  0.68%   158
+  chunk_gated_delta_rule_fwd_kernel_h_blockdim64                                      192     192       48.9     254.6  0.67%   179
+  chunk_fwd_kernel_o                                                                 6144     192       46.4     241.7  0.63%   185
+  _causal_conv1d_fwd_kernel                                                         20480     192       32.4     168.9  0.44%    40
+  recompute_w_u_fwd_kernel                                                           3072     192       31.6     164.6  0.43%   172
+  chunk_gated_delta_rule_fwd_kkt_solve_kernel                                        3072     192       26.2     136.7  0.36%   252
+  at::native::elementwise_kernel<…>                                                 49152     192       23.2     121.0  0.32%    16
+  _layer_norm_fwd_1pass_kernel                                                      49152     192       17.4      90.7  0.24%    62
+  at::native::elementwise_kernel<…>                                                 16384     384       16.9      44.0  0.23%    16
+  _fused_qk_rmsnorm_rope_gate_kernel                                               114688      64       16.5     257.5  0.22%    30
+  l2norm_fwd_kernel                                                                  4096     384        8.2      21.4  0.11%    19
+  at::native::vectorized_elementwise_kernel<…>                                      24576     256        8.1      31.7  0.11%    16
+  ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_tn                          96     192        8.1      42.2  0.11%   246
+  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_stages_64x3_nn                        1280       4        7.1    1772.7  0.10%   234
+  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn                3880       4        6.0    1494.0  0.08%   146
+  _fused_sigmoid_mul_kernel                                                         12288      64        5.4      83.8  0.07%    32
+  at::native::index_elementwise_kernel<…>                                            1536     384        4.9      12.7  0.07%    36
+  fused_gdn_gating_kernel                                                           24576     192        4.8      25.0  0.07%    17
+  at::native::vectorized_elementwise_kernel<…>                                      12288     192        3.3      16.9  0.04%    16
+  at::native::index_elementwise_kernel<…>                                              60     384        3.0       7.9  0.04%    36
+  chunk_local_cumsum_scalar_kernel                                                   3072     192        2.6      13.6  0.04%    16
+  cublasLt::splitKreduce_kernel<…>                                                    768     192        1.2       6.4  0.02%    32
+  sglang::store_kvcache<…>                                                           4096      64        1.2      18.3  0.02%    25

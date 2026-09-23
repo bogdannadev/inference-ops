@@ -1,0 +1,38 @@
+{
+ "label": "20260924b",
+ "worker": "qwen36-27b-r1:8002",
+ "scenarios": {
+  "cold4k": {
+   "profile": "Start profiling.",
+   "tokens": 4096,
+   "chunks": 1,
+   "e2e_s": 1.63,
+   "trace_dir": "/app/logs/profile_p1/20260924b/cold4k",
+   "wall_s": 1.8
+  },
+  "cold32k": {
+   "profile": "Start profiling.",
+   "tokens": 32768,
+   "chunks": 8,
+   "e2e_s": 14.09,
+   "trace_dir": "/app/logs/profile_p1/20260924b/cold32k",
+   "wall_s": 14.3
+  },
+  "cold128k_z": {
+   "profile": "Start profiling.",
+   "tokens": 131072,
+   "chunks": 32,
+   "e2e_s": 58.52,
+   "started_at_s": 43.9,
+   "trace_dir": "/app/logs/profile_p1/20260924b/cold128k_z",
+   "wall_s": 58.6
+  },
+  "ext16k": {
+   "profile": "Start profiling.",
+   "prefix_s": 22.1,
+   "ext_s": 9.82,
+   "trace_dir": "/app/logs/profile_p1/20260924b/ext16k",
+   "wall_s": 42.2
+  }
+ }
+}
