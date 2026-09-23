@@ -239,7 +239,7 @@ rule is live and correct — Envoy's ECDS dump holds it bound to the `ai-chat`
 route, `last_update_success: 1`, `update_rejected: 0` — **but it silently does not
 apply to large request bodies, and every poisoned body is large.**
 
-Measured immediately after the push. Two `designer` requests, same consumer, same
+Measured immediately after the push. Two requests from one consumer key, same
 route `/v1/chat/completions`, **76 ms apart**:
 
 | gateway time | `bytes_received` | engine saw |
@@ -672,7 +672,7 @@ The `skip_special_tokens` premise in §3 was wrong, and the real mechanism is no
 proven end to end — §3a. That is what moved "force `skip_special_tokens: true`"
 to the top of §8, and it is applied.
 
-One reporting gap worth noting: `GatewayServerErrors{consumer="designer"}` fired
+One reporting gap worth noting: `GatewayServerErrors` fired for that consumer key
 from 09:19 and stayed firing, so consumer-visible detection worked. What was
 missing was any signal tying it to the breaker trips, which is what
 `RouterCircuitTripped` now provides.

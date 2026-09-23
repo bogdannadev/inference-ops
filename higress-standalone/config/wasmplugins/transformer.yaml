@@ -59,7 +59,8 @@
 # whole request body to rewrite it, and this listener runs with Istio's default
 # per_connection_buffer_limit_bytes: 32768. Past that the buffering is abandoned
 # and the body is forwarded UNMODIFIED, with no error and no log line — FAIL_OPEN
-# means a silent no-op. Two designer requests 76 ms apart on this very route:
+# means a silent no-op. Two requests from one consumer 76 ms apart on this
+# very route:
 #
 #     2,632 B  -> engine saw skip_special_tokens: True   (rewritten)
 #    26,567 B  -> engine saw skip_special_tokens: False  (untouched)
