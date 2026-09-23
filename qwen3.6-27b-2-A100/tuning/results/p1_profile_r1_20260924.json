@@ -1,0 +1,58 @@
+{
+ "label": "20260924",
+ "worker": "qwen36-27b-r1:8002",
+ "scenarios": {
+  "decode": {
+   "profile": "Start profiling.",
+   "decode_tok_s": [
+    53.85,
+    52.34,
+    52.06,
+    54.06
+   ],
+   "errors": [],
+   "trace_dir": "/app/logs/profile_p1/20260924/decode",
+   "wall_s": 13.7
+  },
+  "cold4k": {
+   "profile": "Start profiling.",
+   "tokens": 4096,
+   "chunks": 1,
+   "e2e_s": 1.04,
+   "trace_dir": "/app/logs/profile_p1/20260924/cold4k",
+   "wall_s": 1.1
+  },
+  "cold32k": {
+   "profile": "Start profiling.",
+   "tokens": 32768,
+   "chunks": 8,
+   "e2e_s": 9.5,
+   "trace_dir": "/app/logs/profile_p1/20260924/cold32k",
+   "wall_s": 12.9
+  },
+  "cold128k_a": {
+   "profile": "Start profiling.",
+   "tokens": 131072,
+   "chunks": 32,
+   "e2e_s": 58.53,
+   "trace_dir": "/app/logs/profile_p1/20260924/cold128k_a",
+   "wall_s": 58.7
+  },
+  "cold128k_z": {
+   "profile": "Start profiling.",
+   "tokens": 131072,
+   "chunks": 32,
+   "e2e_s": 56.6,
+   "started_at_s": 57.6,
+   "trace_dir": "/app/logs/profile_p1/20260924/cold128k_z",
+   "wall_s": 57.8
+  },
+  "ext16k": {
+   "profile": "Start profiling.",
+   "prefix_s": 33.22,
+   "ext_s": 7.52,
+   "trace_dir": "/app/logs/profile_p1/20260924/ext16k",
+   "wall_s": 50.9
+  }
+ }
+}

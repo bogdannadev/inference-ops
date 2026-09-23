@@ -1,0 +1,239 @@
+{
+ "trace": "logs/r1/profile_p1/20260924/decode/1790197096.228178-TP-0.trace.json.gz",
+ "kernel_time_us": 1921087.4579999915,
+ "window_us": 2010201.03125,
+ "busy_us": 1888532.962890625,
+ "active_us": 2006399.25390625,
+ "bubble_us": 117866.291015625,
+ "step_gap_ms": 1.0,
+ "idle_by_gap_us": {
+  "10-100us": 60055.0771484375,
+  "no-load": 3801.77734375,
+  "0.1-1ms": 49053.072265625,
+  "2-10us": 3400.69921875,
+  "<2us": 5357.4423828125
+ },
+ "buckets": {
+  "copy": 23142.197000000007,
+  "other": 3992.5369999999984,
+  "attention": 25424.446999999996,
+  "elementwise": 22419.82800000001,
+  "norm_rope": 39426.78800000051,
+  "gemm": 1669121.8309999912,
+  "conv1d": 31753.579999999987,
+  "gdn_recurrent": 85812.70499999991,
+  "gdn_state": 19993.544999999987
+ },
+ "top": [
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+   "grid": 136,
+   "count": 2760,
+   "total_us": 674865.5140000003,
+   "regs": 254
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+   "grid": 100,
+   "count": 5360,
+   "total_us": 477839.6550000011,
+   "regs": 254
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+   "grid": 128,
+   "count": 1920,
+   "total_us": 237798.198,
+   "regs": 158
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn",
+   "grid": 970,
+   "count": 80,
+   "total_us": 127320.51600000002,
+   "regs": 254
+  },
+  {
+   "name": "fused_sigmoid_gating_delta_rule_update_kernel",
+   "grid": 768,
+   "count": 1920,
+   "total_us": 85812.70499999991,
+   "regs": 238
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+   "grid": 112,
+   "count": 640,
+   "total_us": 78162.92500000008,
+   "regs": 158
+  },
+  {
+   "name": "_causal_conv1d_update_kernel",
+   "grid": 160,
+   "count": 1920,
+   "total_us": 31753.579999999987,
+   "regs": 32
+  },
+  {
+   "name": "kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKernel_object_a",
+   "grid": 16,
+   "count": 5520,
+   "total_us": 26973.08300000012,
+   "regs": 158
+  },
+  {
+   "name": "cutlass::Kernel2<\u2026>",
+   "grid": 54,
+   "count": 1920,
+   "total_us": 21415.421000000053,
+   "regs": 91
+  },
+  {
+   "name": "_fused_mamba_state_scatter_with_mask_kernel",
+   "grid": 147456,
+   "count": 80,
+   "total_us": 19993.544999999987,
+   "regs": 20
+  },
+  {
+   "name": "cublasLt::splitKreduce_kernel<\u2026>",
+   "grid": 320,
+   "count": 5360,
+   "total_us": 19173.92600000019,
+   "regs": 32
+  },
+  {
+   "name": "flashinfer::BatchPrefillWithPagedKVCacheKernel<\u2026>",
+   "grid": 216,
+   "count": 840,
+   "total_us": 16073.038999999986,
+   "regs": 239
+  },
+  {
+   "name": "fused_qkvzba_split_reshape_cat_contiguous_kernel",
+   "grid": 512,
+   "count": 1920,
+   "total_us": 12338.558000000025,
+   "regs": 27
+  },
+  {
+   "name": "sglang::act_and_mul_kernel<\u2026>",
+   "grid": 272,
+   "count": 2760,
+   "total_us": 10948.092000000062,
+   "regs": 28
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+   "grid": 96,
+   "count": 200,
+   "total_us": 9267.427,
+   "regs": 146
+  },
+  {
+   "name": "_layer_norm_fwd_1pass_kernel",
+   "grid": 384,
+   "count": 1920,
+   "total_us": 7877.518999999963,
+   "regs": 62
+  },
+  {
+   "name": "cublasLt::splitKreduce_kernel<\u2026>",
+   "grid": 6,
+   "count": 1920,
+   "total_us": 7332.851000000029,
+   "regs": 32
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn",
+   "grid": 80,
+   "count": 200,
+   "total_us": 6445.831999999997,
+   "regs": 146
+  },
+  {
+   "name": "cutlass::Kernel2<\u2026>",
+   "grid": 96,
+   "count": 400,
+   "total_us": 4882.914000000002,
+   "regs": 91
+  },
+  {
+   "name": "flashinfer::sampling::RadixTopKKernel_Unified<\u2026>",
+   "grid": 108,
+   "count": 40,
+   "total_us": 4308.221999999999,
+   "regs": 64
+  },
+  {
+   "name": "ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_nn",
+   "grid": 160,
+   "count": 40,
+   "total_us": 3106.3680000000004,
+   "regs": 146
+  },
+  {
+   "name": "_fused_qk_rmsnorm_rope_gate_kernel",
+   "grid": 896,
+   "count": 640,
+   "total_us": 3035.999000000005,
+   "regs": 30
+  },
+  {
+   "name": "flashinfer::PersistentVariableLengthMergeStatesKernel<\u2026>",
+   "grid": 864,
+   "count": 640,
+   "total_us": 2995.206000000004,
+   "regs": 40
+  },
+  {
+   "name": "at::native::vectorized_elementwise_kernel<\u2026>",
+   "grid": 1,
+   "count": 1160,
+   "total_us": 2486.863000000003,
+   "regs": 38
+  },
+  {
+   "name": "triton_poi_fused_add_arange_bitwise_and_constant_pad_nd_ge_mul_select_slice_unsqueeze_view",
+   "grid": 160,
+   "count": 800,
+   "total_us": 2211.683000000005,
+   "regs": 40
+  },
+  {
+   "name": "at::native::unrolled_elementwise_kernel<\u2026>",
+   "grid": 15520,
+   "count": 40,
+   "total_us": 1720.3890000000006,
+   "regs": 30
+  },
+  {
+   "name": "_fused_conv_window_scatter_multi_kernel",
+   "grid": 11520,
+   "count": 40,
+   "total_us": 1701.0639999999996,
+   "regs": 48
+  },
+  {
+   "name": "sglang::store_kvcache<\u2026>",
+   "grid": 32,
+   "count": 640,
+   "total_us": 1451.1060000000057,
+   "regs": 25
+  },
+  {
+   "name": "_fused_sigmoid_mul_kernel",
+   "grid": 192,
+   "count": 640,
+   "total_us": 1396.5970000000004,
+   "regs": 28
+  },
+  {
+   "name": "at::native::reduce_kernel<\u2026>",
+   "grid": 448,
+   "count": 40,
+   "total_us": 1351.1660000000004,
+   "regs": 32
+  }
+ ]
+}
