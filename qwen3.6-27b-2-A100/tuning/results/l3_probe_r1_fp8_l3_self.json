@@ -1,0 +1,60 @@
+{
+ "label": "fp8_l3_self",
+ "codes": [
+  14723640,
+  75162904
+ ],
+ "cross_replica": false,
+ "steps": [
+  {
+   "step": "A_cold_seed",
+   "ttft_s": 32.002,
+   "prompt_tokens": 78001,
+   "cached": null,
+   "cached_details": null,
+   "content": "14723640 75162904",
+   "completion_tokens": 18,
+   "error": null
+  },
+  {
+   "step": "A_after_flush_L3",
+   "ttft_s": 5.174,
+   "prompt_tokens": 78001,
+   "cached": 77952,
+   "cached_details": null,
+   "content": "14723640 75162904",
+   "completion_tokens": 18,
+   "error": null
+  },
+  {
+   "step": "A_continue_on_L3_prefix",
+   "ttft_s": 0.429,
+   "prompt_tokens": 78047,
+   "cached": 77952,
+   "cached_details": null,
+   "content": "Numeric codes are frequently mixed up due to the inherent limitations of human cognitive processing when dealing with ab",
+   "completion_tokens": 400,
+   "error": null
+  },
+  {
+   "step": "B_cold_control",
+   "ttft_s": 32.311,
+   "prompt_tokens": 78037,
+   "cached": null,
+   "cached_details": null,
+   "content": "The confusion surrounding numeric codes often stems from the fundamental disconnect between how humans perceive informat",
+   "completion_tokens": 400,
+   "error": null
+  }
+ ],
+ "verdict": {
+  "cold_ttft_s": 32.002,
+  "l3_ttft_s": 5.174,
+  "speedup": 6.2,
+  "cold_answer_ok": true,
+  "l3_answer_ok": true,
+  "l3_cached_details": null,
+  "accept_len_on_l3_prefix": 2.35,
+  "accept_len_cold_control": 2.61
+ }
+}

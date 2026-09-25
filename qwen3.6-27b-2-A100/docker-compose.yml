@@ -584,6 +584,9 @@ services:
       # never be able to rewrite its own patch.
       - ./deploy/enginepatch:/opt/enginepatch:ro
       - /etc/localtime:/etc/localtime:ro
+      # HiCache L3, shared with r1 — see the r1 volumes block for why the
+      # directory is per KV dtype.
+      - /dev/shm/qwen36-hicache-l3/fp8_e4m3:/tmp/hicache
 
     deploy:
       resources:
@@ -831,13 +834,16 @@ services:
       --dtype bfloat16
       --tp 1
       --context-length 169000
-      --mem-fraction-static 0.94
+      --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
       --enable-session-radix-cache
       --enable-hierarchical-cache
       --hicache-ratio 8
+      --kv-cache-dtype fp8_e4m3
+      --hicache-storage-backend file
+      --hicache-storage-backend-extra-config '{"max_size":"60G","min_free_space":"100G"}'
       --max-mamba-cache-size 43
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
@@ -963,6 +969,11 @@ services:
       # Engine patch — see the r0 block above and deploy/enginepatch/README.md.
       - ./deploy/enginepatch:/opt/enginepatch:ro
       - /etc/localtime:/etc/localtime:ro
+      # HiCache L3 (`--hicache-storage-backend file`), shared by both replicas
+      # on host tmpfs. /tmp/hicache is HiCacheFile's default dir. Page keys are
+      # content hash + model + TP rank and do NOT include the KV dtype, so the
+      # directory is per dtype: a bf16 replica must never read fp8 pages.
+      - /dev/shm/qwen36-hicache-l3/fp8_e4m3:/tmp/hicache
 
     deploy:
       resources:
@@ -987,13 +998,16 @@ services:
       --dtype bfloat16
       --tp 1
       --context-length 169000
-      --mem-fraction-static 0.94
+      --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
       --enable-session-radix-cache
       --enable-hierarchical-cache
       --hicache-ratio 8
+      --kv-cache-dtype fp8_e4m3
+      --hicache-storage-backend file
+      --hicache-storage-backend-extra-config '{"max_size":"60G","min_free_space":"100G"}'
       --max-mamba-cache-size 43
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
