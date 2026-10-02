@@ -21,6 +21,7 @@ counts requests, not tokens.
 --hicache-storage-backend file
 --hicache-storage-backend-extra-config '{"max_size":"60G","min_free_space":"100G"}'
 volume /dev/shm/qwen36-hicache-l3/fp8_e4m3:/tmp/hicache      (shared, host tmpfs)
+                                                             (since 2026-10-02: .../qwen36-hicache-l3-v0521/fp8_e4m3, see UPGRADE_v0.5.21.md)
 ```
 
 **The L3 directory is per KV dtype, on purpose.** HiCacheFile keys are content

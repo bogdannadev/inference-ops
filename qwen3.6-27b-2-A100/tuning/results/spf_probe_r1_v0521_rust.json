@@ -1,0 +1,38 @@
+{
+ "label": "v0521_rust",
+ "args": {
+  "host": "qwen36-27b-r1",
+  "port": 8002,
+  "label": "v0521_rust",
+  "rounds": 3,
+  "long_len": 100000,
+  "short_len": 2000,
+  "short_n": 3,
+  "short_delay_s": 5,
+  "short_gap_s": 2
+ },
+ "rounds": [
+  {
+   "short0": 2.18,
+   "short1": 1.45,
+   "short2": 2.25,
+   "long": 47.58
+  },
+  {
+   "short0": 2.89,
+   "short1": 2.19,
+   "short2": 1.49,
+   "long": 47.64
+  },
+  {
+   "short0": 2.91,
+   "short1": 2.19,
+   "short2": 1.5,
+   "long": 47.66
+  }
+ ],
+ "short_ttft_p50": 2.19,
+ "short_ttft_max": 2.91,
+ "long_ttft_mean": 47.63,
+ "errors": 0
+}

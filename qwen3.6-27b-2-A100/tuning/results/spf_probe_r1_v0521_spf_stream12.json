@@ -1,0 +1,65 @@
+{
+ "label": "v0521_spf_stream12",
+ "args": {
+  "host": "qwen36-27b-r1",
+  "port": 8002,
+  "label": "v0521_spf_stream12",
+  "rounds": 3,
+  "long_len": 100000,
+  "short_len": 2000,
+  "short_n": 12,
+  "short_delay_s": 5,
+  "short_gap_s": 2.0
+ },
+ "rounds": [
+  {
+   "short0": 2.92,
+   "short1": 2.22,
+   "short2": 1.53,
+   "short3": 3.29,
+   "short4": 2.69,
+   "short5": 2.12,
+   "short6": 1.55,
+   "short7": 3.82,
+   "short8": 3.36,
+   "short9": 2.92,
+   "short10": 2.49,
+   "short11": 2.08,
+   "long": 52.96
+  },
+  {
+   "short0": 2.91,
+   "short1": 2.2,
+   "short2": 1.51,
+   "short3": 3.27,
+   "short4": 2.67,
+   "short5": 2.09,
+   "short6": 1.53,
+   "short7": 3.8,
+   "short8": 3.34,
+   "short9": 2.9,
+   "short10": 2.47,
+   "short11": 2.06,
+   "long": 52.98
+  },
+  {
+   "short0": 2.89,
+   "short1": 2.19,
+   "short2": 1.49,
+   "short3": 3.25,
+   "short4": 2.66,
+   "short5": 2.08,
+   "short6": 1.52,
+   "short7": 3.78,
+   "short8": 3.33,
+   "short9": 2.89,
+   "short10": 2.47,
+   "short11": 2.06,
+   "long": 52.91
+  }
+ ],
+ "short_ttft_p50": 2.66,
+ "short_ttft_max": 3.82,
+ "long_ttft_mean": 52.95,
+ "errors": 0
+}

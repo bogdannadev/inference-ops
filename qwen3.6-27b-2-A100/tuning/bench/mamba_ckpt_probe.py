@@ -79,13 +79,16 @@ def diff(ref, x):
             "cached": x["cached"]}
 
 
+CLEAR_L3 = False
+
+
 def trial(w, i, topic, o_len, q_new):
     nonce = f"[probe {int(time.time())}-{i}]"
     p = tokenize(w, messages=[{"role": "user", "content":
                  f"{nonce} Write a numbered list of 30 specific facts about {topic}."}],
                  chat_template_kwargs={"reasoning_effort": "low"})
     im_end = tokenize(w, prompt="<|im_end|>")
-    if not w.flush():
+    if not w.flush(l3=CLEAR_L3):
         raise RuntimeError("flush_cache never answered 'Cache flushed.'")
     t1 = generate(w, p, o_len)
     o = t1["output_ids"]
@@ -96,11 +99,11 @@ def trial(w, i, topic, o_len, q_new):
     ids, start = p + o + q, len(p) + len(o)
 
     a = generate(w, ids, q_new, start)
-    if not w.flush():
+    if not w.flush(l3=CLEAR_L3):
         raise RuntimeError("flush before C1 failed")
     c1 = generate(w, ids, q_new, start)
     b = generate(w, ids, q_new, start)
-    if not w.flush():
+    if not w.flush(l3=CLEAR_L3):
         raise RuntimeError("flush before C2 failed")
     c2 = generate(w, ids, q_new, start)
 
@@ -114,7 +117,10 @@ def trial(w, i, topic, o_len, q_new):
     a_m = res["A_decode_ckpt_hit"]["mean_abs_dlogprob"] or 0
     b_m = res["B_prefill_ckpt_hit"]["mean_abs_dlogprob"] or 0
     res["hit_reaches_decoded_tokens"] = ok_reach
-    res["verdict"] = ("PASS" if ok_reach and a_m <= max(3 * b_m, 0.02)
+    # A cold control that hit a cache compares a hit with a hit: no signal.
+    # With an L3 backend, /flush_cache alone leaves it in place (--clear-l3).
+    res["verdict"] = ("VOID_COLD_WAS_CACHED" if c1["cached"] or c2["cached"]
+                      else "PASS" if ok_reach and a_m <= max(3 * b_m, 0.02)
                       else "NO_DECODED_HIT" if not ok_reach else "FAIL")
     log(f"trial {i}: P={len(p)} O={len(o)} Q={len(q)} cachedA={a['cached']} "
         f"A={res['A_decode_ckpt_hit']} B={res['B_prefill_ckpt_hit']} "
@@ -128,7 +134,12 @@ def main():
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--label", required=True)
     ap.add_argument("--gen-after-q", type=int, default=48)
+    ap.add_argument("--clear-l3", action="store_true",
+                    help="also clear the L3 storage backend on every flush; only on a "
+                         "worker whose L3 directory no serving replica shares")
     a = ap.parse_args()
+    global CLEAR_L3
+    CLEAR_L3 = a.clear_l3
     w = Worker(a.host, a.port, consumer=f"probe-{a.label}")
     out = {"label": a.label, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "trials": []}

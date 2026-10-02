@@ -1,0 +1,38 @@
+{
+ "label": "v0521_spf",
+ "args": {
+  "host": "qwen36-27b-r1",
+  "port": 8002,
+  "label": "v0521_spf",
+  "rounds": 3,
+  "long_len": 100000,
+  "short_len": 2000,
+  "short_n": 3,
+  "short_delay_s": 5,
+  "short_gap_s": 2
+ },
+ "rounds": [
+  {
+   "short0": 2.04,
+   "short1": 1.29,
+   "short2": 2.05,
+   "long": 46.93
+  },
+  {
+   "short0": 2.87,
+   "short1": 2.16,
+   "short2": 1.47,
+   "long": 47.45
+  },
+  {
+   "short0": 2.92,
+   "short1": 2.21,
+   "short2": 1.51,
+   "long": 47.63
+  }
+ ],
+ "short_ttft_p50": 2.05,
+ "short_ttft_max": 2.92,
+ "long_ttft_mean": 47.34,
+ "errors": 0
+}
