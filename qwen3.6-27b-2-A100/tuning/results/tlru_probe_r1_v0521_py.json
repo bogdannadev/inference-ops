@@ -1,0 +1,321 @@
+{
+ "label": "v0521_py",
+ "args": {
+  "host": "qwen36-27b-r1",
+  "port": 8002,
+  "label": "v0521_py",
+  "convs": 5,
+  "history": 50000,
+  "turn_new": 4000,
+  "turns": 4,
+  "seed": 7
+ },
+ "rows": [
+  {
+   "turn": 0,
+   "conv": 0,
+   "prompt": 50000,
+   "ttft_s": 17.67,
+   "cached": 0,
+   "details": null
+  },
+  {
+   "turn": 0,
+   "conv": 1,
+   "prompt": 50000,
+   "ttft_s": 17.83,
+   "cached": 0,
+   "details": null
+  },
+  {
+   "turn": 0,
+   "conv": 2,
+   "prompt": 50000,
+   "ttft_s": 17.87,
+   "cached": 0,
+   "details": null
+  },
+  {
+   "turn": 0,
+   "conv": 3,
+   "prompt": 50000,
+   "ttft_s": 17.92,
+   "cached": 0,
+   "details": null
+  },
+  {
+   "turn": 0,
+   "conv": 4,
+   "prompt": 50000,
+   "ttft_s": 17.96,
+   "cached": 0,
+   "details": null
+  },
+  {
+   "turn": 1,
+   "conv": 0,
+   "prompt": 54000,
+   "ttft_s": 2.09,
+   "cached": 49984,
+   "details": {
+    "device": 0,
+    "host": 49984,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 1,
+   "conv": 1,
+   "prompt": 54000,
+   "ttft_s": 1.92,
+   "cached": 49984,
+   "details": {
+    "device": 0,
+    "host": 49984,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 1,
+   "conv": 2,
+   "prompt": 54000,
+   "ttft_s": 1.93,
+   "cached": 49984,
+   "details": {
+    "device": 49984,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 1,
+   "conv": 3,
+   "prompt": 54000,
+   "ttft_s": 1.95,
+   "cached": 49984,
+   "details": {
+    "device": 49984,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 1,
+   "conv": 4,
+   "prompt": 54000,
+   "ttft_s": 1.91,
+   "cached": 49984,
+   "details": {
+    "device": 49984,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 2,
+   "conv": 0,
+   "prompt": 58000,
+   "ttft_s": 2.06,
+   "cached": 53952,
+   "details": {
+    "device": 53952,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 2,
+   "conv": 1,
+   "prompt": 58000,
+   "ttft_s": 2.05,
+   "cached": 53952,
+   "details": {
+    "device": 53952,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 2,
+   "conv": 2,
+   "prompt": 58000,
+   "ttft_s": 2.05,
+   "cached": 53952,
+   "details": {
+    "device": 53952,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 2,
+   "conv": 3,
+   "prompt": 58000,
+   "ttft_s": 2.06,
+   "cached": 53952,
+   "details": {
+    "device": 53952,
+    "host": 0,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 2,
+   "conv": 4,
+   "prompt": 58000,
+   "ttft_s": 2.06,
+   "cached": 53952,
+   "details": {
+    "device": 49984,
+    "host": 3968,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 3,
+   "conv": 0,
+   "prompt": 62000,
+   "ttft_s": 2.05,
+   "cached": 57984,
+   "details": {
+    "device": 49984,
+    "host": 8000,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 3,
+   "conv": 1,
+   "prompt": 62000,
+   "ttft_s": 2.06,
+   "cached": 57984,
+   "details": {
+    "device": 0,
+    "host": 57984,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 3,
+   "conv": 2,
+   "prompt": 62000,
+   "ttft_s": 2.06,
+   "cached": 57984,
+   "details": {
+    "device": 0,
+    "host": 57984,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 3,
+   "conv": 3,
+   "prompt": 62000,
+   "ttft_s": 2.05,
+   "cached": 57984,
+   "details": {
+    "device": 36864,
+    "host": 21120,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 3,
+   "conv": 4,
+   "prompt": 62000,
+   "ttft_s": 2.05,
+   "cached": 57984,
+   "details": {
+    "device": 32768,
+    "host": 25216,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 4,
+   "conv": 0,
+   "prompt": 66000,
+   "ttft_s": 2.21,
+   "cached": 61952,
+   "details": {
+    "device": 0,
+    "host": 61952,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 4,
+   "conv": 1,
+   "prompt": 66000,
+   "ttft_s": 2.22,
+   "cached": 61952,
+   "details": {
+    "device": 0,
+    "host": 61952,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 4,
+   "conv": 2,
+   "prompt": 66000,
+   "ttft_s": 2.21,
+   "cached": 61952,
+   "details": {
+    "device": 0,
+    "host": 61952,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 4,
+   "conv": 3,
+   "prompt": 66000,
+   "ttft_s": 2.21,
+   "cached": 61952,
+   "details": {
+    "device": 20480,
+    "host": 41472,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  },
+  {
+   "turn": 4,
+   "conv": 4,
+   "prompt": 66000,
+   "ttft_s": 2.22,
+   "cached": 61952,
+   "details": {
+    "device": 16384,
+    "host": 45568,
+    "storage": 0,
+    "storage_backend": "HiCacheFile"
+   }
+  }
+ ],
+ "warm_ttft_p50": 2.06,
+ "warm_ttft_p90": 2.22,
+ "warm_ttft_max": 2.22,
+ "warm_ttft_mean": 2.07,
+ "recomputed_beyond_new_mean": 32,
+ "errors": 0
+}

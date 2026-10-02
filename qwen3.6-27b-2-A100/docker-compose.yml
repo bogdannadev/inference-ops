@@ -89,9 +89,11 @@
 #   capacity that was not binding; live 16:05-~21:00), chunk 2048 (halves
 #   contexts kept), chunk 8192 (freeze 2.6 -> 5.0 s, no capacity gain), SLRU
 #   (GDN tier is always LRU), mem 0.93, extra_buffer_lazy.
-#   --schedule-policy hrrn (was lpm), operator decision. v0.5.20 #32911:
-#       highest response ratio next, aged by prefill tokens processed.
-#       Not A/B tested here (7-day queue contention was ~10 min in total).
+#   --schedule-policy shortest-prefill-first since 2026-10-02 (v0.5.21 #40024;
+#       was hrrn, before that lpm). Short prompts no longer wait behind a cold
+#       long prefill (40.9 s -> 2.1 s behind 100K, long +1.4%) and the router's
+#       1-token health probe is served at once. No aging: a big cold prefill
+#       stretches under a heavy short stream (UPGRADE_v0.5.21.md, step 2).
 #
 #   ROLLBACK: restore the four EAGLE flags (algorithm EAGLE, num-draft-tokens
 #   6, num-steps 5, eagle-topk 1), mem-fraction 0.92, chunked/max prefill 16384;
@@ -283,7 +285,7 @@
 # workload it only re-scans the queue every step, and it honours a
 # client-supplied `priority`, which would let any API client preempt other
 # tenants.
-x-sglang-image: &sglang-image lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -586,7 +588,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       # HiCache L3, shared with r1 — see the r1 volumes block for why the
       # directory is per KV dtype.
-      - /dev/shm/qwen36-hicache-l3/fp8_e4m3:/tmp/hicache
+      - /dev/shm/qwen36-hicache-l3-v0521/fp8_e4m3:/tmp/hicache
 
     deploy:
       resources:
@@ -654,34 +656,18 @@ services:
     # gated — the long-context drift gate was never exercised, because a
     # 200-token ladder does not reach it.
     #
-    # --enable-session-radix-cache (added 2026-08-08, BOTH replicas).
-    # Enabled deliberately WITHOUT a controlled A/B — it is inert today and
-    # costs nothing, so it is on and ready rather than pending a test.
+    # --enable-session-radix-cache REMOVED 2026-10-02 (v0.5.21). It was inert
+    # from the start (it only acts on a request-body session_id, which no client
+    # sends) and it forced the Python TreeCore. Without it v0.5.21 runs the Rust
+    # TreeCore (#39627); cache_replay showed identical cache decisions
+    # (tuning/docs/UPGRADE_v0.5.21.md, step 4).
     #
-    # What it does: makes UnifiedRadixCache order eviction by
-    # (is_referenced, session_ref_count, base_priority), so KV belonging to a
-    # live session is evicted last. Soft protection, not pinning — referenced
-    # KV is still evictable if unreferenced KV runs out. Implemented ONLY by
-    # UnifiedRadixCache, which is what we run (boot log: "Init Unified RadixTree
-    # with components (FULL, MAMBA)").
-    #
-    # Why it is inert: it only does anything (a) under real eviction pressure,
-    # and (b) when callers pass a stable top-level `session_id`. Neither holds.
-    # The node has ~137 non-healthcheck requests ever, and OpenCode sends no
-    # session_id (verified null across all 5,475 logged requests). The plumbing
-    # exists on our side — `session_id` is carried by /v1/chat/completions
-    # (serving_chat.py passes it straight through) and /close_session is a real
-    # route taking {"session_id": str} — so a shim between Caddy and the router
-    # could start sending it.
-    #
-    # NOTE it was NOT in the old build: the flag parsed, but the implementation
-    # was absent (zero matches for session_ref_count / register_session_ref).
-    # v0.5.17 ships mem_cache/unified_cache/session_ref_tracker.py.
-    #
-    # Blocked upstream of this flag: session affinity needs the router to send a
-    # conversation to the SAME replica, and prefix_hash was tested and rejected
-    # 2026-08-08 (see the router block). Under round_robin a conversation
-    # alternates GPUs, so sessions fragment regardless of eviction order.
+    # --watchdog-timeout 180 (was 1200, inherited from an April config). The
+    # scheduler watchdog counts forward passes only while a batch runs (and
+    # during init), so idle is safe; the longest legitimate forward is one
+    # 4096-token chunk (~3 s). A hung forward now kills the engine after 3 min
+    # and the restart policy brings it back (~4 min warm), instead of clients
+    # hanging into the 900 s timeout (tuning/docs/STALLS_AND_LONG_SESSIONS.md).
     #
     # --stream-response-default-include-usage (added 2026-08-15, BOTH replicas).
     #
@@ -838,7 +824,6 @@ services:
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
-      --enable-session-radix-cache
       --enable-hierarchical-cache
       --hicache-ratio 8
       --kv-cache-dtype fp8_e4m3
@@ -856,7 +841,7 @@ services:
       --max-queued-requests 32
       --cuda-graph-max-bs-decode 4
       --cuda-graph-max-bs-prefill 2048
-      --schedule-policy hrrn
+      --schedule-policy shortest-prefill-first
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
@@ -877,7 +862,7 @@ services:
       --speculative-draft-model-revision dedf8df68adfb1afeaf7b7480c0a0243108177b4
       --speculative-num-draft-tokens 8
       --speculative-draft-kv-cache-dtype fp8_e4m3
-      --watchdog-timeout 1200
+      --watchdog-timeout 180
       --api-key ${SGLANG_API_KEY}
 
     healthcheck:
@@ -973,7 +958,11 @@ services:
       # on host tmpfs. /tmp/hicache is HiCacheFile's default dir. Page keys are
       # content hash + model + TP rank and do NOT include the KV dtype, so the
       # directory is per dtype: a bf16 replica must never read fp8 pages.
-      - /dev/shm/qwen36-hicache-l3/fp8_e4m3:/tmp/hicache
+      # The directory is also per SGLang generation: v0.5.21 changed the
+      # HiCache/mamba sidecar code, so its pages live in a fresh -v0521 dir and
+      # the v0.5.20 one was deleted. Never POST /hicache/storage-backend/clear
+      # here: it deletes every file in the directory, i.e. both replicas' L3.
+      - /dev/shm/qwen36-hicache-l3-v0521/fp8_e4m3:/tmp/hicache
 
     deploy:
       resources:
@@ -1002,7 +991,6 @@ services:
       --tokenizer-worker-num 1
       --attention-backend flashinfer
       --mm-feature-transport cpu
-      --enable-session-radix-cache
       --enable-hierarchical-cache
       --hicache-ratio 8
       --kv-cache-dtype fp8_e4m3
@@ -1020,7 +1008,7 @@ services:
       --max-queued-requests 32
       --cuda-graph-max-bs-decode 4
       --cuda-graph-max-bs-prefill 2048
-      --schedule-policy hrrn
+      --schedule-policy shortest-prefill-first
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --grammar-backend xgrammar
@@ -1041,7 +1029,7 @@ services:
       --speculative-draft-model-revision dedf8df68adfb1afeaf7b7480c0a0243108177b4
       --speculative-num-draft-tokens 8
       --speculative-draft-kv-cache-dtype fp8_e4m3
-      --watchdog-timeout 1200
+      --watchdog-timeout 180
       --api-key ${SGLANG_API_KEY}
 
     healthcheck:
@@ -1235,6 +1223,13 @@ services:
     # returning 500 for what is a client error; a 4xx is never retried and never
     # reaches the breaker. See the doc for the upstream issue to track.
     #
+    # Health: 15 s interval, 2 failures, 10 s timeout (were 60 / 3 / 5), since
+    # 2026-10-02. Drilled in tuning/bench/stall_rig: a crashed worker produced
+    # 500s for 6 s instead of 132 s, and is used again 25 s after recovery
+    # instead of 116 s. The probe is one generated token; it is only safe with
+    # shortest-prefill-first on the workers (hrrn starves it during a long cold
+    # prefill and the replica would be marked unhealthy while working).
+    #
     # NOTE the flags below carry no inline comments on purpose: `command: >` is
     # a YAML folded scalar, where a `#` is literal text rather than a comment
     # and compose rejects the result as an invalid command line.
@@ -1248,6 +1243,9 @@ services:
       --max-concurrent-requests 16
       --queue-size 64
       --queue-timeout-secs 300
+      --health-check-interval-secs 15
+      --health-failure-threshold 2
+      --health-check-timeout-secs 10
       --retry-max-retries 1
       --cb-failure-threshold 10
       --cb-success-threshold 1

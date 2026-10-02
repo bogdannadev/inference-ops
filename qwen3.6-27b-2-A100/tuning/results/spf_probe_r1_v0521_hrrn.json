@@ -1,0 +1,38 @@
+{
+ "label": "v0521_hrrn",
+ "args": {
+  "host": "qwen36-27b-r1",
+  "port": 8002,
+  "label": "v0521_hrrn",
+  "rounds": 3,
+  "long_len": 100000,
+  "short_len": 2000,
+  "short_n": 3,
+  "short_delay_s": 5,
+  "short_gap_s": 2
+ },
+ "rounds": [
+  {
+   "long": 46.85,
+   "short0": 41.84,
+   "short1": 41.1,
+   "short2": 39.1
+  },
+  {
+   "long": 46.56,
+   "short0": 41.55,
+   "short1": 40.71,
+   "short2": 38.71
+  },
+  {
+   "long": 46.64,
+   "short0": 41.63,
+   "short1": 40.88,
+   "short2": 38.88
+  }
+ ],
+ "short_ttft_p50": 40.88,
+ "short_ttft_max": 41.84,
+ "long_ttft_mean": 46.68,
+ "errors": 0
+}

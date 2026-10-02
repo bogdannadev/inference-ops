@@ -66,12 +66,15 @@ def main():
     ap.add_argument("--gaps", default="near:8,far:30", help="phase:one-offs-per-agent-turn,...")
     ap.add_argument("--rounds", type=int, default=3, help="measured agent rounds per phase")
     ap.add_argument("--concurrency", type=int, default=4, help="one-offs in flight")
+    ap.add_argument("--clear-l3", action="store_true",
+                    help="also clear the L3 storage backend before the replay; only on a "
+                         "worker whose L3 directory no serving replica shares")
     a = ap.parse_args()
 
     rng = random.Random(20260919)
     toks = lambda n: [rng.randrange(VOCAB_LO, VOCAB_HI) for _ in range(n)]
     w = Worker(a.host, a.port, consumer=f"replay-{a.label}")
-    if not w.flush():
+    if not w.flush(l3=a.clear_l3):
         raise RuntimeError("flush_cache never answered 'Cache flushed.'")
 
     agents = [toks(a.base) for _ in range(a.agents)]

@@ -43,9 +43,18 @@ class Worker:
         r = c.getresponse()
         return r.status, r.read().decode()
 
-    def flush(self, wait_s=90):
+    def flush(self, wait_s=90, l3=False):
         """POST /flush_cache refuses while anything is in flight and still
-        answers 200-ish text; only the literal 'Cache flushed.' counts."""
+        answers 200-ish text; only the literal 'Cache flushed.' counts.
+
+        /flush_cache resets L1+L2 only, so with an L3 backend a "cold" request
+        after it is really an L3 hit. l3=True also clears the storage backend.
+        HiCacheFile.clear() deletes EVERY file in its directory, so only pass it
+        on a worker whose L3 directory no serving replica shares."""
+        if l3:
+            st, txt = self.post_raw("/hicache/storage-backend/clear")
+            if st != 200 or not txt.startswith("Hierarchical cache storage backend cleared."):
+                return False
         t0 = time.time()
         while time.time() - t0 < wait_s:
             try:
