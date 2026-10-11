@@ -1,0 +1,45 @@
+{
+ "label": "G128_fp8w_h180",
+ "chat": {
+  "ok": true,
+  "content": "\n\n391"
+ },
+ "reasoning_split": {
+  "ok": true,
+  "reasoning_chars": 65
+ },
+ "tool_call": {
+  "ok": true,
+  "calls": [
+   {
+    "name": "get_weather",
+    "arguments": "{\"city\": \"Paris\"}"
+   }
+  ]
+ },
+ "two_tool_calls_index": {
+  "ok": true,
+  "indexes": [
+   0,
+   1
+  ],
+  "n": 2
+ },
+ "image_12mp": {
+  "ok": true,
+  "status": 200,
+  "prompt_tokens": 2089
+ },
+ "images_17": {
+  "ok": true,
+  "status": 400,
+  "body": "{\"object\": \"error\", \"message\": \"Image count 17 exceeds limit 16 per request.\", \"type\": \"BadRequestError\", \"param\": null, \"code\": 400}"
+ },
+ "cancel_aborts": {
+  "ok": true,
+  "aborted_delta": 1.0,
+  "running_after": 0.0
+ },
+ "pass": 7,
+ "total": 7
+}
