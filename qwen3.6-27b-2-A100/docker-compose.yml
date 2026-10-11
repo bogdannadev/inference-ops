@@ -1,5 +1,5 @@
 # =============================================================================
-# QWEN3.8-27B BF16 — SGLANG PATTERN A
+# QWEN3.8-27B FP8 (W8A16, Marlin) — SGLANG PATTERN A
 # 2× TP=1 replicas + cache-aware router + DFlash2 speculative decoding
 # + HiCache (host-RAM KV tier) + Caddy edge gateway + segmented networks
 #
@@ -98,6 +98,39 @@
 #   ROLLBACK: restore the four EAGLE flags (algorithm EAGLE, num-draft-tokens
 #   6, num-steps 5, eagle-topk 1), mem-fraction 0.92, chunked/max prefill 16384;
 #   HiCache backs out by deleting its two flags. Roll one replica at a time.
+#
+# FP8 weights + bf16 KV + 128 GDN slots — APPLIED 2026-10-11
+# (tuning/docs/TRIAL_2026-10-11_FP8_WEIGHTS.md, measured on drained r1):
+#   --model-path Qwen/Qwen3.8-27B-FP8 --revision 017b9c7 (was Qwen3.8-27B bf16)
+#       Official block-FP8 checkpoint. SM80 has no FP8 tensor cores, so SGLang
+#       runs it as weight-only W8A16 through Marlin (boot log: "Weight-only FP8
+#       compression will be used leveraging the Marlin kernel"). Weight bytes
+#       drop from ~54 to ~31 GB, and this node is bandwidth-bound: decode is
+#       +40-61% vs the bf16/fp8-KV config at the same accept length. Cost: cold
+#       prefill +38% at 8K, falling to +5% at 128K. Quality vs full bf16:
+#       +0.007 nats/token on short docs, no position trend, lookup 18/18 to 128K,
+#       spec_eval 30/30 + seq 10/10 at 16K max_tokens. Boot ~9.5 min (was ~4).
+#   --kv-cache-dtype auto (= bf16; was fp8_e4m3)
+#       The freed weight memory pays for bf16 KV, which removes fp8's software
+#       dequant from every prefill (+20% at 128K on SM80).
+#   --max-mamba-cache-size 128 (was 43)
+#       GDN state slots are what limit agent cache hits. cache_replay at 43 / 86 /
+#       128 slots with 8 agents: far hit 0.48 / 0.98 / 0.98, near 0.66 / 0.66 /
+#       0.77. With 4 agents, near goes 0.66 -> 0.98 from 86 slots on. Device KV is
+#       still 382,336 tokens (7-day p99 in use: 131K).
+#   --hicache-size 180 (was --hicache-ratio 8)
+#       Ratio 8 would pin ~310 GB per replica on this pool size, and two
+#       replicas would exceed the host. In v0.5.21, --hicache-size is ONE budget
+#       split between target KV and GDN state by device bytes (verified at boot:
+#       KV 117.7 + GDN 62.3 GB), unlike the July per-pool footgun below. The
+#       DFlash2 draft host pool is sized on top of it, matching the target's
+#       token count (+18.4 GB), so ~198 GB pinned per replica.
+#   L3 dir -> /dev/shm/qwen36-hicache-l3-v0521-fp8w/bf16 (new weights + new dtype).
+#   BOOT CHECK: max_total_num_tokens=382336; "Marlin" in the log; "Allocating
+#   62.29 GB host memory for hierarchical Mamba cache".
+#   ROLLBACK: model-path Qwen/Qwen3.8-27B without --revision, --hicache-ratio 8,
+#   --kv-cache-dtype fp8_e4m3, --max-mamba-cache-size 43, L3 dir
+#   qwen36-hicache-l3-v0521/fp8_e4m3. Roll one replica at a time.
 #
 # Per-request usage records — APPLIED 2026-09-14.
 #   --export-metrics-to-file --export-metrics-to-file-dir /app/logs/request-metrics
@@ -588,7 +621,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       # HiCache L3, shared with r1 — see the r1 volumes block for why the
       # directory is per KV dtype.
-      - /dev/shm/qwen36-hicache-l3-v0521/fp8_e4m3:/tmp/hicache
+      - /dev/shm/qwen36-hicache-l3-v0521-fp8w/bf16:/tmp/hicache
 
     deploy:
       resources:
@@ -806,7 +839,8 @@ services:
     # labels ("TODO: also use custom_labels from the request",
     # tokenizer_manager.py), so aborted requests are still counted globally.
     command: >
-      --model-path Qwen/Qwen3.8-27B
+      --model-path Qwen/Qwen3.8-27B-FP8
+      --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
       --served-model-name qwen36-27b
       --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
@@ -825,11 +859,11 @@ services:
       --attention-backend flashinfer
       --mm-feature-transport cpu
       --enable-hierarchical-cache
-      --hicache-ratio 8
-      --kv-cache-dtype fp8_e4m3
+      --hicache-size 180
+      --kv-cache-dtype auto
       --hicache-storage-backend file
       --hicache-storage-backend-extra-config '{"max_size":"60G","min_free_space":"100G"}'
-      --max-mamba-cache-size 43
+      --max-mamba-cache-size 128
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64
@@ -958,11 +992,13 @@ services:
       # on host tmpfs. /tmp/hicache is HiCacheFile's default dir. Page keys are
       # content hash + model + TP rank and do NOT include the KV dtype, so the
       # directory is per dtype: a bf16 replica must never read fp8 pages.
+      # It is also per weights: since 2026-10-11 the FP8 checkpoint writes into
+      # -fp8w/bf16, never into the old bf16-weights fp8_e4m3 directory.
       # The directory is also per SGLang generation: v0.5.21 changed the
       # HiCache/mamba sidecar code, so its pages live in a fresh -v0521 dir and
       # the v0.5.20 one was deleted. Never POST /hicache/storage-backend/clear
       # here: it deletes every file in the directory, i.e. both replicas' L3.
-      - /dev/shm/qwen36-hicache-l3-v0521/fp8_e4m3:/tmp/hicache
+      - /dev/shm/qwen36-hicache-l3-v0521-fp8w/bf16:/tmp/hicache
 
     deploy:
       resources:
@@ -973,7 +1009,8 @@ services:
               capabilities: [gpu]
 
     command: >
-      --model-path Qwen/Qwen3.8-27B
+      --model-path Qwen/Qwen3.8-27B-FP8
+      --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
       --served-model-name qwen36-27b
       --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
       --host 0.0.0.0
@@ -992,11 +1029,11 @@ services:
       --attention-backend flashinfer
       --mm-feature-transport cpu
       --enable-hierarchical-cache
-      --hicache-ratio 8
-      --kv-cache-dtype fp8_e4m3
+      --hicache-size 180
+      --kv-cache-dtype auto
       --hicache-storage-backend file
       --hicache-storage-backend-extra-config '{"max_size":"60G","min_free_space":"100G"}'
-      --max-mamba-cache-size 43
+      --max-mamba-cache-size 128
       --mamba-radix-cache-strategy extra_buffer
       --mamba-ssm-dtype bfloat16
       --mamba-track-interval 64

@@ -1,0 +1,16 @@
+[sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
+[sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+[sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
+[sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
+[sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+[sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+[2026-10-11 13:47:00] Load weight end. elapsed=10.06 s, type=Qwen3_5ForConditionalGeneration, avail mem=27.72 GB, mem usage=51.05 GB.
+[2026-10-11 13:47:09] Load weight end. elapsed=1.02 s, type=DFlash2DraftModel, avail mem=23.97 GB, mem usage=3.71 GB.
+[2026-10-11 13:47:10] Mamba Cache is allocated. max_mamba_cache_size: 43, conv_state size: 0.12GB, ssm_state size: 3.09GB intermediate_ssm_state_cache size: 2.81GB intermediate_conv_window_cache size: 0.05GB 
+[2026-10-11 13:47:10] KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 282496, K size: 4.31 GB, V size: 4.31 GB
+[2026-10-11 13:47:10] KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 282496, K size: 1.35 GB, V size: 1.35 GB
+[2026-10-11 13:47:39] max_total_num_tokens=282496, chunked_prefill_size=4096, max_prefill_tokens=4096, max_running_requests=4, context_len=169000, available_gpu_mem=4.37 GB
+[2026-10-11 13:47:39] Allocating kv hierarchical KV host pool: 565056 tokens, 18.52 GB host memory.
+[2026-10-11 13:47:54] Allocating 6.82 GB host memory for hierarchical Mamba cache (layout=page_first).
+[2026-10-11 13:47:59] Allocating draft hierarchical KV host pool: 565120 tokens, 5.79 GB host memory.
+[sitecustomize] continuing prefill chunks clamped to physical KV

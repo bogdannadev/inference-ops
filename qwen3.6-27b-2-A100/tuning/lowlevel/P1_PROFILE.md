@@ -1,6 +1,6 @@
 # P1 — top-down profile before any kernel work
 
-`STATUS: STAGE A RUN 2026-09-24. Decode and GDN closed; prefill attention (41% of peak, up to 60% of prefill time) is the lead for Stage B.`
+`STATUS: STAGE A RUN 2026-09-24; B1 RUN 2026-10-11. Decode and GDN closed; FA2 (torch SDPA) beats the FlashInfer hd256 prefill kernel by 15-19%, which is the Stage B lead.`
 
 One drained window on r1 answers two questions that decide whether any
 hand-written kernel (down to PTX) is worth funding on this node:
@@ -209,6 +209,62 @@ Two capture faults, fixed in `p1_profile.py`, both worth knowing for any
 
 The first-pass `cold4k`, `cold128k_z` and `ext16k` traces are contaminated by
 fault 1. Use only the `20260924b` traces for those three.
+
+## Stage B1 — selection harness: RUN 2026-10-11 (r1 stopped, whole GPU 1)
+
+`results/b1_attn_select.json`. Median of 10 calls, % of 312 TFLOP/s bf16 peak;
+every variant within 3e-4 of the fp32 reference.
+
+| prefix (+4,096 queries) | `fi_paged64` (prod) | `fi_paged64_shuf` | `fi_ragged` | **`sdpa_flash`** | best Triton (128×64 w8) |
+|---|---|---|---|---|---|
+| 4K | 4.25 ms, 46.6% | 4.32 ms | 4.23 ms | **3.44 ms, 57.7%** | 10.86 ms, 18.3% |
+| 60K | 45.3 ms, 45.2% | 45.3 ms | 45.8 ms | **38.4 ms, 53.4%** | 117.2 ms, 17.5% |
+| 108K | 80.6 ms, 45.1% | 81.0 ms | 81.9 ms | **68.5 ms, 53.1%** | 208.0 ms, 17.5% |
+
+- **Tri Dao FA2 (torch SDPA's flash backend) is 15–19% faster** than the
+  production FlashInfer kernel at every length. At attention's 48–60% share of
+  long prefill, that is worth roughly 8–10% of a cold 128K prefill.
+- **Page layout costs nothing.** Paged, shuffled and ragged FlashInfer are equal
+  within noise. Neither scattered pages nor the forced-off ragged path is the gap;
+  the gap is the FlashInfer fa2 hd256 kernel itself.
+- **The Triton extend kernel is out**: 3× slower at the production tile, and no
+  tile in the sweep comes close.
+- It is not a flag flip. SDPA wants contiguous K/V and our pages are scattered,
+  and FA2's own paged API (`flash_attn_with_kvcache`) needs a block size that is
+  a multiple of 256. That bundled FA2 is not exposed by the image's empty
+  `flash_attn` package.
+  - The next step is a measured choice between: an SGLang attention backend
+    calling FA2 varlen over a gathered K/V (gather cost to be measured), page
+    256 for the FA2 paged API (affects GDN checkpoints and L3 page keys), or
+    porting FA2's hd256 tiling choices into FlashInfer's template.
+  - With FP8 weights and **bf16 KV**, K/V need no dequant before FA2. That is
+    one less obstacle than under fp8 KV.
+
+### Original plan (kept for the record)
+
+`bench/b1_attn_select.py` times one production-shaped call per variant:
+4,096 queries, prefixes 4K / 60K / 108K, 24/4 heads, head_dim 256,
+bottom-right causal. Every variant is checked against an fp32 reference.
+
+- **Variants:**
+  - `fi_paged64`: the production kernel (FlashInfer fa2, page 64).
+  - `fi_paged64_shuf`: the same with scattered pages.
+  - `fi_ragged`: FlashInfer on contiguous K/V, which SGLang never selects
+    because Qwen3.6 is multimodal and `use_ragged` is forced off.
+  - `sdpa_flash`: PyTorch's bundled FA2. The `flash_attn` package in the image
+    is an empty namespace, and `sgl_kernel.flash_attn` is Hopper-only FA3.
+  - The Triton extend kernel, with a tile/stage sweep. On SM80 at head_dim 256
+    it is hardwired to 64×64, 8 warps, 1 stage; upstream tuned head_dim 256
+    only for AMD.
+- **Attempt on 2026-09-24, 21:11Z, failed to start: GPU 1 had 0.32 GiB free,
+  not the ~2 GB E1 had.** The P1 128K prefills grew r1's PyTorch cache, which
+  is never released. The side container's CUDA context alone takes ~0.4 GB.
+  - Do not run a side container beside r1 in this state: it can push r1 itself
+    into OOM.
+  - **Before B1, r1 has to be stopped** (`docker stop`, run B1 on the whole
+    GPU, `docker start`, re-register), or restarted to free its cache. Either
+    way, r1's prefix cache is lost.
+  - Pick a low-traffic window. Deferred by Danila on 2026-09-24.
 
 ## Next: Stage B on the attention kernel
 

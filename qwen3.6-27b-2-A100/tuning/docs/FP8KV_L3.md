@@ -52,6 +52,11 @@ The `seq` regression and the +11–20% cold prefill at 64–128K (software fp8
 dequant on SM80, `TRIAL_FP8KV_MAMBA.md`) are known costs. The operator accepted
 them for the capacity.
 
+> **Correction 2026-10-11 (`TRIAL_2026-10-11_FP8_WEIGHTS.md`):** the `seq` row is a
+> token-budget artifact, not an fp8 cost. With thinking on, the task needs 6–14K
+> completion tokens in every arm, full bf16 included. Re-run at `--max-tokens 16000`,
+> fp8 KV scores 10/10 exact, the same as bf16. The prefill cost stands.
+
 What L3 stores per 64-token page: target KV, DFlash2 draft KV (`.draft`), and a
 GDN state (`.mamba`) at the checkpoints. That came to 9.7 GB for two ~78K
 contexts. Production traffic wrote 54 GB within ~20 minutes of r1 going live.

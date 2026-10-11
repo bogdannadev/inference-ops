@@ -12,6 +12,9 @@ tuning/
     HICACHE_DFLASH2.md      2026-09-13: HiCache + DFlash2 A/B, memory walk, applied config
     PREFILL_KERNELS.md      2026-09-13: prefill custom-kernel campaign plan (checklist annotated)
     PREFILL_KERNELS_CHECKLIST.md  the supplied BF16 prefill kernel checklist
+    FP8_WEIGHTS_LONG_CONTEXT.md   2026-10-09: literature review, FP8 weights vs FP8 KV at long context
+    TRIAL_2026-10-09_PATCH3_KVRANGE.md  2026-10-09: crash patch validated by fault injection; K/V ranges make KV scales moot
+    TRIAL_2026-10-11_FP8_WEIGHTS.md     2026-10-11: FP8 weights × KV dtype on drained r1; decode +40-61%, seq gate was a token cap
   bench/
     capture.py              telemetry sampler + preflight (SGLang + DCGM)
     worker_ladder.py        concurrency ladder against ONE worker, no router
