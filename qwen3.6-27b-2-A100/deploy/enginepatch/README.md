@@ -1,8 +1,9 @@
 # Engine patch: `sitecustomize.py`
 
-Two fixes for the image-token poisoning incident, applied to the running engine
-without rebuilding the image or forking SGLang. Read
-`../../docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md` §3a first.
+Three fixes applied to the running engine without rebuilding the image or
+forking SGLang. 1 and 2 are for the image-token poisoning incident (read
+`../../docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md` §3a first); 3 is for the
+2026-10-09 r0 crash (`../../tuning/docs/TRIAL_2026-10-09_PATCH3_KVRANGE.md`).
 
 1. **Forces `skip_special_tokens: true`** on every chat completion. Clients send
    `false` whenever they ask for reasoning (862/862 requests measured), which
@@ -12,6 +13,11 @@ without rebuilding the image or forking SGLang. Read
    nobody attached and **every turn 500s forever**.
 2. **Turns a placeholder/payload mismatch into a 400** instead of a 500, so the
    router never retries it and no circuit breaker ever counts it.
+3. **Never hands a continuing prefill chunk more KV than physically exists.**
+   Upstream `PrefillBudget.available_chunk_tokens` falls back to a full chunk
+   once the budget is used up; with too little free KV the allocator raises
+   "Prefill out of memory" and the scheduler dies. The patch clamps the chunk to
+   free + evictable KV, or parks it for the round when not one page fits.
 
 ## Why a `sitecustomize.py` and not a plugin or a patched image
 
@@ -23,7 +29,7 @@ Nothing in the image changes, and reverting is removing the two lines.
 
 The patches are applied from a wrapper around `__import__` rather than by
 importing the targets here, so no heavy import (torch) is pulled in early. The
-wrapper removes itself once both patches are in.
+wrapper removes itself once every patch is in.
 
 ## Why not at the gateway
 
@@ -55,6 +61,9 @@ Confirm it loaded, per replica:
 docker logs qwen36-27b-r0 2>&1 | grep sitecustomize
 #   [sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
 #   [sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+#   [sitecustomize] continuing prefill chunks clamped to physical KV
+# when patch 3 acts, at most once a minute:
+#   [sitecustomize] KV budget exhausted on a continuing chunk: gave N of 4096 ...
 ```
 
 Then confirm it is actually taking effect on real traffic — the gateway attempt
@@ -69,8 +78,9 @@ docker logs qwen36-27b-r0 --since <local-time> 2>&1 | grep "Receive: obj=" \
 ## Test
 
 `verify.py` runs against the pinned image with no GPU and asserts all of it:
-the field is forced, a placeholder mismatch maps to `ValueError`/400, and a GPU
-OOM still maps to `RuntimeError`/500 so it keeps alerting.
+the field is forced, a placeholder mismatch maps to `ValueError`/400, a GPU
+OOM still maps to `RuntimeError`/500 so it keeps alerting, and the 2026-10-09
+budget state yields a clamped chunk (or a park) instead of 4096.
 
 ```bash
 IMG=$(docker inspect qwen36-27b-r1 --format '{{.Image}}')
@@ -80,8 +90,10 @@ docker run --rm --entrypoint python3 -e PYTHONPATH=/opt/enginepatch \
 
 ## Remove it when upstream lands
 
-Both patches are upstream bugs, not local policy. Drop this directory and the two
-compose lines once the pinned image returns 400 for a malformed multimodal prompt
-and clients stop sending `skip_special_tokens: false`. `verify.py` failing after
-an upgrade is the signal that a patch point moved — the wrapper degrades to a
-no-op rather than crashing, so check it deliberately on every version bump.
+All three patches are upstream bugs, not local policy. Drop this directory and the
+two compose lines once the pinned image returns 400 for a malformed multimodal
+prompt, clients stop sending `skip_special_tokens: false`, and upstream fixes the
+full-chunk fallback in `available_chunk_tokens` (PR #30743 was closed unmerged).
+`verify.py` failing after an upgrade is the signal that a patch point moved — the
+wrapper degrades to a no-op rather than crashing, so check it deliberately on
+every version bump.

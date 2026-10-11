@@ -1,6 +1,8 @@
-"""Two engine-side fixes for the image-token poisoning incident.
+"""Engine-side fixes: two for the image-token poisoning incident, one for the
+chunked-prefill overcommit crash.
 
-See qwen3.6-27b-2-A100/docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md, sec 3a.
+See qwen3.6-27b-2-A100/docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md, sec 3a,
+for 1 and 2; patch 3 is documented on _patch_budget below.
 
 1. Force skip_special_tokens=True on every chat completion.
 
@@ -18,20 +20,24 @@ See qwen3.6-27b-2-A100/docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md, sec 3a.
 
 2. Make a placeholder/payload mismatch a 400 instead of a 500.
 
-Why here and not at the gateway: a Higress wasm body rewrite dies at the 32 KB
+3. Never hand a continuing prefill chunk more KV than physically exists.
+
+Why here (1 and 2) and not at the gateway: a Higress wasm body rewrite dies at the 32 KB
 connection buffer limit and the poisoned bodies are 400-545 KB. The engine holds
 the whole request, so this is the first layer that can actually do it.
 
 Loaded via PYTHONPATH -- `site` imports sitecustomize at interpreter startup. The
 patches are applied through a wrapper around __import__ rather than by importing
 the targets here, so nothing heavy (torch) is pulled in early. The wrapper
-removes itself once both patches are in.
+removes itself once every patch is in.
 """
 
 import sys
+import time
 
 TARGET_PROTO = "sglang.srt.entrypoints.openai.protocol"
 TARGET_MM = "sglang.srt.multimodal.processors.base_processor"
+TARGET_BUDGET = "sglang.srt.mem_cache.prefill_budget"
 
 _done = set()
 
@@ -120,9 +126,73 @@ def _patch_mm(module):
     return True
 
 
+def _patch_budget(module):
+    """Clamp a continuing chunk to the KV that physically fits; park it if none.
+
+    Upstream (v0.5.21 mem_cache/prefill_budget.py:125):
+
+        available = min(chunk_limit, int(self.remaining_total))
+        return available if available > 0 else chunk_limit
+
+    remaining_total is free + evictable KV minus the decode headroom reserved
+    for running requests. Once a continuation chunk has been clamped to use the
+    last of that budget, the next round sees it at <= 0 and falls back to a FULL
+    chunk_limit, whatever is actually free. On 2026-10-09 16:50 UTC r0 asked for
+    4096 tokens with 960 free and nothing evictable; the allocator raised
+    "Prefill out of memory", which kills the scheduler (prefill has no retract
+    path). The intent of the fallback, that a half-prefilled request must make
+    progress to ever release its KV, is kept: when the budget is exhausted the
+    chunk now gets what PHYSICALLY fits (free + evictable, less the one page per
+    request alloc_paged_token_slots_extend adds), floored to whole pages. If
+    not even one page fits, it returns None, which add_chunked_req already
+    treats as "park this round" (the hybrid-SWA budgets use the same return);
+    decode keeps running, retracts if it must, and frees KV for the next round.
+
+    Only the base PrefillBudget is touched: the SWA subclasses define their own
+    available_chunk_tokens and never reach this one. The positive-budget path
+    is upstream's, unchanged. Upstream PR #30743 proposed the pure park; it was
+    closed unmerged.
+    """
+    cls = getattr(module, "PrefillBudget", None)
+    if cls is None or not hasattr(cls, "available_chunk_tokens") \
+            or not hasattr(cls, "_available_and_evictable"):
+        return False
+    if getattr(cls, "_overcommit_fixed", False):
+        return True
+    original = cls.available_chunk_tokens
+    stats = {"clamped": 0, "parked": 0, "logged_at": 0.0}
+
+    def available_chunk_tokens(self, chunk_limit):
+        if int(self.remaining_total) > 0:
+            return original(self, chunk_limit)
+        page = self.page_size
+        fits = (int(self._available_and_evictable()) - page) // page * page
+        if fits >= page:
+            result = min(chunk_limit, fits)
+            stats["clamped"] += 1
+        else:
+            result = None
+            stats["parked"] += 1
+        now = time.monotonic()
+        if now - stats["logged_at"] >= 60.0:  # one line a minute at most
+            stats["logged_at"] = now
+            print(f"[sitecustomize] KV budget exhausted on a continuing chunk: "
+                  f"gave {result} of {chunk_limit} (fits={fits}); "
+                  f"totals clamped={stats['clamped']} parked={stats['parked']}",
+                  file=sys.stderr, flush=True)
+        return result
+
+    cls.available_chunk_tokens = available_chunk_tokens
+    cls._overcommit_fixed = True
+    print("[sitecustomize] continuing prefill chunks clamped to physical KV",
+          file=sys.stderr, flush=True)
+    return True
+
+
 _PATCHES = (
     ("proto", TARGET_PROTO, _patch_proto),
     ("mm", TARGET_MM, _patch_mm),
+    ("budget", TARGET_BUDGET, _patch_budget),
 )
 
 

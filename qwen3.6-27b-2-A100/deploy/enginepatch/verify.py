@@ -63,6 +63,50 @@ for poison in ("image_pad", "vision_start", "vision_end", "video_pad", "<|"):
     assert poison not in msg, f"mismatch message contains {poison!r} — it would poison the reply"
 print("patch2  message actionable, markup-free : OK")
 
+# --- patch 3: continuing prefill chunk never exceeds physical KV ---
+import sglang.srt.mem_cache.prefill_budget as pb
+
+assert getattr(pb.PrefillBudget, "_overcommit_fixed", False), "patch3 not installed"
+for sub in ("SWAPrefillBudget", "SharedSWAPrefillBudget"):  # must keep their own
+    assert pb.__dict__[sub].__dict__.get("available_chunk_tokens") is not None, sub
+print("patch3  installed on base class only    : OK")
+
+class Alloc:                         # what PrefillBudget reads from the allocator
+    page_size = 64
+    def __init__(self, free): self.free = free
+    def available_size(self): return self.free
+
+class Tree:                          # hybrid-Mamba tree: full_evictable_size path
+    def __init__(self, evictable): self.ev = evictable
+    def supports_mamba(self): return True
+    def full_evictable_size(self): return self.ev
+
+def budget(free, evictable, offset):
+    b = pb.PrefillBudget(Alloc(free), Tree(evictable))
+    b.total_offset = offset          # decode headroom reserved for running reqs
+    return b
+
+# positive budget: upstream behaviour, untouched
+assert budget(100_000, 0, 1_000).available_chunk_tokens(4096) == 4096
+assert budget(2_600, 0, 1_000).available_chunk_tokens(4096) == 1_600
+print("patch3  positive budget == upstream     : OK")
+
+# 2026-10-09 16:50: 960 free, 0 evictable, budget spent -> upstream gave 4096
+got = budget(960, 0, 1_000).available_chunk_tokens(4096)
+assert got == 896, got               # floor((960 - 64) / 64) * 64
+assert got + Alloc.page_size <= 960, "alloc_paged_token_slots_extend would still fail"
+print(f"patch3  Friday's state -> {got} (was 4096)   : OK")
+
+# evictable KV counts as room
+assert budget(100, 4_000, 9_999).available_chunk_tokens(4096) == 4_032
+
+# less than one page beyond the alloc margin -> park (None), never overcommit
+assert budget(100, 0, 1_000).available_chunk_tokens(4096) is None
+assert budget(0, 0, 0).available_chunk_tokens(4096) is None
+print("patch3  nothing fits -> park (None)     : OK")
+
 # idempotent: a second install must not double-wrap
 assert sitecustomize._patch_proto.__module__ == "sitecustomize"
+assert sitecustomize._patch_budget(pb) is True
+assert budget(960, 0, 1_000).available_chunk_tokens(4096) == 896
 print("OK")
