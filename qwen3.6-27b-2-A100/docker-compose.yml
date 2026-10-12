@@ -441,9 +441,16 @@ x-replica-common: &replica-common
 #                      SGLang extension, not OpenAI schema, so a standard
 #                      client replays only `content` and the template wraps
 #                      nothing: history fills with EMPTY <think></think>
-#                      blocks. Pinned false, which reproduces 3.6 exactly
-#                      (verified: identical rendering in 6/6 message shapes,
-#                      incl. tools and tool-call round trips).
+#                      blocks. Was pinned false to reproduce 3.6 exactly.
+#                      SET TRUE 2026-10-12: with false the template keeps
+#                      <think> only after the last real user message, so each
+#                      new user message re-renders the previous tool loop
+#                      without it and the prefix cache misses from there on
+#                      (59 such turns/20 h: p90 31K tokens recomputed, prefill
+#                      p90 15.3 s, vs 97.9% hit on tool turns). OpenCode does
+#                      resend reasoning_content, so true costs +1.4K (p50) to
+#                      4.7K (p90) context per user turn. Qwen3.8's own default.
+#                      Evidence: tuning/docs/PREFILL_CACHE_2026-10-12.md.
 #
 # WHY THE VALUES ARE PINNED HERE RATHER THAN LEFT TO THE CLIENT: the template
 # hard-raises on any other tier. SGLang's protocol layer happily accepts the
@@ -842,7 +849,7 @@ services:
       --model-path Qwen/Qwen3.8-27B-FP8
       --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
       --served-model-name qwen36-27b
-      --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
+      --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":true}'
       --host 0.0.0.0
       --port 8001
       --mm-preprocess-cache-size-mb 2048
@@ -1012,7 +1019,7 @@ services:
       --model-path Qwen/Qwen3.8-27B-FP8
       --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
       --served-model-name qwen36-27b
-      --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":false}'
+      --default-chat-template-kwargs '{"reasoning_effort":"xhigh","preserve_thinking":true}'
       --host 0.0.0.0
       --port 8002
       --mm-preprocess-cache-size-mb 2048
