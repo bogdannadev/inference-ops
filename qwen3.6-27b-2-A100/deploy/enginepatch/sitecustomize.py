@@ -22,6 +22,8 @@ for 1 and 2; patch 3 is documented on _patch_budget below.
 
 3. Never hand a continuing prefill chunk more KV than physically exists.
 
+4. Run big prefill chunks of FP8-Marlin layers on cuBLAS bf16 (fp8_prefill_dequant.py).
+
 Why here (1 and 2) and not at the gateway: a Higress wasm body rewrite dies at the 32 KB
 connection buffer limit and the poisoned bodies are 400-545 KB. The engine holds
 the whole request, so this is the first layer that can actually do it.
@@ -38,8 +40,10 @@ import time
 TARGET_PROTO = "sglang.srt.entrypoints.openai.protocol"
 TARGET_MM = "sglang.srt.multimodal.processors.base_processor"
 TARGET_BUDGET = "sglang.srt.mem_cache.prefill_budget"
+TARGET_FP8 = "sglang.srt.layers.quantization.fp8"
 
 _done = set()
+_importing = set()
 
 # What the client is told when its history claims an image it never attached.
 #
@@ -189,10 +193,54 @@ def _patch_budget(module):
     return True
 
 
+def _patch_fp8(module):
+    """Bypass Marlin for prefill chunks >= MIN_M; see fp8_prefill_dequant.py.
+
+    Wraps Fp8LinearMethod.apply, the method every FP8 linear of the Qwen FP8
+    checkpoint goes through. Anything the dequant path cannot prove it handles
+    (layout, dtype, graph capture, compile, small M) falls through to the
+    original, so the worst case is upstream behaviour.
+    """
+    cls = getattr(module, "Fp8LinearMethod", None)
+    if cls is None or not hasattr(cls, "apply"):
+        return False
+    if getattr(cls, "_fp8_dequant", False):
+        return True
+    # Importing the module imports torch/triton, which re-enters the import
+    # hook while fp8_prefill_dequant is half-built; the nested call must
+    # neither fail (a failure marks the patch done for good) nor apply.
+    if "fp8" in _importing:
+        return False
+    _importing.add("fp8")
+    try:
+        import fp8_prefill_dequant as dq
+    finally:
+        _importing.discard("fp8")
+    if not dq.ENABLED:
+        print("[sitecustomize] fp8 prefill dequant disabled (SGLANG_PATCH_FP8_DEQUANT=0)",
+              file=sys.stderr, flush=True)
+        cls._fp8_dequant = True
+        return True
+    original = cls.apply
+
+    def apply(self, layer, x, bias=None):
+        if dq.wants(self, layer, x):
+            dq.note_first_use(x)
+            return dq.linear(layer, x, bias)
+        return original(self, layer, x, bias)
+
+    cls.apply = apply
+    cls._fp8_dequant = True
+    print(f"[sitecustomize] fp8 Marlin layers use dequant+cuBLAS for M >= {dq.MIN_M}",
+          file=sys.stderr, flush=True)
+    return True
+
+
 _PATCHES = (
     ("proto", TARGET_PROTO, _patch_proto),
     ("mm", TARGET_MM, _patch_mm),
     ("budget", TARGET_BUDGET, _patch_budget),
+    ("fp8", TARGET_FP8, _patch_fp8),
 )
 
 
