@@ -99,6 +99,26 @@
 #   6, num-steps 5, eagle-topk 1), mem-fraction 0.92, chunked/max prefill 16384;
 #   HiCache backs out by deleting its two flags. Roll one replica at a time.
 #
+# Full context + per-key windows (engine patch 5) — 2026-10-14
+#   --context-length 262144 (was 169000)
+#       The checkpoint's max_position_embeddings, plain RoPE, no YaRN; the
+#       DFlash2 draft is 262144 too (sliding window 2048). The KV pool has been
+#       382,336 tokens since the FP8 weights, so the pool >= context-length
+#       contract below still holds with 120K to spare. One full-window request
+#       takes 69% of a replica's pool: two big turns on one replica serialize.
+#   Per-key window: deploy/enginepatch/keypolicy.py holds each consumer to the
+#       context quota-bot assigns (/policy -> context), default 169000 =
+#       KEYPOLICY_DEFAULT_CONTEXT, so nobody gets the full window by accident.
+#       The policy file is written by quota-bot only and mounted read-only as
+#       a DIRECTORY (a single-file bind mount pins the old inode on rewrite).
+#       Missing or broken file = everyone on the default.
+#   Same patch: the client's reasoning_effort now reaches the chat template.
+#       Before it, --default-chat-template-kwargs' xhigh overwrote every
+#       request's effort (only "none" got through), and a key may now carry a
+#       default effort of its own.
+#   ROLLBACK: --context-length 169000 on both replicas; patch 5 then has nothing
+#       to hold anyone to and only the effort fix remains.
+#
 # FP8 weights + bf16 KV + 128 GDN slots — APPLIED 2026-10-11
 # (tuning/docs/TRIAL_2026-10-11_FP8_WEIGHTS.md, measured on drained r1):
 #   --model-path Qwen/Qwen3.8-27B-FP8 --revision 017b9c7 (was Qwen3.8-27B bf16)
@@ -359,6 +379,12 @@ x-replica-common: &replica-common
     # against the pinned image with no GPU — run it on every version bump,
     # because a moved patch point degrades to a silent no-op.
     - PYTHONPATH=/opt/enginepatch
+
+    # Patch 5 (keypolicy.py): per-key context and reasoning effort. The file is
+    # written by quota-bot; a consumer with no entry, a request with no consumer
+    # label (the direct hostname) and a missing file all get the default.
+    - KEYPOLICY_PATH=/opt/keypolicy/policy.json
+    - KEYPOLICY_DEFAULT_CONTEXT=169000
 
     # Hugging Face auth
     - HF_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
@@ -625,6 +651,9 @@ services:
       # environment block in x-replica-common). Read-only: the container must
       # never be able to rewrite its own patch.
       - ./deploy/enginepatch:/opt/enginepatch:ro
+      # Per-key policy for patch 5, written by quota-bot (EnginePolicy). A
+      # directory, not the file: the bot replaces the file by rename.
+      - ../quota-bot/data/engine-policy:/opt/keypolicy:ro
       - /etc/localtime:/etc/localtime:ro
       # HiCache L3, shared with r1 — see the r1 volumes block for why the
       # directory is per KV dtype.
@@ -860,7 +889,7 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 169000
+      --context-length 262144
       --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer
@@ -994,6 +1023,7 @@ services:
       - ./logs/r1:/app/logs
       # Engine patch — see the r0 block above and deploy/enginepatch/README.md.
       - ./deploy/enginepatch:/opt/enginepatch:ro
+      - ../quota-bot/data/engine-policy:/opt/keypolicy:ro
       - /etc/localtime:/etc/localtime:ro
       # HiCache L3 (`--hicache-storage-backend file`), shared by both replicas
       # on host tmpfs. /tmp/hicache is HiCacheFile's default dir. Page keys are
@@ -1030,7 +1060,7 @@ services:
       --trust-remote-code
       --dtype bfloat16
       --tp 1
-      --context-length 169000
+      --context-length 262144
       --mem-fraction-static 0.92
       --tokenizer-worker-num 1
       --attention-backend flashinfer

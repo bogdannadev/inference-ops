@@ -10,7 +10,7 @@ peak, and the largest prefill cost is work that should not happen at all
            read-only            drained r1, one gate run each              needs a new kernel
  ┌──────────────────────┐ ┌─────────────────────────────────────────┐ ┌──────────────────────┐
  │ E0 24 h re-measure   │ │ E2 concurrency ladder                   │ │ E6 NVFP4 + FP4       │
- │ E1 zero L3 hits      │→│ E3 dequant/GEMM overlap (patch 4b)      │→│    dequant (patch 5) │
+ │ E1 zero L3 hits      │→│ E3 dequant/GEMM overlap (patch 4b)      │→│    dequant (patch 6) │
  │                      │ │ E4 FA2 prefill shim                     │ │ E8 hd256 attention   │
  │                      │ │ E5 FP8 lm_head                          │ │    (only if E4 says) │
  └──────────────────────┘ └─────────────────────────────────────────┘ └──────────────────────┘
@@ -102,15 +102,17 @@ now      stream 0: [dq0][ gemm0 ][dq1][ gemm1 ][dq2][ gemm2 ]
 - Expected: ~3-5% decode. Gate: ΔNLL short/long first, it is the most
   quality-sensitive layer; abort on a significant shift.
 
-## E6. NVFP4 + patch 5 (FP4 dequant for prefill) (~1 week)
+## E6. NVFP4 + patch 6 (FP4 dequant for prefill) (~1 week)
+
+(Renumbered from "patch 5" on 2026-10-14: patch 5 is now the per-key context/effort patch, `deploy/enginepatch/keypolicy.py`.)
 
 - `nvidia/Qwen3.8-27B-NVFP4`: MLP + lm_head NVFP4 g16, rest FP8. Weights
   ~31 -> ~17 GB, decode maybe +25-40%, frees GPU memory for KV/GDN.
 - Marlin W4A16 would reintroduce the prefill loss patch 4 removed, in the MLP
-  (the largest GEMMs). So patch 5 = patch 4 for Marlin's FP4 layout: transcribe
+  (the largest GEMMs). So patch 6 = patch 4 for Marlin's FP4 layout: transcribe
   its repack and scale permutation, CPU bit-exact test through the real
   prepare function, GPU check against Marlin on identity rows, then bench.
-- Order: trial arm without patch 5 (decode + quality) -> patch 5 -> trial with it.
+- Order: trial arm without patch 6 (decode + quality) -> patch 6 -> trial with it.
 - Gates: standard plus seq16; quality is the main risk (4-bit MLP).
 - Note: the shared L3 dir is per weights format; give the trial its own dir.
 
@@ -139,7 +141,7 @@ kernels (ceiling ~19%, blocks not the limit), host-side scheduling (step
 | area | now | after |
 |---|---|---|
 | new-user-turn hit rate | 81% | ~98% (E0), cross-replica misses closed (E1) |
-| cold prefill 128K | 61 s | ~53-55 s (E3 + E4), NVFP4 neutral with patch 5 |
+| cold prefill 128K | 61 s | ~53-55 s (E3 + E4), NVFP4 neutral with patch 6 |
 | cold prefill 8K | 2.5 s | ~2.2-2.3 s (E3) |
 | decode per request | baseline | +3-5% (E5), +25-40% (E6, if quality holds) |
 | aggregate throughput | baseline | E2 decides |
