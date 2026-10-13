@@ -35,6 +35,8 @@ rule_files:
   # Recording rules for per-consumer usage, plus the quota alerts that depend on
   # them. Split out so alerts.yml stays readable as the operational contract.
   - /etc/prometheus/rules.yml
+  # aml-mcp (AML Copilot): list freshness and failed downloads. /opt/aml-mcp, deploy/prometheus/.
+  - /etc/prometheus/aml-mcp-alerts.yml
 
 # -----------------------------------------------------------------------------
 # Alert DELIVERY. Added 2026-09-04, and its absence was the most consequential
@@ -380,6 +382,17 @@ scrape_configs:
     static_configs:
       - targets:
           - quota-bot:8080
+        labels:
+          node: a100
+
+  # ---------------------------------------------------------------------------
+  # aml-mcp (AML Copilot sanctions screening), compose project `aml` in /opt/aml-mcp.
+  # On edge; a missing target is covered by PrometheusTargetDown.
+  # ---------------------------------------------------------------------------
+  - job_name: aml-mcp
+    static_configs:
+      - targets:
+          - aml-mcp:8080
         labels:
           node: a100
 

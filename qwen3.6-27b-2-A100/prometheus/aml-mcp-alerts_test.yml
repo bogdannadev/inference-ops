@@ -1,0 +1,56 @@
+# Unit tests for aml-mcp-alerts.yml: promtool test rules aml-mcp-alerts_test.yml
+# Series start at time 0, so a confirmation timestamp of 0 means "confirmed at the start of the test".
+rule_files:
+  - aml-mcp-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Scraped every minute (gaps over 5 minutes would make the series stale). un_sc was confirmed at 0 and never
+  # again; ofac_sdn is confirmed continuously.
+  - interval: 1m
+    input_series:
+      - series: 'aml_list_last_confirmed_timestamp_seconds{source="un_sc"}'
+        values: '0x1600'
+      - series: 'aml_list_last_confirmed_timestamp_seconds{source="ofac_sdn"}'
+        values: '0+60x1600'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: AmlListNotConfirmed
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: AmlListNotConfirmed
+        exp_alerts:
+          - exp_labels: { severity: warning, node: a100, source: un_sc }
+            exp_annotations:
+              summary: "Sanctions list un_sc not confirmed for over 3 hours"
+              description: "Six or more 30-minute runs of un_sc failed in a row; it turns stale at 24 hours. Check lists_status for the last outcome and reason."
+      - eval_time: 23h
+        alertname: AmlListStale
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: AmlListStale
+        exp_alerts:
+          - exp_labels: { severity: critical, node: a100, source: un_sc }
+            exp_annotations:
+              summary: "Sanctions list un_sc is stale"
+              description: "un_sc was last confirmed 1d 1h 0m 0s ago (SLA 24 h). Screening returns incomplete instead of no_match until it is current."
+
+  # One rejected run of uk_sl at 20m; activated runs never alert.
+  - interval: 10m
+    input_series:
+      - series: 'aml_list_fetch_runs_total{source="uk_sl",outcome="rejected"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'aml_list_fetch_runs_total{source="uk_sl",outcome="activated"}'
+        values: '0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AmlListRejected
+        exp_alerts:
+          - exp_labels: { severity: warning, node: a100, source: uk_sl, outcome: rejected }
+            exp_annotations:
+              summary: "A download of uk_sl was rejected"
+              description: "The downloaded file failed validation (format, completeness or size); the previous version stays active. The reason is in lists_status and the raw file under rejected/."
+      - eval_time: 2h30m
+        alertname: AmlListRejected
+        exp_alerts: []
