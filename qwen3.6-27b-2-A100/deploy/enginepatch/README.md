@@ -2,9 +2,9 @@
 
 > Live copy, mounted read-only by both replicas. Develop in `../enginepatch-next/`
 > and copy here only right before a roll (any restart imports this directory).
-> Patch 4 live since 2026-10-12.
+> Patch 5 live since 2026-10-14.
 
-Four fixes applied to the running engine without rebuilding the image or
+Five fixes applied to the running engine without rebuilding the image or
 forking SGLang. 1 and 2 are for the image-token poisoning incident (read
 `../../docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md` §3a first); 3 is for the
 2026-10-09 r0 crash (`../../tuning/docs/TRIAL_2026-10-09_PATCH3_KVRANGE.md`).
@@ -31,6 +31,19 @@ forking SGLang. 1 and 2 are for the image-token poisoning incident (read
    graph-captured prefill size (<= 2048) stay on Marlin. The weight is
    bit-identical to what Marlin multiplies. `SGLANG_PATCH_FP8_DEQUANT=0`
    turns it off; `_MIN_M` and `_SCRATCH` tune it.
+5. **Per-key context window and reasoning effort** (`keypolicy.py`, 2026-10-14).
+   The engines serve the model's full 262,144 window; each request is held to
+   its key's window from `/opt/keypolicy/policy.json`, which quota-bot writes
+   (`/policy` → context, effort), with the same two checks and error texts as
+   upstream. Everyone without an entry, every unlabelled request and every
+   request while the file is missing gets `KEYPOLICY_DEFAULT_CONTEXT` (169000).
+   A request without `max_tokens` gets `window - prompt - 1`, as the scheduler
+   would at that `--context-length`. The same patch fixes effort: in v0.5.21
+   `--default-chat-template-kwargs`' `xhigh` overwrote every client
+   `reasoning_effort` (only `none` got through, measured on r1); the request's
+   effort, else the key's default, is now pinned into `chat_template_kwargs`
+   before the merge. `high`/`max` map to `xhigh` and `minimal` to `low`, because
+   the Qwen3.8 template accepts only `xhigh`, `medium` and `low`.
 
 ## Why a `sitecustomize.py` and not a plugin or a patched image
 
@@ -76,6 +89,9 @@ docker logs qwen36-27b-r0 2>&1 | grep sitecustomize
 #   [sitecustomize] placeholder/payload mismatch now raises ValueError (400)
 #   [sitecustomize] continuing prefill chunks clamped to physical KV
 #   [sitecustomize] fp8 Marlin layers use dequant+cuBLAS for M >= 2049
+#   [sitecustomize] reasoning effort: request, then key default, then server default
+#   [sitecustomize] per-key context from /opt/keypolicy/policy.json, default 169000
+#   [keypolicy] loaded: default context 169000, N consumer entries
 # on the first big prefill chunk:
 #   [sitecustomize] fp8 prefill dequant path active (first M=4096, ...)
 # when patch 3 acts, at most once a minute:
@@ -103,6 +119,13 @@ IMG=$(docker inspect qwen36-27b-r1 --format '{{.Image}}')
 docker run --rm --entrypoint python3 -e PYTHONPATH=/opt/enginepatch \
   -v "$PWD/deploy/enginepatch:/opt/enginepatch:ro" "$IMG" /opt/enginepatch/verify.py
 ```
+
+Patch 5: `verify_keypolicy.py` (CPU, no GPU; its docstring has the command)
+runs the real `TokenizerManager._validate_one_request` with the patch on top,
+and renders the real chat template to show which effort the model sees
+(prompt of "hi": xhigh 53 tokens, low 41, medium 11, thinking off 13). On a
+live replica the same token counts are the check: a `max_tokens: 1` request
+with `reasoning_effort: low` must report `prompt_tokens` 41, not 53.
 
 ### Patch 4
 

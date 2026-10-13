@@ -24,6 +24,9 @@ for 1 and 2; patch 3 is documented on _patch_budget below.
 
 4. Run big prefill chunks of FP8-Marlin layers on cuBLAS bf16 (fp8_prefill_dequant.py).
 
+5. Per-key context window and reasoning effort, and the client's effort
+   actually reaching the template (keypolicy.py).
+
 Why here (1 and 2) and not at the gateway: a Higress wasm body rewrite dies at the 32 KB
 connection buffer limit and the poisoned bodies are 400-545 KB. The engine holds
 the whole request, so this is the first layer that can actually do it.
@@ -37,10 +40,21 @@ removes itself once every patch is in.
 import sys
 import time
 
+# Patch 5's module is stdlib-only, so it is imported here, before the import
+# hook exists: importing it from inside the hook re-enters the hook, which then
+# applies the patch again on top of itself.
+try:
+    import keypolicy
+except Exception as _exc:  # patch 5 is skipped, the others still apply
+    keypolicy = None
+    print(f"[sitecustomize] keypolicy import failed: {_exc!r}", file=sys.stderr, flush=True)
+
 TARGET_PROTO = "sglang.srt.entrypoints.openai.protocol"
 TARGET_MM = "sglang.srt.multimodal.processors.base_processor"
 TARGET_BUDGET = "sglang.srt.mem_cache.prefill_budget"
 TARGET_FP8 = "sglang.srt.layers.quantization.fp8"
+TARGET_CHAT = "sglang.srt.entrypoints.openai.serving_chat"
+TARGET_TM = "sglang.srt.managers.tokenizer_manager"
 
 _done = set()
 _importing = set()
@@ -236,11 +250,76 @@ def _patch_fp8(module):
     return True
 
 
+def _patch_chat(module):
+    """Effort: see keypolicy.py, 2. Wraps the two OpenAIServingChat methods
+    between which the consumer is known and the effort is merged."""
+    cls = getattr(module, "OpenAIServingChat", None)
+    if cls is None or not hasattr(cls, "_process_messages") \
+            or not hasattr(cls, "_convert_to_internal_request"):
+        return False
+    if getattr(cls, "_keypolicy_effort", False) or keypolicy is None:
+        return True
+    kp = keypolicy
+    convert = cls._convert_to_internal_request
+    process = cls._process_messages
+
+    def _convert_to_internal_request(self, request, raw_request=None, *args, **kwargs):
+        try:
+            consumer = kp.consumer_of(self.extract_custom_labels(raw_request))
+        except Exception:
+            consumer = None
+        token = kp._consumer.set(consumer)
+        try:
+            return convert(self, request, raw_request, *args, **kwargs)
+        finally:
+            kp._consumer.reset(token)
+
+    def _process_messages(self, request, *args, **kwargs):
+        try:
+            kp.resolve_effort(request, kp._consumer.get())
+        except Exception as exc:  # never fail a request over its effort
+            print(f"[sitecustomize] effort resolution skipped: {exc!r}",
+                  file=sys.stderr, flush=True)
+        return process(self, request, *args, **kwargs)
+
+    cls._convert_to_internal_request = _convert_to_internal_request
+    cls._process_messages = _process_messages
+    cls._keypolicy_effort = True
+    print("[sitecustomize] reasoning effort: request, then key default, then server default",
+          file=sys.stderr, flush=True)
+    return True
+
+
+def _patch_tm(module):
+    """Context: see keypolicy.py, 1. Runs after upstream's own validation, so
+    the engine-wide checks against --context-length are unchanged."""
+    cls = getattr(module, "TokenizerManager", None)
+    if cls is None or not hasattr(cls, "_validate_one_request"):
+        return False
+    if getattr(cls, "_keypolicy_context", False) or keypolicy is None:
+        return True
+    kp = keypolicy
+    original = cls._validate_one_request
+
+    def _validate_one_request(self, obj, input_ids):
+        original(self, obj, input_ids)
+        if getattr(self, "is_generation", True):
+            kp.enforce_context(self, obj, input_ids)
+
+    cls._validate_one_request = _validate_one_request
+    cls._keypolicy_context = True
+    print(f"[sitecustomize] per-key context from {kp.PATH}, default {kp.DEFAULT_CONTEXT}",
+          file=sys.stderr, flush=True)
+    return True
+
+
 _PATCHES = (
     ("proto", TARGET_PROTO, _patch_proto),
     ("mm", TARGET_MM, _patch_mm),
     ("budget", TARGET_BUDGET, _patch_budget),
     ("fp8", TARGET_FP8, _patch_fp8),
+    ("chat", TARGET_CHAT, _patch_chat),
+    ("tm", TARGET_TM, _patch_tm),
 )
 
 
