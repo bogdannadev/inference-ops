@@ -11,15 +11,18 @@ compatibility: opencode
 
 The server behind this model has hard limits:
 
-- A request body may be at most **4 MB**. Every image in a conversation is
+- A request body may be at most **16 MB**. Every image in a conversation is
   sent again on **every** turn, so images pile up until requests fail.
 - At most **16 images per request**. Above that the server answers
   "Image count N exceeds limit 16 per request".
 - Every image is downscaled to about **2 MP** on the server, and OpenCode itself
-  shrinks every image to **1280 px** on the long side before sending. Small
-  text in a large photo becomes unreadable unless you crop it.
-- Each image costs about **1,000–1,600 input tokens**, charged every turn it is
+  shrinks every image to **2048 px** on the long side before sending (1280 px
+  with a config file older than 2026-10-14). Small text in a large photo
+  becomes unreadable unless you crop it.
+- Each image costs up to about **2,000 input tokens**, charged every turn it is
   in the conversation.
+- If the task is reading text out of images (OCR), use the `ocr` skill: it
+  sends the batches to the fast `@ocr` subagent instead of `general`.
 
 So: images never go into the main session. Subagents read them in small
 batches, write text notes, and the main session works from the notes only.
@@ -135,7 +138,7 @@ create two copies with a numbered, space-free name (`img-001.jpg`, ...), and
 write the mapping to `.img-work/index.md` (number → original path, size in
 pixels):
 
-- `view/` — rotated upright, at most 1280 px on the long side, JPEG quality 85.
+- `view/` — rotated upright, at most 2048 px on the long side, JPEG quality 85.
   This is what batch subagents read.
 - `full/` — rotated upright, **full resolution**, JPEG quality 92. Only for
   zoom crops. Never read a `full/` file directly.
@@ -145,7 +148,7 @@ With ImageMagick 7 (on ImageMagick 6, write `convert` for `magick` and
 
 ```bash
 mkdir -p .img-work/view .img-work/full .img-work/zoom .img-work/notes
-magick "SOURCE" -auto-orient -resize '1280x1280>' -quality 85 .img-work/view/img-001.jpg
+magick "SOURCE" -auto-orient -resize '2048x2048>' -quality 85 .img-work/view/img-001.jpg
 magick "SOURCE" -auto-orient -quality 92 .img-work/full/img-001.jpg
 ```
 
@@ -155,7 +158,7 @@ With Python and Pillow (HEIC also needs `pip install pillow-heif`):
 from PIL import Image, ImageOps
 im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
 im.save(full_path, quality=92)
-im.thumbnail((1280, 1280)); im.save(view_path, quality=85)
+im.thumbnail((2048, 2048)); im.save(view_path, quality=85)
 ```
 
 `-auto-orient` / `exif_transpose` matter: phone photos store their rotation in
@@ -165,8 +168,8 @@ this step portrait photos arrive sideways.
 ## Step 2 — Plan the batches
 
 List `view/` with file sizes. Make batches of **at most 6 images and at most
-2.4 MB of files in total**. If one image is larger than 1 MB, put it in a batch
-of its own. Write the plan to `.img-work/plan.md`.
+9 MB of files in total** (base64 makes the request a third larger than the
+files). If one image is larger than 4 MB, put it in a batch of its own. Write the plan to `.img-work/plan.md`.
 
 ## Step 3 — Run each batch in a subagent
 
