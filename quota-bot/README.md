@@ -70,6 +70,10 @@ from it. This block is a copy and can go stale — the bot cannot.
 /opencode <name>            opencode.json tuned to this node, as a file
 /topup <name> <tokens>      add to a balance
 
+/amlops                     operators: quota, limits, usage, remove, add
+/amlnew <name>              aml-mcp token and gateway key: OpenCode setup or keys
+/amlrevoke <name>           disable the token and delete the key (asks first)
+
 /setquota <name> <tokens>   replaces a balance
 /clearquota <name>          sets a balance to zero
 /revoke <name>              deletes a key and its balance
@@ -104,6 +108,71 @@ To re-run the capture: start a copy of the bot with
 server that logs each JSON body, POST synthetic updates at its webhook, and
 check every `text` for tag balance, length and `<pre>` width. Do not send
 `/opencode` through it — the capture would hold a real credential.
+
+## AML Copilot operators
+
+An AML Copilot operator (aml-mcp, `/opt/aml-mcp`) needs two credentials: an
+aml-mcp token, which names them in its hash-chained audit log, and a gateway
+key for the model. `/amlnew <name>` makes both under one name after a confirm
+tap. `/amlrevoke <name>` disables the token and deletes the key, but only a key
+on tier `aml`: a same-named key on another tier is not this command's to delete.
+
+`/amlops` is the screen to start from: one button per operator, with their
+plan and today's use, and **Add operator**. An operator's card shows the token,
+the plan and its use, the OSINT searches and the gateway key, with **Plan**,
+**OSINT searches**, **Token usage** (the key card), **Gateway limits** (the
+key's settings screen) and **Remove operator**. `/amlnew` and `/amlrevoke`
+without a name ask for one or offer the operators as buttons.
+
+**Handover: OpenCode setup or keys only.** The aml-mcp token exists only in
+the message that hands it over (aml-mcp keeps its hash), so the handover is
+picked on the create prompt, before the tap, with its two buttons:
+
+- **OpenCode setup** (the default) sends `aml-copilot-<name>.zip` and a setup
+  prompt, as `/opencode` does for a key. The zip is AML Copilot's `opencode`
+  folder, read from aml-mcp's checkout (`/opt/aml-mcp/opencode`, mounted
+  read-only at `AML_COPILOT_DIR`), so it always matches the server, plus
+  `credentials.env` with the four values its launchers read. The operator
+  pastes the prompt into a fresh OpenCode on any free model: it unpacks the
+  folder, moves `credentials.env` to `~/.aml-copilot/`, never opens it, and
+  checks that aml-mcp connects. The credentials are not shown in the chat.
+- **Keys only** shows the two URLs and both credentials, tap to copy, for an
+  operator who already has AML Copilot.
+
+If the folder is not mounted or the zip cannot be sent, the bot falls back to
+keys only rather than lose the token. **Connect** on the card shows the URLs
+and the gateway key again. The aml-mcp token cannot be shown again, so **New
+aml-mcp token** replaces it after a confirm tap that picks the handover the
+same way: the old one stops at once; the operator, plan and audit history stay.
+
+**OSINT searches** (the demo's open-source research, one external web search
+a tap) are set per operator on their own screen: 0, 1, 5, 20, 50, 100, *10
+more* or *Custom…*, at any time, each tap one idempotent audited write like
+the plan screen. The number is the total the operator may run, used ones
+included; until it is set, aml-mcp's free default applies (one search).
+
+**Plans limit the work, not the tokens.** aml-mcp enforces each operator's plan
+before every tool call: *N sessions a day* (a session is a screening with a
+verdict; an incomplete one is free, and the same name again within 30 minutes
+counts once), *N hours a day*, or *N hours in total* (a demo; **5 hours more**
+extends it). Hours are charged in 30-minute blocks opened by the first request,
+days start at 00:00 Almaty. `/amlnew` asks for the plan with the create tap; the
+plan screen changes it with one tap (presets, *Custom…*, *No plan*). The
+gateway key is on tier `aml`, which counts tokens and limits only tokens per
+minute, as a guard for the shared node. When an operator runs out, every
+`AML_ALLOWED_IDS` chat gets one message (AmlPlanWatcher, polling once a minute).
+
+The aml-mcp half goes through its **access API**, a separate container
+(`aml-access`) on the internal `aml-access` network that only it and this bot
+join, authenticated with `AML_ACCESS_SECRET`. That API connects to Postgres as
+a role that row-level security limits to role `operator`: it cannot issue an
+admin token or disable one. Admins stay on the server's CLI. aml-mcp records
+each issue and disable with `requested_by = telegram:<user id>`; this bot's
+own audit log records the name and operator id, never the token.
+
+The order is deliberate: the token is issued first, because aml-mcp refuses a
+duplicate name before anything exists. If the gateway half then fails, the
+token is disabled again (kept, disabled, for the audit log).
 
 ## Tiers are defaults; every value can be set per consumer
 

@@ -50,6 +50,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -107,6 +108,13 @@ var allowedIds = Ids(Req("TELEGRAM_ALLOWED_IDS"));
 // ALERT_CHAT_IDS to a group chat id to send one copy there instead.
 var alertChatIds = Ids(Opt("ALERT_CHAT_IDS", "")) is { Count: > 0 } ids ? ids : allowedIds;
 
+// AML Copilot operators: aml-mcp's access API (container aml-access), reached on
+// the dedicated `aml-access` network that only it and this bot share. Who may
+// run /aml* defaults to everyone who may operate the bot, as ALERT_CHAT_IDS
+// does; set AML_ALLOWED_IDS to narrow it. Unset secret: those commands say the
+// API is not connected, and nothing else changes.
+var amlAllowedIds = Ids(Opt("AML_ALLOWED_IDS", "")) is { Count: > 0 } amlIds ? amlIds : allowedIds;
+
 var cfg = new BotConfig(
     BotToken:        Req("TELEGRAM_BOT_TOKEN"),
     WebhookSecret:   Req("TELEGRAM_WEBHOOK_SECRET"),
@@ -157,7 +165,17 @@ var cfg = new BotConfig(
     // inference project's .env). Required for the same reason as
     // PUBLIC_BASE_URL above.
     DirectHost:      Req("DIRECT_HOST"),
-    AlertChatIds:    alertChatIds);
+    AlertChatIds:    alertChatIds,
+    AmlAccessUrl:    Opt("AML_ACCESS_URL", "http://aml-access:8080").TrimEnd('/'),
+    AmlAccessSecret: Opt("AML_ACCESS_SECRET", ""),
+    // The public aml-mcp endpoint written into an operator's setup file.
+    // Required once the API is connected, for the same reason as
+    // PUBLIC_BASE_URL: no deployment's hostname is compiled in.
+    AmlMcpUrl:       Opt("AML_MCP_URL", "").TrimEnd('/'),
+    // AML Copilot's opencode folder (/opt/aml-mcp/opencode, mounted read-only):
+    // what the OpenCode setup zip is made of, so it always matches the server.
+    AmlCopilotDir:   Opt("AML_COPILOT_DIR", "/opt/aml-copilot").TrimEnd('/'),
+    AmlAllowedIds:   amlAllowedIds);
 
 if (cfg.ContextLimit < Policy.ContextFloor || cfg.ContextLimit > cfg.ContextMax)
     throw new InvalidOperationException(
@@ -165,6 +183,18 @@ if (cfg.ContextLimit < Policy.ContextFloor || cfg.ContextLimit > cfg.ContextMax)
 Policy.ContextStandard = cfg.ContextLimit;
 Policy.ContextMax = cfg.ContextMax;
 EnginePolicy.Path = cfg.EnginePolicyPath;
+
+// Both end up inside single-quoted PowerShell strings in the operator's setup
+// file, and the secret inside an HTTP header: checked here so a bad .env is a
+// startup error naming the variable, not a broken file handed to an operator.
+if (cfg.AmlAccessSecret.Length > 0)
+{
+    if (cfg.AmlAccessSecret.Length < 32 || !cfg.AmlAccessSecret.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-'))
+        throw new InvalidOperationException("AML_ACCESS_SECRET must be at least 32 characters of [A-Za-z0-9_-]");
+    if (!Uri.TryCreate(cfg.AmlMcpUrl, UriKind.Absolute, out var amlUri) || amlUri.Scheme != Uri.UriSchemeHttps
+        || cfg.AmlMcpUrl.Contains('\''))
+        throw new InvalidOperationException("AML_MCP_URL must be the https URL of aml-mcp's /mcp endpoint when AML_ACCESS_SECRET is set");
+}
 
 // Encoded once, not on every delivery — and validated here because the
 // comparison's fast path assumes one byte per character. That holds for the
@@ -227,6 +257,8 @@ builder.Services.AddSingleton<Telegram>();
 builder.Services.AddHostedService<AlertWorker>();
 builder.Services.AddSingleton<Ledger>();
 builder.Services.AddSingleton<KeyStore>();
+builder.Services.AddSingleton<AmlAccess>();
+builder.Services.AddHostedService<AmlPlanWatcher>();
 builder.Services.AddHostedService<Worker>();
 builder.Services.AddSingleton<LimiterSync>();
 builder.Services.AddHostedService<EnforcementWorker>();
@@ -284,6 +316,15 @@ builder.Services.AddHttpClient("inference", c =>
     c.BaseAddress = new Uri(cfg.GatewayUrl + "/");
     c.Timeout = TimeSpan.FromMinutes(5);
     c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", cfg.AdminCredential);
+});
+// aml-mcp's access API. Short timeout: it is one host away and does one small
+// transaction per call.
+builder.Services.AddHttpClient("aml-access", c =>
+{
+    c.BaseAddress = new Uri(cfg.AmlAccessUrl + "/");
+    c.Timeout = TimeSpan.FromSeconds(10);
+    if (cfg.AmlAccessSecret.Length > 0)
+        c.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer " + cfg.AmlAccessSecret);
 });
 builder.Services.AddHttpClient("alertmanager", c =>
 {
@@ -869,6 +910,7 @@ sealed class Worker(
     Telegram tg,
     PriceBook priceBook,
     LimiterSync limiter,
+    AmlAccess aml,
     ILogger<Worker> log) : BackgroundService
 {
     // Telegram redelivers on failure, and it can redeliver an update we already
@@ -987,7 +1029,7 @@ sealed class Worker(
         else if (_inputs.TryRemove(msg.From.Id, out var input) && DateTimeOffset.UtcNow <= input.Expires)
         {
             command = $"(answer to {input.Kind})";
-            reply = await AnswerInputAsync(msg.From.Id, input, text.Trim(), ct);
+            reply = await AnswerInputAsync(msg.From.Id, msg.Chat.Id, input, text.Trim(), ct);
         }
         else
             reply = await DispatchWithTypingAsync(msg.Chat.Id, msg.From.Id, text.Trim(), ct);
@@ -1082,6 +1124,76 @@ sealed class Worker(
             return;
         }
 
+        // AML Copilot screens: the operator list (al:), one operator's card
+        // (ao:), the name prompt (an:) and the remove picker (ax:) re-render in
+        // place; ar: asks to remove, which is a NEW message whose Remove button
+        // goes through the token path below like every destructive action.
+        // aq:<plan code>:<limit>:<name> sets a plan and re-renders the plan screen;
+        // aw:<searches>:<name> sets the OSINT allowance and re-renders its screen;
+        // ad:<o|k>:<name> switches /amlnew's handover between the OpenCode setup
+        // and keys only, re-rendering the create prompt with fresh buttons.
+        if (data.StartsWith("aw:", StringComparison.Ordinal))
+        {
+            var parts = data[3..].Split(':', 2);
+            var reply = parts.Length == 2 && IsValidName(parts[1])
+                        && int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var allowance)
+                ? await AmlSearchesSetAsync(cb.From.Id, parts[1], allowance, ct)
+                : new Reply("Malformed selection. Run /amlops again.");
+            await AnswerCallbackAsync(cb.Id, ct);
+            await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            return;
+        }
+        if (data.StartsWith("ad:", StringComparison.Ordinal))
+        {
+            var parts = data[3..].Split(':', 2);
+            var reply = parts.Length == 2 && parts[0] is "o" or "k"
+                ? await AmlNewPromptAsync(cb.From.Id, chatId.Value, parts[1], parts[0] == "o", ct)
+                : new Reply("Malformed selection. Run /amlnew again.");
+            await AnswerCallbackAsync(cb.Id, ct);
+            await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            return;
+        }
+        if (data.StartsWith("aq:", StringComparison.Ordinal))
+        {
+            var parts = data[3..].Split(':');
+            var reply = parts.Length == 3 && AmlKind(parts[0]) is { } kind && IsValidName(parts[2])
+                        && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var limit)
+                ? await AmlPlanSetAsync(cb.From.Id, parts[2], kind, limit, ct)
+                : new Reply("Malformed selection. Run /amlops again.");
+            await AnswerCallbackAsync(cb.Id, ct);
+            await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            return;
+        }
+        if (data is "al:" or "an:" or "ax:" || data.StartsWith("ao:", StringComparison.Ordinal) || data.StartsWith("ar:", StringComparison.Ordinal)
+            || data.StartsWith("ap:", StringComparison.Ordinal) || data.StartsWith("ac:", StringComparison.Ordinal)
+            || data.StartsWith("ak:", StringComparison.Ordinal) || data.StartsWith("ay:", StringComparison.Ordinal)
+            || data.StartsWith("as:", StringComparison.Ordinal) || data.StartsWith("ai:", StringComparison.Ordinal))
+        {
+            var name = data[3..];
+            var (reply, edit) = data[..3] switch
+            {
+                "al:" => (await AmlOpsAsync(cb.From.Id, ct), true),
+                "ax:" => (await AmlRevokePickerAsync(cb.From.Id, ct), true),
+                "an:" => (AmlRefusal(cb.From.Id) ?? AskInput(cb.From.Id, InputKind.AmlNewName, "", null, AmlNamePrompt), false),
+                _ when !IsValidName(name) => (new Reply("That is not an operator name this bot recognises. Run /amlops again."), false),
+                "ao:" => (await AmlOperatorCardAsync(cb.From.Id, name, ct), true),
+                "ap:" => (await AmlPlanScreenAsync(cb.From.Id, name, null, ct), true),
+                "as:" => (await AmlSearchesScreenAsync(cb.From.Id, name, null, ct), true),
+                "ai:" => (AmlRefusal(cb.From.Id) ?? AskInput(cb.From.Id, InputKind.AmlSearches, name, null,
+                             $"Send the OSINT searches <b>{Esc(name)}</b> may run in total, used ones included: 0 to 10000."), false),
+                // Both carry or lead to a credential: new messages, never edited.
+                "ak:" => (await AmlConnectAsync(cb.From.Id, name, ct), false),
+                "ay:" => (AmlRotatePrompt(cb.From.Id, chatId.Value, name), false),
+                "ac:" => (AmlRefusal(cb.From.Id) ?? AskInput(cb.From.Id, InputKind.AmlPlan, name, null,
+                             $"Send the plan for <b>{Esc(name)}</b>: <code>10 sessions</code> (a day), <code>6 h/day</code> or <code>5 h total</code>."), false),
+                _     => (AmlRevokePrompt(cb.From.Id, name), false),
+            };
+            await AnswerCallbackAsync(cb.Id, ct);
+            if (edit) await tg.EditOrSendAsync(chatId.Value, cb.Message?.MessageId ?? 0, reply, ct);
+            else await SendAsync(chatId.Value, reply, ct);
+            return;
+        }
+
         // Settings screens. They EDIT the message they were tapped on, so a
         // run of changes is one screen rather than a scroll of stale copies.
         // Also not token-bound: each tap is one idempotent write of a policy
@@ -1168,12 +1280,586 @@ sealed class Worker(
             "/setquota"   => (a1 is null || a2 is null) ? new Reply(Usage("/setquota &lt;name&gt; &lt;tokens&gt;", "/setquota acme 1000000")) : Arm(userId, a1, a2, PendingKind.SetQuota),
             "/clearquota" => a1 is null ? new Reply(Usage("/clearquota &lt;name&gt;", "/clearquota acme")) : Arm(userId, a1, "0", PendingKind.SetQuota),
             "/revoke"     => a1 is null ? new Reply(Usage("/revoke &lt;name&gt;", "/revoke acme")) : Arm(userId, a1, null, PendingKind.Revoke),
+            "/amlops"     => await AmlOpsAsync(userId, ct),
+            "/amlnew"     => a1 is null ? AmlRefusal(userId) ?? AskInput(userId, InputKind.AmlNewName, "", null, AmlNamePrompt)
+                                        : await AmlNewPromptAsync(userId, chatId, a1.ToLowerInvariant(), true, ct),
+            "/amlrevoke"  => a1 is null ? await AmlRevokePickerAsync(userId, ct)
+                                        : AmlRevokePrompt(userId, a1.ToLowerInvariant()),
             // A command that is documented but lands here is a wiring bug,
             // not user error, and saying so beats "unknown command".
             _             => new Reply(IsKnownCommand(cmd)
                                  ? $"<code>{Esc(Head(cmd))}</code> is listed but not wired up. That is a bug in the bot, not in what you typed."
                                  : $"Unknown command <code>{Esc(Head(cmd))}</code>.\n\nSend /help to see what this bot can do.")
         };
+    }
+
+    // ---- AML Copilot operators ---------------------------------------------
+    //
+    // An operator of AML Copilot needs two credentials: an aml-mcp token (who
+    // they are in its audit log) and a gateway key (the model). /amlnew makes
+    // both under ONE name and hands them over (OpenCode setup or keys), /amlrevoke
+    // removes both. The aml-mcp side goes through its access API, which can
+    // only issue and disable role operator — admins stay CLI-only on the server.
+    // The token, like a key, exists only in the message that hands it over.
+
+    private Reply? AmlRefusal(long userId) =>
+        !cfg.AmlAllowedIds.Contains(userId) ? new Reply("AML Copilot commands are not enabled for you.")
+        : cfg.AmlAccessSecret.Length == 0 ? new Reply("The aml-mcp access API is not connected: <code>AML_ACCESS_SECRET</code> is unset.")
+        : null;
+
+    private const string AmlNamePrompt =
+        "Send the new AML Copilot operator's name: 1–32 characters of lowercase letters, digits, <code>-</code> or <code>_</code>. "
+      + "It names both their aml-mcp token and their gateway key.";
+
+    // Plans live in aml-mcp, which enforces them before every tool call; the
+    // gateway key only counts tokens. A session is a screening with a verdict.
+    private static readonly (string Code, string Kind, int Limit, string Label)[] AmlPresets =
+    [
+        ("s", "sessions_per_day", 5, "5 sessions a day"),
+        ("s", "sessions_per_day", 20, "20 sessions a day"),
+        ("d", "hours_per_day", 8, "8 hours a day"),
+        ("t", "hours_total", 5, "demo, 5 hours in total"),
+    ];
+
+    private static string? AmlKind(string code) => code switch
+    {
+        "s" => "sessions_per_day", "d" => "hours_per_day", "t" => "hours_total", "n" => "none", _ => null
+    };
+
+    private static string AmlHours(int? minutes) => ((minutes ?? 0) / 60.0).ToString("0.#", CultureInfo.InvariantCulture);
+
+    // The limit as the operator of this bot types it: sessions, or hours.
+    private static int? AmlLimit(AmlUsage u) => u.Kind is "hours_per_day" or "hours_total" ? u.Quota / 60 : u.Quota;
+
+    private static string AmlPlanLabel(string? kind, int? limit) => kind switch
+    {
+        "sessions_per_day" => $"{limit} sessions a day",
+        "hours_per_day"    => $"{limit} hours a day",
+        "hours_total"      => $"{limit} hours in total",
+        _                  => "no plan, unlimited",
+    };
+
+    private static string AmlPlanUse(AmlUsage u) => u.Kind switch
+    {
+        "sessions_per_day" => $"today {u.Used} of {u.Quota} sessions",
+        "hours_per_day"    => $"today {AmlHours(u.Used)} of {AmlHours(u.Quota)} h",
+        "hours_total"      => $"{AmlHours(u.Used)} of {AmlHours(u.Quota)} h used",
+        _                  => $"today {u.SessionsToday} sessions · {AmlHours(u.MinutesToday)} h",
+    } + (u.Exhausted ? " · ⛔ limit reached" : "");
+
+    private const string AmlPlanNote =
+        "A session is a screening with a verdict: an incomplete result is free, and the same name again within 30 minutes "
+      + "counts once. Hours are charged in 30-minute blocks, opened by the first request. Days start at 00:00 Almaty. "
+      + "Changing only the hours of an hours-in-total plan extends it; another plan starts afresh. "
+      + "Tokens are counted on the gateway key, not limited.";
+
+    // Operators issued from here are role operator; an admin is listed but has
+    // no button, because nothing here may change one.
+    private async Task<Reply> AmlOpsAsync(long userId, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var opsT = aml.ListAsync(ct);
+        var useT = aml.UsageAsync(ct);
+        await Task.WhenAll(opsT, useT);
+        var (ops, error) = opsT.Result;
+        var (usage, useError) = useT.Result;
+        if (ops is null || usage is null) return new Reply($"❌ aml-mcp access API: {Esc(error ?? useError ?? "no answer")}");
+        var consumers = await keys.ReadConsumersAsync(ct);
+
+        var sb = new StringBuilder("\U0001f6e1️ <b>AML Copilot operators</b>\n");
+        foreach (var u in usage)
+        {
+            if (u.Role == "admin") { sb.Append($"\n\U0001f464 <b>{Esc(u.Name)}</b> · admin, server CLI only\n"); continue; }
+            sb.Append($"\n{(u.Exhausted ? "⛔" : "✅")} <b>{Esc(u.Name)}</b> · {AmlPlanLabel(u.Kind, AmlLimit(u))}\n{AmlPlanUse(u)}"
+                    + (consumers.ContainsKey(u.Name) ? "" : " · ⚠️ no gateway key") + "\n");
+        }
+        if (!usage.Any(u => u.Role == "operator")) sb.Append("\nNo operators yet.\n");
+        var disabled = ops.Count(o => o.DisabledAt is not null);
+        sb.Append(Fmt.Note(
+            "Tap an operator for their plan, usage and gateway key, or to remove them.\n"
+          + (disabled > 0 ? $"{disabled} removed operator(s) are kept, disabled, for the audit log." : "")));
+
+        var rows = AmlOperatorNames(ops).Select(n => new[] { new InlineKeyboardButton(n, $"ao:{n}") }).ToList();
+        rows.Add([new InlineKeyboardButton("➕ Add operator", "an:")]);
+        return new Reply(sb.ToString(), new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    private static IEnumerable<string> AmlOperatorNames(List<AmlOperator> ops) =>
+        ops.Where(o => o.DisabledAt is null && o.Role == "operator" && IsValidName(o.Name))
+           .Select(o => o.Name).OrderBy(n => n, StringComparer.Ordinal);
+
+    // One operator: token, plan and usage, gateway key, with the controls. The
+    // key's own screens (pp:, kc:) are the same ones /policy and /key open.
+    private async Task<Reply> AmlOperatorCardAsync(long userId, string name, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var opsT = aml.ListAsync(ct);
+        var useT = aml.UsageAsync(ct);
+        await Task.WhenAll(opsT, useT);
+        var (ops, error) = opsT.Result;
+        if (ops is null) return new Reply($"❌ aml-mcp access API: {Esc(error ?? "no answer")}");
+        var op = ops.Where(o => o.Name == name).OrderBy(o => o.DisabledAt is not null).FirstOrDefault();
+        if (op is null) return new Reply($"No AML operator named <b>{Esc(name)}</b>. Run /amlops.");
+
+        var sb = new StringBuilder($"\U0001f6e1️ <b>{Esc(name)}</b> · AML Copilot operator\n\n");
+        sb.Append(op.DisabledAt is { } off
+            ? $"⛔ aml-mcp token disabled {off:yyyy-MM-dd HH:mm} UTC\n"
+            : $"✅ aml-mcp token active since {op.CreatedAt:yyyy-MM-dd}\n");
+
+        var rows = new List<InlineKeyboardButton[]>();
+        if (useT.Result.Usage?.FirstOrDefault(x => x.Id == op.Id) is { } u)
+        {
+            sb.Append($"\U0001f4cb Plan: <b>{AmlPlanLabel(u.Kind, AmlLimit(u))}</b>\n{AmlPlanUse(u)}\n");
+            rows.Add([new InlineKeyboardButton("\U0001f4cb Plan", $"ap:{name}")]);
+
+            // OSINT research is counted per search; its own screen sets how many.
+            var (searches, _) = await aml.SearchesAsync(ct);
+            if (searches is not null && searches.TryGetValue(name, out var s))
+            {
+                sb.Append($"\U0001f50e OSINT: {s.Used} of {s.Allowance} searches used\n");
+                rows[^1] = [.. rows[^1], new InlineKeyboardButton("\U0001f50e OSINT searches", $"as:{name}")];
+            }
+        }
+
+        if ((await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+        {
+            var tierT = ledger.TierAsync(name, ct);
+            var ovT = ledger.OverridesAsync(name, ct);
+            await Task.WhenAll(tierT, ovT);
+            var plan = PlanOf(tierT.Result, ovT.Result);
+            static string Lim(long? n) => n is { } v && v > 0 ? Fmt.Num(v) : "none";
+            sb.Append($"\n\U0001f511 Gateway key, tier <b>{Esc(plan.Tier ?? "none")}</b>"
+                    + (plan.Tier == "aml" ? ": tokens are counted, not limited" : "")
+                    + $"\nPer-minute guard {Lim(plan.Tpm)}" + (plan.Daily is > 0 ? $" · daily limit {Lim(plan.Daily)}" : ""));
+            rows.Add([new InlineKeyboardButton("\U0001f4ca Token usage", $"kc:24h:{name}"),
+                      new InlineKeyboardButton("⚙️ Gateway limits", $"pp:{name}")]);
+        }
+        else
+            sb.Append("\n⚠️ no gateway key under this name");
+
+        if (op.DisabledAt is null)
+        {
+            rows.Insert(0, [new InlineKeyboardButton("\U0001f50c Connect", $"ak:{name}")]);
+            rows.Add([new InlineKeyboardButton("\U0001f5d1 Remove operator", $"ar:{name}")]);
+        }
+        rows.Add([new InlineKeyboardButton("← Operators", "al:")]);
+        return new Reply(sb.ToString() + Fmt.Note(AmlPlanNote), new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    // The plan screen: one tap sets a plan. Not token-bound, like the gateway
+    // settings screens: each tap is one idempotent, audited write.
+    private async Task<Reply> AmlPlanScreenAsync(long userId, string name, string? notice, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var (usage, error) = await aml.UsageAsync(ct);
+        if (usage is null) return new Reply($"❌ aml-mcp access API: {Esc(error ?? "no answer")}");
+        var u = usage.FirstOrDefault(x => x.Name == name && x.Role == "operator");
+        if (u is null) return new Reply($"No active AML operator named <b>{Esc(name)}</b>. Run /amlops.");
+
+        var text = (notice is null ? "" : notice + "\n\n")
+                 + $"\U0001f4cb <b>{Esc(name)}</b> · plan\n\nNow: <b>{AmlPlanLabel(u.Kind, AmlLimit(u))}</b>\n{AmlPlanUse(u)}\n\n<i>Tap a plan to set it.</i>"
+                 + Fmt.Note(AmlPlanNote);
+        var rows = AmlPresets
+            .Select(p => new[] { new InlineKeyboardButton(
+                p.Label + (p.Kind == u.Kind && p.Limit == AmlLimit(u) ? " ✓" : ""), $"aq:{p.Code}:{p.Limit}:{name}") })
+            .ToList();
+        if (u.Kind == "hours_total")
+            rows.Add([new InlineKeyboardButton("➕ 5 hours more", $"aq:t:{AmlLimit(u) + 5}:{name}")]);
+        rows.Add([new InlineKeyboardButton("✏️ Custom…", $"ac:{name}"),
+                  new InlineKeyboardButton("No plan" + (u.Kind is null ? " ✓" : ""), $"aq:n:0:{name}")]);
+        rows.Add([new InlineKeyboardButton("← Operator", $"ao:{name}")]);
+        return new Reply(text, new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    private async Task<Reply> AmlPlanSetAsync(long userId, string name, string kind, int? limit, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        if (kind == "none") limit = null;
+        var error = await aml.SetPlanAsync(name, kind, limit, $"telegram:{userId}", ct);
+        await AuditAsync($"amlplan name={name} kind={kind} limit={limit?.ToString(CultureInfo.InvariantCulture) ?? "-"}{(error is null ? "" : " FAILED")}", ct);
+        return await AmlPlanScreenAsync(userId, name,
+            error is null ? $"✅ Plan set: <b>{AmlPlanLabel(kind == "none" ? null : kind, limit)}</b>" : $"❌ {Esc(error)}", ct);
+    }
+
+    // "10 sessions", "6 h/day", "5 h total": the number and one word decide.
+    private async Task<Reply> AmlPlanCustomAsync(long userId, string name, string text, CancellationToken ct)
+    {
+        var t = text.Trim().ToLowerInvariant();
+        var kind = t.Contains("session") ? "sessions_per_day" : t.Contains("day") ? "hours_per_day" : t.Contains("total") ? "hours_total" : null;
+        if (kind is null || !int.TryParse(new string(t.TakeWhile(char.IsAsciiDigit).ToArray()), CultureInfo.InvariantCulture, out var n) || n < 1)
+            return new Reply("Send the plan as <code>10 sessions</code>, <code>6 h/day</code> or <code>5 h total</code>.");
+        return await AmlPlanSetAsync(userId, name, kind, n, ct);
+    }
+
+    private async Task<Reply> AmlRevokePickerAsync(long userId, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var (ops, error) = await aml.ListAsync(ct);
+        if (ops is null) return new Reply($"❌ aml-mcp access API: {Esc(error ?? "no answer")}");
+        var names = AmlOperatorNames(ops).ToList();
+        if (names.Count == 0) return new Reply("No AML Copilot operators to remove. Admins are removed on the server only.");
+        var rows = names.Select(n => new[] { new InlineKeyboardButton($"\U0001f5d1 {n}", $"ar:{n}") }).ToList();
+        rows.Add([new InlineKeyboardButton("← Operators", "al:")]);
+        return new Reply("\U0001f5d1 <b>Remove which AML Copilot operator?</b>\n\nYou confirm on the next step.",
+            new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    // Checked now, so a taken name fails before the button, and again on the
+    // tap, because ten minutes is long enough for someone else to take it. One
+    // button per plan: the tap creates the operator with it. The handover is
+    // picked BEFORE the tap, because the aml-mcp token exists only then.
+    private async Task<Reply> AmlNewPromptAsync(long userId, long chatId, string name, bool opencode, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        if (!IsValidName(name)) return new Reply(NameProblem(name));
+        if ((await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"A gateway key named <b>{Esc(name)}</b> already exists. An AML operator gets a new key under their own name: pick another.");
+
+        var rows = new List<InlineKeyboardButton[]>();
+        foreach (var p in AmlPresets)
+        {
+            var (kind, limit) = (p.Kind, p.Limit);
+            var token = Tokenize(userId, TimeSpan.FromMinutes(10), c => AmlNewAsync(userId, chatId, name, kind, limit, opencode, c));
+            rows.Add([new InlineKeyboardButton($"Create · {p.Label}", "ok:" + token)]);
+        }
+        var free = Tokenize(userId, TimeSpan.FromMinutes(10), c => AmlNewAsync(userId, chatId, name, null, null, opencode, c));
+        rows.Add([new InlineKeyboardButton("Create · no plan", "ok:" + free), new InlineKeyboardButton("Cancel", "no:" + free)]);
+        rows.Insert(0, [new InlineKeyboardButton("\U0001f9e9 OpenCode setup" + (opencode ? " ✓" : ""), $"ad:o:{name}"),
+                        new InlineKeyboardButton("\U0001f511 Keys only" + (opencode ? "" : " ✓"), $"ad:k:{name}")]);
+        return new Reply(
+            $"\U0001f6e1️ <b>Add AML Copilot operator {Esc(name)}?</b>\n\n"
+          + "Creates their aml-mcp token (role operator) and a gateway key on tier <b>aml</b>, where tokens are counted, not limited.\n\n"
+          + "<b>Handover</b>, shown once: " + AmlHandoverLabel(opencode) + "\n\n"
+          + "<b>Tap the plan to create them with.</b> It can be changed later; so can the OSINT searches, on the operator card."
+          + Fmt.Note(AmlPlanNote),
+            new InlineKeyboardMarkup(rows.ToArray()));
+    }
+
+    private async Task<Reply> AmlNewAsync(long userId, long chatId, string name, string? planKind, int? planLimit, bool opencode, CancellationToken ct)
+    {
+        if ((await keys.ReadConsumersAsync(ct)).ContainsKey(name))
+            return new Reply($"A gateway key named <b>{Esc(name)}</b> appeared in the meantime. Nothing was created.");
+
+        // aml-mcp first: it refuses a duplicate name before anything exists, and
+        // its token is the half that is cheap to take back (disabled, kept for
+        // the audit log) if the gateway half fails.
+        var requestedBy = $"telegram:{userId}";
+        var (issued, error) = await aml.IssueAsync(name, requestedBy, ct);
+        if (issued is null) return new Reply($"❌ aml-mcp did not issue a token: {Esc(error ?? "no answer")}\n\nNothing was created.");
+
+        var quota = Policy.Tiers["aml"].Quota;
+        var credential = "Bearer sk-" + Base62(32);
+        try
+        {
+            await keys.AddAsync(name, credential, ct);
+            await QuotaSetAsync(name, quota, ct);   // seeded before success, as in /newkey
+            await ledger.SetTierAsync(name, "aml", ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "amlnew {Name}: gateway key failed, disabling the aml-mcp operator", name);
+            var (_, undo) = await aml.DisableAsync(name, requestedBy, ct);
+            await AuditAsync($"amlnew-failed name={name} operator={issued.Id} undo={(undo is null ? "disabled" : "FAILED")}", ct);
+            return new Reply($"❌ The gateway key could not be created ({Esc(ex.GetType().Name)}). "
+                + (undo is null ? "The aml-mcp token was disabled again." : $"Disabling the aml-mcp token also failed: {Esc(undo)}. Run <code>/amlrevoke {Esc(name)}</code>."));
+        }
+
+        // The plan last: if it fails, the operator exists and the card sets it.
+        var planLine = "Plan: <b>none</b>, unlimited use.";
+        if (planKind is not null)
+        {
+            var planError = await aml.SetPlanAsync(name, planKind, planLimit, requestedBy, ct);
+            planLine = planError is null
+                ? $"Plan: <b>{AmlPlanLabel(planKind, planLimit)}</b>."
+                : $"⚠️ The plan was not set ({Esc(planError)}): set it from the operator card.";
+        }
+        await AuditAsync($"amlnew name={name} operator={issued.Id} tier=aml plan={planKind ?? "none"}:{planLimit?.ToString(CultureInfo.InvariantCulture) ?? "-"}", ct);
+
+        var handover = await AmlHandoverAsync(chatId, name, issued.Token, credential["Bearer ".Length..], opencode, ct);
+
+        return new Reply(
+            $"Created AML Copilot operator <b>{Esc(name)}</b>: aml-mcp token and a gateway key on <b>aml</b>.\n"
+          + planLine + "\n\n"
+          + handover
+          + Fmt.Note("The token identifies the operator in aml-mcp's audit log, recorded as requested by you. "
+                   + "Lost token: Operator card → Connect → New aml-mcp token. "
+                   + "OSINT searches: Operator card → OSINT searches."),
+            new InlineKeyboardMarkup([[new InlineKeyboardButton("\U0001f6e1️ Operator card", $"ao:{name}"),
+                                       new InlineKeyboardButton("← Operators", "al:")]]));
+    }
+
+    // Both credentials of an AML operator as tap-to-copy values, the way /newkey shows a key.
+    private static string AmlCredentials(string? amlToken, string? gatewayKey) =>
+        (amlToken is null ? "" : $"<b>aml-mcp token</b> <i>(AML_MCP_TOKEN)</i>\n<code>{Esc(amlToken)}</code>\n\n")
+      + (gatewayKey is null ? "" : $"<b>Gateway key</b> <i>(QWEN_GW_KEY)</i>\n<code>{Esc(gatewayKey)}</code>");
+
+    private static string AmlHandoverLabel(bool opencode) => opencode
+        ? "\U0001f9e9 <b>OpenCode setup</b>: a zip with AML Copilot and its credentials, and a prompt that installs it."
+        : "\U0001f511 <b>keys only</b>: the URLs and both credentials, tap to copy, for an operator who already has AML Copilot.";
+
+    // Hands an operator's credentials over, the one time the aml-mcp token
+    // exists, and returns the text for the reply. The OpenCode setup is a zip
+    // (AML Copilot's opencode folder plus credentials.env, which its launchers
+    // read) and the prompt that installs it. Keys only, or a zip that could not
+    // be built or sent, shows the four values instead: the token must never be
+    // lost on the way.
+    private async Task<string> AmlHandoverAsync(long chatId, string name, string amlToken, string gatewayKey, bool opencode, CancellationToken ct)
+    {
+        var keysOnly =
+            "⚠️ <b>Shown once.</b> Tap a value to copy it. The launchers read them from "
+          + "<code>~/.aml-copilot/credentials.env</code> (<code>KEY=value</code> lines) or from environment variables.\n\n"
+          + $"<b>aml-mcp URL</b> <i>(AML_MCP_URL)</i>\n<code>{Esc(cfg.AmlMcpUrl)}</code>\n\n"
+          + AmlCredentials(amlToken, null)
+          + $"<b>Gateway URL</b> <i>(QWEN_GW_BASE_URL)</i>\n<code>{Esc(cfg.PublicBaseUrl)}/v1</code>\n\n"
+          + AmlCredentials(null, gatewayKey);
+        if (!opencode) return keysOnly;
+
+        var (zip, problem) = AmlCopilotZip(name, amlToken, gatewayKey);
+        if (zip is null)
+        {
+            log.LogWarning("AML Copilot zip for {Name}: {Problem}", name, problem);
+            return $"⚠️ No OpenCode setup: {Esc(problem!)}. The keys instead:\n\n" + keysOnly;
+        }
+        if (!await SendDocumentAsync(chatId, $"aml-copilot-{name}.zip", zip, "application/zip",
+                $"\U0001f9e9 <b>{Esc(name)}</b> — AML Copilot for OpenCode.\n"
+              + "Download it, then paste the setup prompt below into OpenCode.\n"
+              + "⚠️ Holds a live aml-mcp token and gateway key: forward only to the operator.", ct))
+            return "⚠️ The OpenCode setup could not be sent. The keys instead:\n\n" + keysOnly;
+        await SendAsync(chatId, new Reply(
+            "\U0001f4cb <b>Setup prompt</b> — paste into OpenCode, running on whatever free model it starts with, "
+          + "once the zip above is downloaded. It installs AML Copilot and checks that aml-mcp connects.\n\n"
+          + $"<pre>{Esc(AmlSetupPrompt(name))}</pre>"), ct);
+        return "\U0001f9e9 <b>Sent:</b> <code>aml-copilot-" + Esc(name) + ".zip</code> and its setup prompt, above. "
+             + "Forward both to the operator. The credentials are in the zip only: they are not shown again.";
+    }
+
+    private const int UnixRegularFile = 0x8000;   // S_IFREG: unzip applies the mode bits only to a typed entry
+
+    // AML Copilot's opencode folder, as mounted, plus credentials.env. Entries
+    // sit at the zip's root, so unpacking into one folder gives the layout the
+    // launchers expect. Values are [A-Za-z0-9_-] or validated URLs.
+    private (byte[]? Zip, string? Problem) AmlCopilotZip(string name, string amlToken, string gatewayKey)
+    {
+        var root = cfg.AmlCopilotDir;
+        if (!File.Exists(Path.Combine(root, "aml-copilot.ps1")) || !Directory.Exists(Path.Combine(root, "config")))
+            return (null, $"AML Copilot's folder is not mounted at {root}");
+        try
+        {
+            using var buffer = new MemoryStream();
+            using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+                {
+                    var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+                    if (relative.Split('/').Any(part => part.StartsWith('.'))) continue;
+                    var entry = zip.CreateEntryFromFile(path, relative, CompressionLevel.Optimal);
+                    // rwxr-xr-x for the shell launcher, rw-r--r-- for the rest.
+                    entry.ExternalAttributes = (UnixRegularFile | (relative.EndsWith(".sh", StringComparison.Ordinal) ? 0b111_101_101 : 0b110_100_100)) << 16;
+                }
+                var credentials = zip.CreateEntry("credentials.env", CompressionLevel.Optimal);
+                credentials.ExternalAttributes = (UnixRegularFile | 0b110_000_000) << 16;
+                using var writer = new StreamWriter(credentials.Open(), new UTF8Encoding(false)) { NewLine = "\n" };
+                writer.WriteLine($"# AML Copilot credentials for {name}. Live: keep this file private.");
+                writer.WriteLine($"AML_MCP_URL={cfg.AmlMcpUrl}");
+                writer.WriteLine($"AML_MCP_TOKEN={amlToken}");
+                writer.WriteLine($"QWEN_GW_BASE_URL={cfg.PublicBaseUrl}/v1");
+                writer.WriteLine($"QWEN_GW_KEY={gatewayKey}");
+            }
+            return buffer.Length > 5_000_000 ? (null, "the folder is over 5 MB") : (buffer.ToArray(), null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return (null, $"AML Copilot's folder could not be read ({ex.GetType().Name})");
+        }
+    }
+
+    // The AML Copilot counterpart of OpenCodeSetupPrompt, for a fresh OpenCode
+    // on a free model. Lines stay under ~60 characters for a phone's <pre>.
+    // The agent installs and checks; it never opens credentials.env, so the
+    // credentials never reach the free model's provider.
+    private static string AmlSetupPrompt(string name) =>
+        """
+        Set up AML Copilot on this computer. Do the work
+        yourself, then tell me how to start it.
+
+        I downloaded aml-copilot-NAME.zip from the people
+        who run AML Copilot.
+
+        1. Find it: look in ~/Downloads, ~/Desktop and the
+           current directory. If it is not there, stop and
+           ask me where it is.
+        2. It holds credentials.env with live credentials.
+           Do not open, print or show that file, do not
+           copy it anywhere tracked by git, and do not put
+           any of its values on a command line.
+        3. Check Node.js 20 or later: node --version. If
+           opencode is not on PATH (opencode --version):
+           npm install -g opencode-ai
+        4. Unpack the zip into ~/AML-Copilot (on Windows
+           %USERPROFILE%\AML-Copilot), replacing an older
+           copy. Change no file in it.
+        5. Move ~/AML-Copilot/credentials.env to
+           ~/.aml-copilot/credentials.env: create the
+           folder, replace an older file. On Linux or
+           macOS: chmod 600 that file.
+        6. Check that the aml-mcp server connects:
+           - Windows: powershell -ExecutionPolicy Bypass
+             -File ~/AML-Copilot/aml-copilot.ps1 mcp list
+           - Linux or macOS:
+             bash ~/AML-Copilot/aml-copilot.sh mcp list
+           It must show "aml" as connected. The first run
+           downloads a helper from npm (about 20 seconds).
+        7. Delete the zip from where you found it.
+        8. Tell me to close you and start AML Copilot with
+           the command from step 6, without "mcp list". On
+           Windows, offer to make a desktop shortcut to it.
+
+        If a step fails, stop and show me the exact error
+        instead of working around it.
+        """.Replace("NAME", name, StringComparison.Ordinal);
+
+    // Everything to connect, tap to copy, as /connect shows a key. The
+    // aml-mcp token cannot be shown again (only its hash is stored): this
+    // screen offers a new one instead. A NEW message, never edited.
+    private async Task<Reply> AmlConnectAsync(long userId, string name, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var consumers = await keys.ReadConsumersAsync(ct);
+        string? key = consumers.TryGetValue(name, out var credential)
+            ? credential.StartsWith("Bearer ", StringComparison.Ordinal) ? credential["Bearer ".Length..] : credential
+            : null;
+        await AuditAsync($"amlconnect name={name}", ct);
+        return new Reply(
+            $"\U0001f50c <b>{Esc(name)}</b> · AML Copilot connection\n\n"
+          + $"<b>aml-mcp URL</b> <i>(AML_MCP_URL)</i>\n<code>{Esc(cfg.AmlMcpUrl)}</code>\n\n"
+          + $"<b>Gateway URL</b> <i>(QWEN_GW_BASE_URL)</i>\n<code>{Esc(cfg.PublicBaseUrl)}/v1</code>\n\n"
+          + (key is null ? "⚠️ No gateway key under this name.\n\n" : AmlCredentials(null, key) + "\n\n")
+          + "<b>aml-mcp token</b> <i>(AML_MCP_TOKEN)</i>\nShown only when issued: aml-mcp keeps a hash, never the token. "
+          + "Lost or leaked, or the operator needs the OpenCode setup? Issue a new one below; the old one stops at once."
+          + Fmt.Note("⚠️ This message holds a live gateway key: forward it only to the operator, and delete it when done."),
+            new InlineKeyboardMarkup([
+                [new InlineKeyboardButton("\U0001f504 New aml-mcp token", $"ay:{name}")],
+                [new InlineKeyboardButton("\U0001f6e1️ Operator card", $"ao:{name}")]]));
+    }
+
+    // OSINT searches: how many an operator may run in total, used ones
+    // included. Set, not added: each tap is one idempotent, audited write, like
+    // the plan screen, so it is not token-bound and can change at any time.
+    // "+10 more" carries the resulting number, so a double tap sets it twice.
+    private static readonly int[] AmlSearchPresets = [0, 1, 5, 20, 50, 100];
+
+    private const string AmlSearchesNote =
+        "OSINT research on the demo sends the name to an external web search service, one search per tap. "
+      + "The allowance counts searches over the operator's whole life: below what was used, none are left; "
+      + "raising it again gives the difference back. A failed search is not counted. "
+      + "Until set here, an operator has the free default of aml-mcp.";
+
+    private async Task<Reply> AmlSearchesScreenAsync(long userId, string name, string? notice, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var (searches, error) = await aml.SearchesAsync(ct);
+        if (searches is null) return new Reply($"❌ aml-mcp access API: {Esc(error ?? "no answer")}");
+        if (!searches.TryGetValue(name, out var s)) return new Reply($"No active AML operator named <b>{Esc(name)}</b>. Run /amlops.");
+
+        var left = Math.Max(0, s.Allowance - s.Used);
+        var text = (notice is null ? "" : notice + "\n\n")
+                 + $"\U0001f50e <b>{Esc(name)}</b> · OSINT searches\n\n"
+                 + $"Allowed: <b>{s.Allowance}</b> · used {s.Used} · left <b>{left}</b>\n\n<i>Tap to set the allowance.</i>"
+                 + Fmt.Note(AmlSearchesNote);
+        var presets = AmlSearchPresets
+            .Select(n => new InlineKeyboardButton(n + (n == s.Allowance ? " ✓" : ""), $"aw:{n}:{name}"))
+            .Chunk(3).Select(r => r.ToArray()).ToList();
+        if (s.Allowance + 10 <= 10_000)
+            presets.Add([new InlineKeyboardButton("➕ 10 more", $"aw:{s.Allowance + 10}:{name}"),
+                         new InlineKeyboardButton("✏️ Custom…", $"ai:{name}")]);
+        else
+            presets.Add([new InlineKeyboardButton("✏️ Custom…", $"ai:{name}")]);
+        presets.Add([new InlineKeyboardButton("← Operator", $"ao:{name}")]);
+        return new Reply(text, new InlineKeyboardMarkup(presets.ToArray()));
+    }
+
+    private async Task<Reply> AmlSearchesSetAsync(long userId, string name, int allowance, CancellationToken ct)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        if (allowance > 10_000) return await AmlSearchesScreenAsync(userId, name, "❌ At most 10000 searches.", ct);
+        var error = await aml.SetSearchesAsync(name, allowance, $"telegram:{userId}", ct);
+        await AuditAsync($"amlsearches name={name} allowance={allowance}{(error is null ? "" : " FAILED")}", ct);
+        return await AmlSearchesScreenAsync(userId, name,
+            error is null ? $"✅ OSINT searches set: <b>{allowance}</b> in total" : $"❌ {Esc(error)}", ct);
+    }
+
+    private async Task<Reply> AmlSearchesCustomAsync(long userId, string name, string text, CancellationToken ct) =>
+        int.TryParse(text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n <= 10_000
+            ? await AmlSearchesSetAsync(userId, name, n, ct)
+            : new Reply("Send a whole number of searches from 0 to 10000.");
+
+    private Reply AmlRotatePrompt(long userId, long chatId, string name)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        var withSetup = Tokenize(userId, TimeSpan.FromSeconds(120), c => AmlRotateAsync(userId, chatId, name, true, c));
+        var keysOnly = Tokenize(userId, TimeSpan.FromSeconds(120), c => AmlRotateAsync(userId, chatId, name, false, c));
+        return new Reply(
+            $"<b>New aml-mcp token for {Esc(name)}?</b>\n\n"
+          + "Their current token stops working at once; AML Copilot needs the new one. "
+          + "The operator, their plan and their audit history stay. The gateway key does not change.\n\n"
+          + "<b>Tap the handover:</b>\n" + AmlHandoverLabel(true) + "\n" + AmlHandoverLabel(false),
+            new InlineKeyboardMarkup([
+                [new InlineKeyboardButton("\U0001f9e9 Issue · OpenCode setup", "ok:" + withSetup)],
+                [new InlineKeyboardButton("\U0001f511 Issue · keys only", "ok:" + keysOnly),
+                 new InlineKeyboardButton("Cancel", "no:" + withSetup)]]));
+    }
+
+    private async Task<Reply> AmlRotateAsync(long userId, long chatId, string name, bool opencode, CancellationToken ct)
+    {
+        var (issued, error) = await aml.RotateAsync(name, $"telegram:{userId}", ct);
+        if (issued is null) return new Reply($"❌ aml-mcp did not issue a new token: {Esc(error ?? "no answer")}\n\nThe current token still works.");
+        await AuditAsync($"amlrotate name={name} operator={issued.Id}", ct);
+
+        var consumers = await keys.ReadConsumersAsync(ct);
+        string? key = consumers.TryGetValue(name, out var credential) && credential.StartsWith("Bearer ", StringComparison.Ordinal)
+            ? credential["Bearer ".Length..] : null;
+        var handover = key is not null
+            ? await AmlHandoverAsync(chatId, name, issued.Token, key, opencode, ct)
+            : "⚠️ No gateway key under this name, so no OpenCode setup. <b>Shown once</b>, tap to copy:\n\n"
+              + AmlCredentials(issued.Token, null);
+        return new Reply(
+            $"\U0001f504 New aml-mcp token for <b>{Esc(name)}</b>. The previous one no longer works.\n\n" + handover,
+            new InlineKeyboardMarkup([[new InlineKeyboardButton("\U0001f6e1️ Operator card", $"ao:{name}")]]));
+    }
+
+    private Reply AmlRevokePrompt(long userId, string name)
+    {
+        if (AmlRefusal(userId) is { } refused) return refused;
+        if (!IsValidName(name)) return new Reply(NameProblem(name));
+        var token = Tokenize(userId, TimeSpan.FromSeconds(120), c => AmlRevokeAsync(userId, name, c));
+        return new Reply(
+            $"<b>Remove AML Copilot operator {Esc(name)}?</b>\n\n"
+          + "Their aml-mcp token stops working at once, and their <b>aml</b> gateway key is deleted with its balance. "
+          + "The operator's audit history stays. This cannot be undone.",
+            new InlineKeyboardMarkup([[
+                new InlineKeyboardButton("Remove", "ok:" + token),
+                new InlineKeyboardButton("Cancel", "no:" + token)]]));
+    }
+
+    private async Task<Reply> AmlRevokeAsync(long userId, string name, CancellationToken ct)
+    {
+        var (disabled, error) = await aml.DisableAsync(name, $"telegram:{userId}", ct);
+        var tokenLine = disabled is not null ? "✅ aml-mcp token disabled" : $"➖ aml-mcp: {Esc(error ?? "no answer")}";
+
+        // Only a key on tier aml goes with the operator: the name could belong
+        // to an unrelated consumer, and that key is not this command's to delete.
+        string keyLine;
+        if (!(await keys.ReadConsumersAsync(ct)).ContainsKey(name)) keyLine = "➖ no gateway key under this name";
+        else if (await ledger.TierAsync(name, ct) != "aml") keyLine = $"➖ gateway key <code>{Esc(name)}</code> is not on tier aml: kept (use /revoke)";
+        else
+        {
+            await keys.RemoveAsync(name, ct);
+            await ledger.DeleteAsync(name, ct);
+            keyLine = "✅ gateway key and balance deleted";
+        }
+        await AuditAsync($"amlrevoke name={name} operator={disabled?.Id.ToString() ?? "-"} key={(keyLine.StartsWith('✅') ? "deleted" : "kept")}", ct);
+        return new Reply($"<b>{Esc(name)}</b>\n{tokenLine}\n{keyLine}",
+            new InlineKeyboardMarkup([[new InlineKeyboardButton("\u2190 Operators", "al:")]]));
     }
 
     // ---- command table ----------------------------------------------------
@@ -1199,7 +1885,7 @@ sealed class Worker(
     private static readonly string[] HelpGroups =
     [
         "Who and how much", "What they used", "Is it healthy",
-        "Grant", "Destructive — these ask first"
+        "Grant", "AML Copilot", "Destructive — these ask first"
     ];
 
     private static readonly Cmd[] Commands =
@@ -1253,6 +1939,15 @@ sealed class Worker(
             "Send a consumer's OpenCode config"),
         new("topup", "Grant", "&lt;name&gt; &lt;tokens&gt;", "add to a balance",
             "Add tokens to a consumer"),
+        new("amlops", "AML Copilot", "",
+            "operators: quota, limits, usage, remove, add",
+            "AML Copilot operators"),
+        new("amlnew", "AML Copilot", "&lt;name&gt;",
+            "aml-mcp token and gateway key: OpenCode setup or keys only",
+            "Add an AML Copilot operator"),
+        new("amlrevoke", "AML Copilot", "&lt;name&gt;",
+            "disable the token and delete the key (asks first)",
+            "Remove an AML Copilot operator (asks to confirm)"),
         new("setquota", "Destructive — these ask first",
             "&lt;name&gt; &lt;tokens&gt;", "<i>replaces</i> a balance",
             "Overwrite a balance (asks to confirm)"),
@@ -1277,7 +1972,7 @@ sealed class Worker(
         var icons = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["Who and how much"] = "\U0001f511", ["What they used"] = "\U0001f4ca", ["Is it healthy"] = "\U0001fa7a",
-            ["Grant"] = "\u2795", ["Destructive — these ask first"] = "\u26a0\ufe0f",
+            ["Grant"] = "\u2795", ["AML Copilot"] = "\U0001f6e1\ufe0f", ["Destructive — these ask first"] = "\u26a0\ufe0f",
         };
         var sb = new StringBuilder("\U0001f916 <b>Gateway access</b>\n<i>Most screens have buttons; the arguments below are optional shortcuts.</i>\n");
         foreach (var group in HelpGroups)
@@ -1862,7 +2557,8 @@ sealed class Worker(
 
         var rows = new List<InlineKeyboardButton[]>();
         var text = new StringBuilder($"\u2795 <b>Create {Esc(name)}</b>\nTap a tier \u2014 the key is created at once, and every value can be changed after.\n");
-        foreach (var t in Policy.All.Where(t => t.Name != "admin"))
+        // aml keys come with an aml-mcp token from /amlnew, never on their own.
+        foreach (var t in Policy.All.Where(t => t.Name is not ("admin" or "aml")))
         {
             var tier = t.Name;
             var token = Tokenize(userId, TimeSpan.FromMinutes(10), c => NewKeyAsync(name, tier, null, c));
@@ -1945,12 +2641,15 @@ sealed class Worker(
         return new Reply(prompt + "\n\n<i>Waiting 5 minutes. Any command cancels.</i>");
     }
 
-    private async Task<Reply> AnswerInputAsync(long userId, PendingInput input, string text, CancellationToken ct) =>
+    private async Task<Reply> AnswerInputAsync(long userId, long chatId, PendingInput input, string text, CancellationToken ct) =>
         input.Kind switch
         {
             InputKind.NewKeyName => await NewKeyPickerAsync(userId, text.ToLowerInvariant(), ct),
             InputKind.Field      => await SetPolicyAsync(input.Name, input.Field ?? "", text, ct),
             InputKind.TopUp      => new Reply(await TopUpAsync(input.Name, text, ct)),
+            InputKind.AmlNewName  => await AmlNewPromptAsync(userId, chatId, text.ToLowerInvariant(), true, ct),
+            InputKind.AmlPlan     => await AmlPlanCustomAsync(userId, input.Name, text, ct),
+            InputKind.AmlSearches => await AmlSearchesCustomAsync(userId, input.Name, text, ct),
             _                    => new Reply("Nothing was waiting for that.")
         };
 
@@ -3172,7 +3871,7 @@ sealed class Worker(
     // sendDocument is multipart, unlike every other call this bot makes. Worth
     // the exception: a report is a file an operator keeps, forwards and opens
     // in a browser, and Telegram truncates a message at 4096 characters.
-    private async Task SendDocumentAsync(
+    private async Task<bool> SendDocumentAsync(
         long chatId, string filename, byte[] bytes, string mime, string caption, CancellationToken ct)
     {
         using var form = new MultipartFormDataContent();
@@ -3187,6 +3886,7 @@ sealed class Worker(
         if (!r.IsSuccessStatusCode)
             log.LogError("sendDocument failed: HTTP {Code} {Body}",
                 (int)r.StatusCode, Head(await r.Content.ReadAsStringAsync(ct)));
+        return r.IsSuccessStatusCode;
     }
 
     // Rendered from Policy.All, the same table /tier validates against and
@@ -4330,6 +5030,9 @@ static class Policy
         new("team",    "internal humans via OpenCode",       100_000_000, RefillMode.Monthly, 20_000_000,   600_000, 32_768),
         new("service", "production integrations",           300_000_000, RefillMode.Monthly, 30_000_000, 1_000_000, 16_384),
         new("batch",   "offline, latency-tolerant",          500_000_000, RefillMode.Monthly, 50_000_000,   300_000, 70_000),
+        // Metered, not limited: aml-mcp's plans limit what an operator does.
+        // The per-minute guard stays, so a looping agent cannot take the node.
+        new("aml",     "AML Copilot operators: tokens counted, not limited", 10_000_000_000, RefillMode.Monthly, 0, 600_000, 32_768),
         new("admin",   "management only, plus the bot's own reports", 0, RefillMode.Manual,            0,         0,      0),
     ];
 
@@ -4522,6 +5225,181 @@ static class Policy
 // QuotaApi — ai-quota's admin endpoint, shared by commands and the refill job.
 // FORM-ENCODED: ai-quota answers 403 to JSON, which reads like an auth failure.
 // ===========================================================================
+// aml-mcp's access API (aml-access:8080, shared secret). Errors come back as
+// text for the operator: the API's own message where it gave one.
+sealed record AmlOperator(Guid Id, string Name, string Role, DateTime CreatedAt, DateTime? DisabledAt);
+sealed record AmlIssued(Guid Id, string Token);
+sealed record AmlDisabled(Guid Id);
+// Quota and Used are sessions, or minutes for the hour plans.
+sealed record AmlUsage(Guid Id, string Name, string Role, string? Kind, int? Quota, int? Used, bool Exhausted,
+                       DateTime? ResetsAt, int SessionsToday, int MinutesToday, int MinutesTotal);
+
+sealed class AmlAccess(IHttpClientFactory http, ILogger<AmlAccess> log)
+{
+    public async Task<(List<AmlOperator>? Operators, string? Error)> ListAsync(CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Get, "operators", null, ct);
+        if (node is not JsonArray array) return (null, error ?? "unexpected answer");
+        var list = new List<AmlOperator>();
+        foreach (var o in array)
+        {
+            if (o is null) continue;
+            list.Add(new AmlOperator(
+                Guid.Parse((string)o["id"]!), (string)o["display_name"]!, (string)o["role"]!,
+                DateTime.Parse((string)o["created_at"]!, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal),
+                o["disabled_at"] is { } d ? DateTime.Parse((string)d!, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal) : null));
+        }
+        return (list, null);
+    }
+
+    public async Task<(AmlIssued? Issued, string? Error)> IssueAsync(string name, string requestedBy, CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Post, "operators",
+            new JsonObject { ["display_name"] = name, ["requested_by"] = requestedBy }, ct);
+        return node?["token"] is { } token && node["id"] is { } id
+            ? (new AmlIssued(Guid.Parse((string)id!), (string)token!), null)
+            : (null, error ?? "unexpected answer");
+    }
+
+    // OSINT searches per operator: used and allowed (their own allowance, or the free default).
+    public async Task<(Dictionary<string, (int Used, int Allowance)>? Searches, string? Error)> SearchesAsync(CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Get, "searches", null, ct);
+        if (node is not JsonArray array) return (null, error ?? "unexpected answer");
+        var map = new Dictionary<string, (int, int)>(StringComparer.Ordinal);
+        foreach (var o in array)
+            if (o is not null) map[(string)o["display_name"]!] = (o["used"]!.GetValue<int>(), o["allowance"]!.GetValue<int>());
+        return (map, null);
+    }
+
+    // Sets how many searches the operator may run in total, used ones included.
+    public async Task<string?> SetSearchesAsync(string name, int allowance, string requestedBy, CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Post, "searches/allowance",
+            new JsonObject { ["id_or_name"] = name, ["allowance"] = allowance, ["requested_by"] = requestedBy }, ct);
+        return node is not null ? null : error ?? "unexpected answer";
+    }
+
+    // A new token for an active operator; the old one stops at once. Shown once.
+    public async Task<(AmlIssued? Issued, string? Error)> RotateAsync(string name, string requestedBy, CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Post, "operators/rotate",
+            new JsonObject { ["id_or_name"] = name, ["requested_by"] = requestedBy }, ct);
+        return node?["token"] is { } token && node["id"] is { } id
+            ? (new AmlIssued(Guid.Parse((string)id!), (string)token!), null)
+            : (null, error ?? "unexpected answer");
+    }
+
+    public async Task<(AmlDisabled? Disabled, string? Error)> DisableAsync(string name, string requestedBy, CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Post, "operators/disable",
+            new JsonObject { ["id_or_name"] = name, ["requested_by"] = requestedBy }, ct);
+        return node?["id"] is { } id ? (new AmlDisabled(Guid.Parse((string)id!)), null) : (null, error ?? "unexpected answer");
+    }
+
+    public async Task<(List<AmlUsage>? Usage, string? Error)> UsageAsync(CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Get, "plans", null, ct);
+        if (node is not JsonArray array) return (null, error ?? "unexpected answer");
+        static int? Int(JsonNode? n) => n is null ? null : n.GetValue<int>();
+        var list = new List<AmlUsage>();
+        foreach (var o in array)
+        {
+            if (o is null) continue;
+            list.Add(new AmlUsage(
+                Guid.Parse((string)o["id"]!), (string)o["display_name"]!, (string)o["role"]!,
+                (string?)o["kind"], Int(o["quota"]), Int(o["used"]), o["exhausted"]!.GetValue<bool>(),
+                o["resets_at"] is { } r ? DateTime.Parse((string)r!, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal) : null,
+                o["sessions_today"]!.GetValue<int>(), o["minutes_today"]!.GetValue<int>(), o["minutes_total"]!.GetValue<int>()));
+        }
+        return (list, null);
+    }
+
+    // kind: sessions_per_day, hours_per_day, hours_total or none; limit in
+    // sessions or hours. Null on success, otherwise the reason.
+    public async Task<string?> SetPlanAsync(string name, string kind, int? limit, string requestedBy, CancellationToken ct)
+    {
+        var body = new JsonObject { ["id_or_name"] = name, ["kind"] = kind, ["requested_by"] = requestedBy };
+        if (limit is not null) body["limit"] = limit;
+        var (node, error) = await SendAsync(HttpMethod.Post, "plans", body, ct);
+        return node is not null ? null : error ?? "unexpected answer";
+    }
+
+    // The body on success; otherwise null and the API's message, or what went
+    // wrong on the way. A response body is never logged: an issue carries a token.
+    private async Task<(JsonNode? Node, string? Error)> SendAsync(HttpMethod method, string path, JsonObject? body, CancellationToken ct)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(method, path);
+            if (body is not null)
+                request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+            using var response = await http.CreateClient("aml-access").SendAsync(request, ct);
+            var node = JsonNode.Parse(await response.Content.ReadAsStringAsync(ct));
+            if (response.IsSuccessStatusCode) return (node, null);
+            log.LogWarning("aml-access {Method} {Path}: HTTP {Code}", method, path, (int)response.StatusCode);
+            return (null, node?["message"]?.GetValue<string>() ?? $"HTTP {(int)response.StatusCode}");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            log.LogWarning("aml-access {Method} {Path}: {Error}", method, path, ex.GetType().Name);
+            return (null, $"not reachable ({ex.GetType().Name})");
+        }
+    }
+}
+
+// Tells the AML operators of this bot when an operator's plan runs out: once
+// per period, and only for a change seen while running (the first pass after a
+// start only records who is already out, so a restart does not repeat news).
+sealed class AmlPlanWatcher(BotConfig cfg, AmlAccess aml, Telegram tg, ILogger<AmlPlanWatcher> log) : BackgroundService
+{
+    private readonly HashSet<string> _known = [];
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        if (cfg.AmlAccessSecret.Length == 0) return;
+        var first = true;
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        try
+        {
+            do
+            {
+                try
+                {
+                    var (usage, _) = await aml.UsageAsync(ct);
+                    if (usage is null) continue;
+                    var now = new HashSet<string>();
+                    foreach (var u in usage.Where(u => u.Exhausted))
+                    {
+                        var key = $"{u.Id}:{u.Kind}:{u.Quota}:{u.ResetsAt:O}";
+                        now.Add(key);
+                        if (first || _known.Contains(key)) continue;
+                        var what = u.Kind switch
+                        {
+                            "sessions_per_day" => $"{u.Used} of {u.Quota} sessions today; resets at 00:00 Almaty",
+                            "hours_per_day" => $"{u.Used / 60.0:0.#} of {u.Quota / 60.0:0.#} hours today; resets at 00:00 Almaty",
+                            _ => $"all {u.Quota / 60.0:0.#} hours of the plan are used",
+                        };
+                        foreach (var chat in cfg.AmlAllowedIds)
+                            await tg.SendAsync(chat, new Reply(
+                                $"\u26d4 AML Copilot: <b>{Fmt.Esc(u.Name)}</b> reached their plan limit \u2014 {what}.\n"
+                              + "Their requests are refused until then.",
+                                new InlineKeyboardMarkup([[new InlineKeyboardButton("\U0001f4cb Plan", $"ap:{u.Name}")]])), ct);
+                    }
+                    _known.Clear();
+                    _known.UnionWith(now);   // forget who is no longer out, so a new period notifies again
+                    first = false;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    log.LogWarning("AML plan watcher: {Error}", ex.GetType().Name);
+                }
+            } while (await timer.WaitForNextTickAsync(ct));
+        }
+        catch (OperationCanceledException) { }
+    }
+}
+
 static class QuotaApi
 {
     public static async Task SetAsync(IHttpClientFactory http, string name, long value, CancellationToken ct)
@@ -6035,7 +6913,8 @@ sealed record BotConfig(
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
     string ModelId, int ContextLimit, int ContextMax, string EnginePolicyPath, int OutputLimit, int BodyLimit,
     string AlertSecret, string AdminApiSecret, string RecordsUrl, string RecordsSecret,
-    string AlertmanagerUrl, string DirectHost, HashSet<long> AlertChatIds);
+    string AlertmanagerUrl, string DirectHost, HashSet<long> AlertChatIds,
+    string AmlAccessUrl, string AmlAccessSecret, string AmlMcpUrl, string AmlCopilotDir, HashSet<long> AmlAllowedIds);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<Reply>> Run);
@@ -6044,7 +6923,7 @@ sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToke
 // asked: a new key's name, a custom value, a custom top-up. Field is the setting
 // for Kind "field". In memory like Pending: a restart forgets the question,
 // which fails safe — the text then lands as an unknown command.
-enum InputKind { NewKeyName, Field, TopUp }
+enum InputKind { NewKeyName, Field, TopUp, AmlNewName, AmlPlan, AmlSearches }
 sealed record PendingInput(InputKind Kind, string Name, string? Field, DateTimeOffset Expires);
 
 // A command's answer: text plus an optional inline keyboard.

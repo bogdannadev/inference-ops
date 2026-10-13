@@ -88,6 +88,9 @@ services:
       # how keys are issued without a Docker socket, root, or write access to
       # the root-owned conf/ tree.
       higress-net:
+      # Reaches aml-mcp's access API (aml-access:8080) for /amlnew, /amlops and
+      # /amlrevoke. Internal, and shared with that one container only.
+      aml-access:
 
     volumes:
       # The consumer table, read-write. This is the bot's only credential-bearing
@@ -103,6 +106,10 @@ services:
       # place to rotate, not two. World-readable by design in that tree; the key
       # material never leaves the host.
       - ../higress-standalone/compose/volumes/kube/config:/etc/kube/config:ro
+      # AML Copilot's opencode folder from aml-mcp's checkout, read-only: /amlnew
+      # zips it with an operator's credentials (AML_COPILOT_DIR). Missing: the
+      # bot hands over keys only.
+      - /opt/aml-mcp/opencode:/opt/aml-copilot:ro
 
     healthcheck:
       test: ["CMD", "/app/bot", "--healthcheck"]
@@ -166,7 +173,7 @@ services:
         max-file: "3"
 
 # -----------------------------------------------------------------------------
-# All three networks are owned by other compose projects. Declared external so
+# All four networks are owned by other compose projects (aml-access: /opt/aml-mcp). Declared external so
 # this project can never create or remove them.
 # -----------------------------------------------------------------------------
 networks:
@@ -177,3 +184,5 @@ networks:
   higress-net:
     external: true
     name: higress_higress-net
+  aml-access:
+    external: true
