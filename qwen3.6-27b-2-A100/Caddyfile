@@ -135,6 +135,12 @@ import /etc/caddy/private/allowlists.caddy
 		# Swap the edge credential for the internal SGLang key
 		header_up Authorization "Bearer {$SGLANG_API_KEY}"
 
+		# The engine reads a key's context window and default reasoning
+		# effort from this header (engine patch 5). Only the gateway may set
+		# it, from the key it authenticated; a request on this shared-key
+		# hostname must not be able to claim a consumer's window.
+		header_up -X-Request-Id-Labels
+
 		# SSE streaming: disable response buffering entirely
 		flush_interval -1
 	}
@@ -268,21 +274,24 @@ import /etc/caddy/private/allowlists.caddy
 	# request-validation in the gateway (max_tokens 8192), so worst-case
 	# overdraft is ~one full-context request, not unbounded.
 	#
-	# 4MB since 2026-09-19 (was 1MB). Text alone already fills the served 169k
-	# context at ~0.75MB of JSON, and the engine refuses anything longer, so
-	# the extra room buys no extra prompt tokens. It is there for images:
-	# OpenCode sends base64 images inline and resends the whole history every
-	# turn. Clients shrink images before sending (1600 px long side, JPEG; see
-	# docs/opencode-skills/image-batches/), which fits a batch of ~6 plus a
-	# few full-resolution crops. The engine caps each image at 2 MP and 16 per
-	# request (docker-compose.yml, "Image input"). The cap stays as the outer
-	# bound on what one request can carry.
+	# 16MB since 2026-10-14 (4MB from 2026-09-19, 1MB before). Text alone fills
+	# a full 262K window at ~1.2MB of JSON, and the engine refuses anything
+	# longer, so the room is for images: OpenCode sends base64 images inline
+	# and resends the whole history every turn. At 4MB a long OCR session hit
+	# the cap four times on 2026-10-13 (Caddy 413s, which reach no other log).
+	# Clients shrink images before sending (quota-bot's OpenCode config: 2048
+	# px, 2MB of base64; see docs/opencode-skills/image-batches/). The engine
+	# caps each image at 2 MP and 16 per request (docker-compose.yml, "Image
+	# input"). Measured 2026-10-14: 1, 8 and 15MB bodies pass Higress, the
+	# router and the engine (200 in 0.2-1.2 s), and request-validation still
+	# reads a 15MB body whole (max_tokens 80000 -> 422). The cap stays as the
+	# outer bound on what one request can carry.
 	#
 	# NOTE this is per-site. The direct model hostname deliberately has NO cap,
 	# because OCR traffic sends base64 images inline and blew past the old
 	# global 8MB limit.
 	request_body {
-		max_size 4MB
+		max_size 16MB
 	}
 
 	# Anthropic clients send the key as `x-api-key`. key-auth in the gateway
@@ -416,7 +425,7 @@ import /etc/caddy/private/allowlists.caddy
 	# handle_response blocks above. Shape it here instead.
 	handle_errors {
 		header Content-Type "application/json; charset=utf-8"
-		respond `{"error":{"message":"Request rejected by the gateway. If the prompt is very large, reduce it: the request body limit is 4MB. Shrink images before sending them.","type":"invalid_request_error","param":null,"code":"request_rejected"}}` {err.status_code}
+		respond `{"error":{"message":"Request rejected by the gateway. If the prompt is very large, reduce it: the request body limit is 16MB. Shrink images before sending them.","type":"invalid_request_error","param":null,"code":"request_rejected"}}` {err.status_code}
 	}
 }
 
