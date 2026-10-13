@@ -12,12 +12,12 @@ website's "latest" describes.
 
 | Component | Version | How it was determined |
 |---|---|---|
-| Higress release | **v2.2.4** | see "Reading the release tag" below |
-| Deployment | official standalone `compose/`, project `higress` | `get-higress.sh`, VERSION=v2.2.4 |
+| Higress release | **v2.2.5** (since 2026-10-14; v2.2.4 before) | see "Reading the release tag" below |
+| Deployment | official standalone `compose/`, project `higress` | `get-higress.sh` (v2.2.4), pins moved to v2.2.5 by `upgrade-v2.2.5.sh` |
 | controller / pilot / gateway / plugin-server | digest-pinned in `compose/.env` | shipped by the release |
-| Go wasm plugins | **2.0.1** | `/usr/share/nginx/html/plugins/snapshot-inventory.json` |
+| Go wasm plugins | **2.0.3** (2.0.1 on v2.2.4) | `/usr/share/nginx/html/plugins/snapshot-inventory.json` |
 | key-auth | **2.0.0** | directory name only — not in the inventory, see below |
-| Envoy | **1.36.4** | `curl localhost:15000/server_info` |
+| Envoy | **1.36.10** (1.36.4 on v2.2.4) | `curl localhost:15000/server_info` |
 | Istio pilot | **1.27-dev** | `pilot-discovery version --short` |
 | Base | Ubuntu 22.04 | image labels |
 
@@ -40,7 +40,39 @@ the all-in-one image is built by that repo's release job:
 
 Three independent signals, one answer: **this image is v2.2.4**.
 
-## Upgrade posture (reviewed 2026-09-03)
+## v2.2.5 — APPLIED 2026-10-14
+
+Upstream standalone v2.2.5 changes only the image pins (plus mcp-server
+2.0.1 -> 2.0.3); `docker-compose.yml`, `prepare.sh` and the override are
+untouched. What matters here:
+
+- **The plugin-server drops 2.0.1.** It serves ai-proxy, ai-quota,
+  ai-statistics, ai-token-ratelimit, request-validation and transformer as
+  2.0.3 only (key-auth stays 2.0.0). Swapping it while our WasmPlugins still
+  name 2.0.1 would 404 every module and FAIL OPEN. `upgrade-v2.2.5.sh` keeps
+  both versions served across the switch; reuse its order for the next one.
+- **ai-quota 2.0.3** (#4232) now buffers non-streaming responses and marks a
+  request deducted before the DECRBY, so a repeated end-of-stream callback
+  cannot charge twice. Buffering does NOT hit the 32 KB listener limit: a
+  43.5 KB non-streaming response passed.
+- ai-statistics gains `max_request_body_bytes` (#4282, default 100 MiB);
+  ai-token-ratelimit, request-validation and transformer are rebuilds only.
+- Envoy 1.36.10 (29 CVEs, #4663); X-Mse-Consumer is now overwritten by the
+  gateway (#4855) — Caddy already stripped it.
+
+Proved on a parallel stack (`~/higress-next`, project `higress-next`,
+throwaway ledger `higress-redis-test`) before the cutover; the script header
+lists the checks. Live verification: every Go plugin on 2.0.3, 27 limiter
+entries back after the bot re-sync, 401 without a key, and the production
+ledger charged exactly usage.total_tokens for a streaming and a non-streaming
+request through the public hostname.
+
+Not adopted: `ai-context-limit` (tiktoken estimate, skips any request with an
+image, per route not per key — engine patch 5 does this exactly) and
+`ai-endpoint-picker` / `ai-load-balancer` (KV-aware picking reads vLLM metric
+names only and would bypass the SGLang router's prefix-aware routing).
+
+## Upgrade posture (reviewed 2026-09-03, superseded by the section above)
 
 **v2.2.4 is the newest release across all three repos** — higress 2026-08-13,
 higress-console 2026-08-13, higress-standalone 2026-08-14. There is nothing to
