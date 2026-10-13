@@ -126,13 +126,19 @@ var cfg = new BotConfig(
     ConsumersPath:   Opt("CONSUMERS_PATH", "/data/consumers.conf"),
     AuditPath:       Opt("AUDIT_PATH", "/data/audit.log"),
     ModelId:         Opt("MODEL_ID", "qwen3.8-27b"),
+    // The STANDARD window: what a key gets unless its policy says otherwise,
+    // and what the engines fall back to (KEYPOLICY_DEFAULT_CONTEXT). The
+    // engines serve MODEL_CONTEXT_MAX; engine patch 5 holds each key to its own.
     ContextLimit:    int.Parse(Opt("MODEL_CONTEXT", "169000"), CultureInfo.InvariantCulture),
+    ContextMax:      int.Parse(Opt("MODEL_CONTEXT_MAX", "262144"), CultureInfo.InvariantCulture),
+    // Read by both replicas as /opt/keypolicy/policy.json (a directory mount).
+    EnginePolicyPath: Opt("ENGINE_POLICY_PATH", "/var/lib/quota-bot/engine-policy/policy.json"),
     OutputLimit:     int.Parse(Opt("MODEL_OUTPUT", "70000"), CultureInfo.InvariantCulture),
-    // Caddy's `request_body { max_size 1MB }` on the paid hostname. Caddy parses
+    // Caddy's `request_body { max_size 16MB }` on the paid hostname. Caddy parses
     // that with go-humanize, where MB is 10^6 — not 2^20 — so the real ceiling
-    // is 1,000,000 bytes. It is the only limit that bounds an INLINE IMAGE, so
+    // is 16,000,000 bytes. It is the only limit that bounds an INLINE IMAGE, so
     // the generated OpenCode config sizes its attachment budget from it.
-    BodyLimit:       int.Parse(Opt("MAX_BODY_BYTES", "4000000"), CultureInfo.InvariantCulture),
+    BodyLimit:       int.Parse(Opt("MAX_BODY_BYTES", "16000000"), CultureInfo.InvariantCulture),
     AlertSecret:     Req("ALERT_WEBHOOK_SECRET"),
     // Shared with admin-mcp, which is the only caller of /admin/*. Optional:
     // unset means those endpoints are not mapped at all, which is the right
@@ -152,6 +158,13 @@ var cfg = new BotConfig(
     // PUBLIC_BASE_URL above.
     DirectHost:      Req("DIRECT_HOST"),
     AlertChatIds:    alertChatIds);
+
+if (cfg.ContextLimit < Policy.ContextFloor || cfg.ContextLimit > cfg.ContextMax)
+    throw new InvalidOperationException(
+        $"MODEL_CONTEXT {cfg.ContextLimit} must be between {Policy.ContextFloor} and MODEL_CONTEXT_MAX {cfg.ContextMax}");
+Policy.ContextStandard = cfg.ContextLimit;
+Policy.ContextMax = cfg.ContextMax;
+EnginePolicy.Path = cfg.EnginePolicyPath;
 
 // Encoded once, not on every delivery — and validated here because the
 // comparison's fast path assumes one byte per character. That holds for the
@@ -448,12 +461,16 @@ if (cfg.AdminApiSecret.Length >= 32)
                 ["daily_limit"] = t.Daily,
                 ["tokens_per_minute"] = t.Tpm,
                 ["max_tokens_NOT_ENFORCED"] = t.MaxTokens,
-                ["enforced"] = new JsonArray { (JsonNode)"quota", (JsonNode)"refill", (JsonNode)"daily_limit", (JsonNode)"tokens_per_minute" },
+                ["context"] = t.Context,
+                ["effort"] = t.Effort,
+                ["enforced"] = new JsonArray { (JsonNode)"quota", (JsonNode)"refill", (JsonNode)"daily_limit", (JsonNode)"tokens_per_minute", (JsonNode)"context", (JsonNode)"effort" },
                 ["note"] = "0 means no limit for daily_limit and tokens_per_minute, and the "
                          + $"gateway's global {cfg.OutputLimit} ceiling for max_tokens. daily_limit is a 24h "
                          + "window starting at the key's first request, not a calendar day; one request can "
                          + "overshoot a limit by its own size. refill resets the balance to quota at 00:00 UTC "
-                         + "(daily, Monday, or the 1st). max_tokens cannot be enforced per key. Every value "
+                         + "(daily, Monday, or the 1st). max_tokens cannot be enforced per key. context 0 is the "
+                         + $"standard {Policy.ContextStandard} window, at most {Policy.ContextMax}; effort auto leaves "
+                         + "it to the request, then the server's xhigh. Every value "
                          + "can be overridden per consumer (POST /admin/policy).",
             });
         return Results.Text(arr.ToJsonString(), "application/json");
@@ -1957,6 +1974,7 @@ sealed class Worker(
         await AuditAsync($"connect name={name}", ct);
 
         var plan = PlanOf(tierT.Result, ovT.Result);
+        var context = Policy.ContextOf(Policy.Resolve(tierT.Result, ovT.Result)[5].Value);
         static string Lim(long? n) => n is { } v ? Fmt.Num(v) : "none";
         var hasBal = balT.Result.TryGetValue(name, out var b);
         var baseUrl = $"{cfg.PublicBaseUrl}/v1";
@@ -1967,7 +1985,7 @@ sealed class Worker(
           + $"<b>Model</b>\n<code>{Esc(cfg.ModelId)}</code>\n\n"
           + $"<b>API key</b>\n<code>{Esc(apiKey)}</code>\n\n"
           + "<b>Request limits</b>\n"
-          + $"Context {cfg.ContextLimit:N0} tokens, prompt + output\n"
+          + $"Context {context:N0} tokens, prompt + output\n"
           + $"Output at most {cfg.OutputLimit:N0} tokens per request\n"
           + $"Body at most {Fmt.Num(cfg.BodyLimit)} bytes of JSON\n\n"
           + $"<b>This key</b> \u00b7 {Esc(plan.Tier ?? "no tier")}\n"
@@ -1977,7 +1995,7 @@ sealed class Worker(
               "OpenAI-compatible chat completions. Clients send the key as <code>Authorization: Bearer &lt;key&gt;</code>; "
             + "most take the base URL and key as <code>OPENAI_BASE_URL</code> / <code>OPENAI_API_KEY</code>.\n"
             + "<code>/v1/models</code> does not report the context window, so set it by hand in the client "
-            + $"({cfg.ContextLimit:N0}).\n"
+            + $"({context:N0}).\n"
             + "Errors: 429 daily or per-minute token limit (see Retry-After) \u00b7 403 balance exhausted \u00b7 "
             + "400 prompt longer than the context \u00b7 422 max_tokens above the output limit \u00b7 401 wrong key.\n"
             + "Every input and output token counts against the balance and the limits, cached prompt tokens included. "
@@ -2002,9 +2020,13 @@ sealed class Worker(
         if (!consumers.TryGetValue(name, out var credential))
             return new Reply($"No consumer named <b>{Esc(name)}</b>.\n\nRun /keys to see who exists.");
         await AuditAsync($"opencode name={name}", ct);
+        var tierT = ledger.TierAsync(name, ct);
+        var ovT = ledger.OverridesAsync(name, ct);
+        await Task.WhenAll(tierT, ovT);
+        var context = Policy.ContextOf(Policy.Resolve(tierT.Result, ovT.Result)[5].Value);
 
         await SendDocumentAsync(chatId, "opencode.json",
-            Encoding.UTF8.GetBytes(OpenCodeJson(credential)), "application/json",
+            Encoding.UTF8.GetBytes(OpenCodeJson(credential, context)), "application/json",
             $"\U0001f9e9 <b>{Esc(name)}</b> \u2014 OpenCode config for this node.\n"
           + "Save as <code>~/.config/opencode/opencode.json</code> (or <code>opencode.json</code> "
           + "in a project, which wins over it).\n"
@@ -2039,18 +2061,24 @@ sealed class Worker(
           + $"because the gateway refuses a request body over {Fmt.Num(cfg.BodyLimit)} bytes and every image "
           + "in a conversation is sent again on each turn. OpenCode's own default (5 MB per image) would be "
           + "refused.\n"
-          + $"An image costs about one token per 32\u00d732 pixels: at {ImageEdge}\u00d7{ImageEdge} that is "
-          + $"~{ImageEdge / 32 * (ImageEdge / 32):N0} tokens, charged like any other input.\n\n"
+          + "An image costs about one token per 32\u00d732 pixels, and the server scales anything over 2 MP "
+          + $"down to 2 MP: at most ~{ImageTokens:N0} tokens an image, charged like any other input.\n\n"
+          + "<b>Context</b>\n"
+          + $"This key's window is <b>{context:N0}</b> tokens, prompt + output; the file is sized to it. "
+          + "If the key's window changes, send a fresh file.\n\n"
           + "<b>Thinking</b>\n"
           + "The server thinks at <code>xhigh</code> by default and thinking tokens are billed output at "
-          + "~60 tokens/s. The config asks for <code>high</code> for normal work, <code>xhigh</code> only in "
-          + "plan mode, less for search, and <code>none</code> for titles and summaries."
+          + "~60 tokens/s. The config asks for <code>xhigh</code> for normal work and plan mode, "
+          + "<code>medium</code> for <code>@general</code>, <code>low</code> for search and for "
+          + "<code>@ocr</code>, and <code>none</code> for titles and summaries. For reading text out of "
+          + "images, install the <code>ocr</code> skill: it hands the images to <code>@ocr</code>, which "
+          + "transcribes in seconds instead of minutes."
           + Fmt.Note(
               "Two model entries, one served model: the second sets "
             + "<code>reasoningEffort: none</code> and is wired to <code>small_model</code>, so a session "
             + "title never costs a round of deep reasoning.\n"
-            + $"<code>limit.input</code> is {Fmt.Num(cfg.ContextLimit - OpenCodeOutput(cfg.OutputLimit))}, not the "
-            + $"{Fmt.Num(cfg.ContextLimit)} window: prompt and output share it, so the prompt ceiling is the "
+            + $"<code>limit.input</code> is {Fmt.Num(context - OpenCodeOutput(cfg.OutputLimit))}, not the "
+            + $"{Fmt.Num(context)} window: prompt and output share it, so the prompt ceiling is the "
             + $"window minus the {Fmt.Num(OpenCodeOutput(cfg.OutputLimit))} OpenCode asks for. Getting this "
             + "wrong is the 400 \"Input length exceeds the maximum allowed length\".\n"
             + "Compaction is left LATE and <code>prune</code> off on purpose: both rewrite history, and "
@@ -2132,15 +2160,20 @@ sealed class Worker(
     private const int Replicas = 2, RunningPerReplica = 4, RouterQueue = 64, RouterQueueTimeout = 300;
 
     // Longest edge an image is resized to before sending. The vision tower is
-    // patch 16 with spatial_merge 2, so one token covers a 32x32 block: 1280 is
-    // 1,600 tokens for a full-square image and keeps a screenshot legible.
-    private const int ImageEdge = 1280;
+    // patch 16 with spatial_merge 2, so one token covers a 32x32 block, and the
+    // engine scales anything over 2 MP down to 2 MP (--mm-process-config
+    // longest_edge 2097152). 2048 (was 1280 until 2026-10-14, at the 4 MB body
+    // cap) lets a portrait page or a wide screenshot reach that cap instead of
+    // being shrunk below it by the client: at most ~2,048 tokens an image.
+    private const int ImageEdge = 2048;
+    private const int EngineMaxPixels = 2_097_152;
+    private static int ImageTokens => Math.Min(ImageEdge * ImageEdge, EngineMaxPixels) / (32 * 32);
 
     // An eighth of the body per image. OpenCode resends every image in the
     // history on every turn, so one request has to hold several: the
     // image-batches skill puts 6 images plus up to 3 crops in one subagent.
-    // At the 4 MB body cap this is 500 KB, the same per-image budget the old
-    // 1 MB cap gave with a half share, so existing configs stay valid.
+    // At the 16 MB body cap this is 2 MB (500 KB at the old 4 MB cap). A
+    // config generated against a smaller cap stays valid, just tighter.
     private static int ImageBudget(int bodyLimit) => bodyLimit / 8;
 
     // What OpenCode will actually put in max_tokens. It clamps to its own
@@ -2149,7 +2182,7 @@ sealed class Worker(
     // arithmetic that limit.input depends on.
     private static int OpenCodeOutput(int gatewayCeiling) => Math.Min(gatewayCeiling, 32_000);
 
-    private string OpenCodeJson(string credential)
+    private string OpenCodeJson(string credential, int context)
     {
         // The credential in consumers.conf carries the literal "Bearer " prefix,
         // because key-auth matches the raw header value. An OpenAI-compatible
@@ -2162,8 +2195,10 @@ sealed class Worker(
         // prompt + output share one window, so the prompt ceiling is the window
         // minus what the client will ask to generate. OpenCode reads limit.input
         // as exactly that ceiling (session/overflow.ts::usable).
+        // The KEY's window (policy `context`, enforced by the engine), not the
+        // engines' --context-length.
         var output = OpenCodeOutput(cfg.OutputLimit);
-        var input = cfg.ContextLimit - output;
+        var input = context - output;
 
         // Both entries point at the same served model through `id`; only the
         // effort differs. `attachment` + `modalities.input` are what let OpenCode
@@ -2187,7 +2222,7 @@ sealed class Worker(
             },
             ["limit"] = new JsonObject
             {
-                ["context"] = cfg.ContextLimit,
+                ["context"] = context,
                 ["input"]   = input,
                 ["output"]  = output
             },
@@ -2267,12 +2302,33 @@ sealed class Worker(
             },
             // Effort per built-in agent. Subagents run in parallel and share the
             // node's decode bandwidth, so the ones doing legwork think less.
+            // These only took effect from 2026-10-14 (engine patch 5): before
+            // it the server's xhigh overwrote every one of them. "high" is
+            // mapped to xhigh by the engine, the template having no "high".
             ["agent"] = new JsonObject
             {
                 ["plan"]    = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "xhigh" } },
                 ["build"]   = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "high" } },
                 ["general"] = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "medium" } },
-                ["explore"] = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "low" } }
+                ["explore"] = new JsonObject { ["options"] = new JsonObject { ["reasoningEffort"] = "low" } },
+                // Reading text out of images. At xhigh one 3-5 page OCR turn
+                // spent 30-35K reasoning tokens and 4-6 minutes (2026-10-13);
+                // transcription needs eyes, not deliberation. The ocr skill
+                // (docs/opencode-skills/ocr) routes image reading here.
+                ["ocr"] = new JsonObject
+                {
+                    ["description"] = "Transcribes text, tables and forms from images, scans and screenshots "
+                                    + "(OCR). Give it the image paths and say what to extract; it returns the text "
+                                    + "verbatim. Use it for any image whose text must be read out.",
+                    ["mode"] = "subagent",
+                    ["prompt"] = "You are an OCR transcriber. Read every image you are given with the read tool "
+                               + "and return its text exactly as written: same language, spelling, numbers, "
+                               + "punctuation and line order. Render tables as Markdown tables and forms as "
+                               + "'field: value' lines. Mark anything you cannot read as [illegible] and never "
+                               + "guess or correct it. Do not summarise, translate or comment unless asked. "
+                               + "Label each image's text with its file name.",
+                    ["options"] = new JsonObject { ["reasoningEffort"] = "low" }
+                }
             }
         };
         return doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
@@ -3256,7 +3312,9 @@ sealed class Worker(
               + "\n<i>Tap a value to change it.</i>"
               + Fmt.Note("\u2731 marks a value set on this key; the rest follow its tier and move when the tier does.\n"
                        + "The 24h and 60s windows open at the key's first request, and one request can overshoot a limit by its own size.\n"
-                       + "max_tokens is recorded only: the gateway cannot vary it per key.");
+                       + "max_tokens is recorded only: the gateway cannot vary it per key.\n"
+                       + "context and effort are applied by the engine within seconds of a change; "
+                       + "send the key's owner a fresh /opencode file after changing context.");
 
         // One button per setting, showing its value, so the screen is both the
         // readout and the control. Labels are short: Telegram truncates a
@@ -3268,6 +3326,7 @@ sealed class Worker(
             [Btn(resolved[0]), Btn(resolved[1])],
             [Btn(resolved[2]), Btn(resolved[3])],
             [Btn(resolved[4]), new InlineKeyboardButton($"tier: {tier ?? "none"}", $"pt:{name}")],
+            [Btn(resolved[5]), Btn(resolved[6])],
             [new InlineKeyboardButton($"balance: {(balT.Result.ContainsKey(name) ? Policy.Compact(b) : "\u2014")}", $"pb:{name}")],
             [new InlineKeyboardButton("\u2190 Key card", $"kc:24h:{name}")]
         ]);
@@ -3277,10 +3336,12 @@ sealed class Worker(
     private string ShortValue(ResolvedSetting r)
     {
         if (r.Value is null) return "\u2014";
-        if (r.Field.Key == "refill") return r.Value;
+        if (r.Field.Key is "refill" or "effort") return r.Value;
         if (!long.TryParse(r.Value, CultureInfo.InvariantCulture, out var n)) return r.Value;
         return (r.Field.Key, n) switch
         {
+            ("context", 0) => $"std {Policy.Compact(Policy.ContextStandard)}",
+            ("context", _) when n >= Policy.ContextMax => $"full {Policy.Compact(n)}",
             ("max_tokens", 0) => $"gw {Policy.Compact(cfg.OutputLimit)}",
             ("max_tokens", _) => n.ToString(CultureInfo.InvariantCulture),
             ("daily" or "tpm", 0) => "\u221e",
@@ -3329,8 +3390,14 @@ sealed class Worker(
             case "pc:" when parts.Length == 2 && Policy.Field(parts[0]) is { } f:
                 return (AskInput(userId, InputKind.Field, name, f.Key,
                     $"Send the new <b>{Esc(f.Label)}</b> for <b>{Esc(name)}</b> \u2014 {Esc(f.Meaning)}.\n"
-                  + (f.Key == "refill" ? "One of manual, daily, weekly, monthly." : "Like 2000000, 2M or 500k")
-                  + (f.Key is "daily" or "tpm" ? ", or unlimited." : f.Key == "refill" ? "" : ".")
+                  + (f.Key switch
+                    {
+                        "refill" => "One of manual, daily, weekly, monthly.",
+                        "effort" => "One of " + string.Join(", ", Policy.Efforts) + ".",
+                        "context" => $"Like 200000 or 200k, <code>full</code> ({Policy.ContextMax:N0}) or <code>standard</code>.",
+                        "daily" or "tpm" => "Like 2000000, 2M or 500k, or unlimited.",
+                        _ => "Like 2000000, 2M or 500k.",
+                    })
                   + " <code>default</code> follows the tier again."), false);
         }
         return (new Reply("Unknown button. Run /policy again."), false);
@@ -3343,6 +3410,8 @@ sealed class Worker(
         ["daily"]      = ["500000", "1000000", "5000000", "10000000", "20000000", "30000000", "50000000", "100000000", "0"],
         ["tpm"]        = ["200000", "300000", "600000", "1000000", "2000000", "0"],
         ["max_tokens"] = ["4096", "8192", "16384", "32768", "0"],
+        ["context"]    = ["131072", "200000", "262144", "0"],
+        ["effort"]     = ["auto", "none", "low", "medium", "xhigh"],
     };
 
     private async Task<Reply> FieldEditorAsync(string name, PolicyField f, CancellationToken ct)
@@ -4216,6 +4285,11 @@ sealed class Worker(
 //               route, domain or service, never consumer (checked in the v2.2.4
 //               proto), so request-validation holds one global ceiling. Kept as
 //               a recorded value, deliberately (2026-09-13).
+//   context     the engine (patch 5, keypolicy.py), from the file EnginePolicy
+//               writes; 0 = the standard window (MODEL_CONTEXT)
+//   effort      the engine, the same way: a key's default reasoning effort,
+//               used only when a request names none; "auto" = leave it to the
+//               request, then to the server's --default-chat-template-kwargs
 //
 // Sizing, measured from gateway.requests on 2026-09-13 rather than guessed. An
 // agent request is 74k tokens at the median and 134k at p95 (max 169k); an
@@ -4227,9 +4301,11 @@ sealed class Worker(
 // ===========================================================================
 enum RefillMode { Manual, Daily, Weekly, Monthly }
 
-// 0 means "no limit" for Daily and Tpm, and "the gateway's global ceiling" for MaxTokens.
+// 0 means "no limit" for Daily and Tpm, "the gateway's global ceiling" for
+// MaxTokens, and "the standard window" for Context. Effort "auto" leaves the
+// effort to the request, then to the server default.
 sealed record TierDef(string Name, string For, long Quota, RefillMode Refill,
-                      long Daily, long Tpm, long MaxTokens);
+                      long Daily, long Tpm, long MaxTokens, long Context = 0, string Effort = "auto");
 
 sealed record PolicyField(string Key, string Label, string Meaning, bool Enforced, string Status);
 
@@ -4237,6 +4313,16 @@ readonly record struct ResolvedSetting(PolicyField Field, string? Value, string 
 
 static class Policy
 {
+    // Set once at startup from BotConfig. The full window is the engines'
+    // --context-length; nothing smaller than the floor is worth an agent.
+    public static int ContextStandard = 169_000;
+    public static int ContextMax = 262_144;
+    public const int ContextFloor = 32_768;
+
+    // What the model's chat template accepts, plus the two non-values.
+    // "high" is not here: the engine maps it to xhigh (keypolicy.py).
+    public static readonly string[] Efforts = ["auto", "none", "low", "medium", "xhigh"];
+
     // MENU ORDER. Rendered in this order by /tiers and /admin/tiers.
     public static readonly TierDef[] All =
     [
@@ -4262,6 +4348,10 @@ static class Policy
             true, "enforced at the gateway (ai-token-ratelimit); below ~170k it means one large request a minute"),
         new("max_tokens", "max_tokens", "largest max_tokens one request may ask for; 0 = the gateway ceiling",
             false, "recorded only; the gateway cannot vary it per key and enforces one global ceiling"),
+        new("context", "context", "context window in tokens, prompt + output; 0 = the standard window, full = the model's whole window",
+            true, "enforced by the engine (patch 5): a longer request gets the usual 400 context-length error"),
+        new("effort", "effort", "default reasoning effort when a request names none: auto (the server's, xhigh), none, low, medium or xhigh",
+            true, "applied by the engine; a request that names an effort always keeps it"),
     ];
 
     public static PolicyField? Field(string raw) => raw.ToLowerInvariant() switch
@@ -4271,6 +4361,8 @@ static class Policy
         "daily" or "day" or "daily_limit" => Fields[2],
         "tpm" or "tokens_per_minute" => Fields[3],
         "max_tokens" or "maxtokens" or "max" => Fields[4],
+        "context" or "ctx" or "context_window" or "window" => Fields[5],
+        "effort" or "reasoning" or "reasoning_effort" or "thinking" => Fields[6],
         _ => null
     };
 
@@ -4291,8 +4383,14 @@ static class Policy
         "refill" => RefillName(t.Refill),
         "daily" => t.Daily.ToString(CultureInfo.InvariantCulture),
         "tpm" => t.Tpm.ToString(CultureInfo.InvariantCulture),
+        "context" => t.Context.ToString(CultureInfo.InvariantCulture),
+        "effort" => t.Effort,
         _ => t.MaxTokens.ToString(CultureInfo.InvariantCulture),
     };
+
+    // The window a resolved context value stands for.
+    public static int ContextOf(string? stored) =>
+        long.TryParse(stored, CultureInfo.InvariantCulture, out var n) && n > 0 ? (int)Math.Min(n, ContextMax) : ContextStandard;
 
     // Source is "set" for a hand-set value, "tier" when it follows the tier, and
     // "none" for an unassigned consumer with nothing set — a real state that
@@ -4323,6 +4421,30 @@ static class Policy
             if (s is "manual" or "daily" or "weekly" or "monthly") { stored = s; return true; }
             error = "refill is one of: manual, daily, weekly, monthly.";
             return false;
+        }
+
+        if (f.Key == "effort")
+        {
+            if (s == "high") s = "xhigh";
+            if (Array.IndexOf(Efforts, s) >= 0) { stored = s; return true; }
+            error = "effort is one of: " + string.Join(", ", Efforts) + ".";
+            return false;
+        }
+
+        if (f.Key == "context")
+        {
+            if (s is "full" or "max" or "maximum") s = ContextMax.ToString(CultureInfo.InvariantCulture);
+            else if (s is "standard" or "std" or "0") s = "0";
+            if (!TryParseAmount(s, out var w) || (w != 0 && (w < ContextFloor || w > ContextMax)))
+            {
+                error = $"context is a window between {ContextFloor:N0} and {ContextMax:N0} tokens, "
+                      + "<code>full</code> for the whole window, or <code>standard</code>.";
+                return false;
+            }
+            // The standard window spelled out is the standard window: store 0
+            // so the key keeps following MODEL_CONTEXT if that ever moves.
+            stored = (w == ContextStandard ? 0 : w).ToString(CultureInfo.InvariantCulture);
+            return true;
         }
 
         if (s is "unlimited" or "none" or "off" && f.Key is "daily" or "tpm" or "max_tokens")
@@ -4371,9 +4493,12 @@ static class Policy
     public static string Show(PolicyField f, string stored, int gatewayMax)
     {
         if (f.Key == "refill") return stored;
+        if (f.Key == "effort") return stored == "auto" ? "auto (request, else xhigh)" : stored;
         if (!long.TryParse(stored, CultureInfo.InvariantCulture, out var n)) return stored;
         return (f.Key, n) switch
         {
+            ("context", 0) => $"standard ({ContextStandard:N0})",
+            ("context", _) when n >= ContextMax => $"full ({ContextMax:N0})",
             ("max_tokens", 0) => "gateway max",
             ("daily" or "tpm", 0) => "unlimited",
             _ => n.ToString("N0", CultureInfo.InvariantCulture),
@@ -4407,6 +4532,61 @@ static class QuotaApi
         ]);
         using var r = await http.CreateClient("gateway").PostAsync("v1/chat/completions/quota/refresh", body, ct);
         r.EnsureSuccessStatusCode();
+    }
+}
+
+// ===========================================================================
+// EnginePolicy — the per-key context window and default reasoning effort,
+// written for engine patch 5 (qwen3.6-27b-2-A100/deploy/enginepatch/keypolicy.py).
+//
+// Both replicas mount the DIRECTORY read-only and re-read the file when its
+// mtime or size changes (checked at most once a second), so a change is live
+// within seconds and no restart is involved. Written by rename, which is why
+// the mount is the directory: a single-file bind mount stays on the old inode.
+// Only consumers that differ from the defaults are listed; the engine gives
+// everyone else, every unlabelled request and every request while this file is
+// missing the standard window. LimiterSync calls this on every key or policy
+// change and once a minute, and it rewrites only on a real difference.
+// ===========================================================================
+static class EnginePolicy
+{
+    public static string Path = "/var/lib/quota-bot/engine-policy/policy.json";
+    private static string? _last;
+
+    public static void Write(IReadOnlyDictionary<string, (long Context, string Effort)> entries, ILogger log)
+    {
+        try
+        {
+            var consumers = new JsonObject();
+            foreach (var (name, e) in entries)
+            {
+                var o = new JsonObject();
+                if (e.Context > 0) o["context"] = Math.Min(e.Context, Policy.ContextMax);
+                if (e.Effort != "auto") o["effort"] = e.Effort;
+                consumers[name] = o;
+            }
+            var doc = new JsonObject
+            {
+                ["version"] = 1,
+                ["default"] = new JsonObject { ["context"] = Policy.ContextStandard },
+                ["consumers"] = consumers,
+            }.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+            if (doc == _last && File.Exists(Path)) return;
+
+            var dir = System.IO.Path.GetDirectoryName(Path)!;
+            Directory.CreateDirectory(dir);
+            var tmp = System.IO.Path.Combine(dir, ".policy.json.tmp");
+            File.WriteAllText(tmp, doc);
+            File.Move(tmp, Path, overwrite: true);
+            _last = doc;
+            log.LogInformation("engine policy written: default context {Default}, {Count} keys: {Keys}",
+                Policy.ContextStandard, entries.Count,
+                string.Join(", ", entries.Select(kv => $"{kv.Key}={(kv.Value.Context > 0 ? kv.Value.Context : Policy.ContextStandard)}/{kv.Value.Effort}")));
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "engine policy write failed; the engines keep the previous file");
+        }
     }
 }
 
@@ -4489,16 +4669,27 @@ sealed class LimiterSync(IHttpClientFactory http, KeyStore keys, Ledger ledger, 
 
             var daily = new SortedDictionary<string, long>(StringComparer.Ordinal);
             var minute = new SortedDictionary<string, long>(StringComparer.Ordinal);
+            var engine = new SortedDictionary<string, (long Context, string Effort)>(StringComparer.Ordinal);
             foreach (var name in consumersT.Result.Keys)
             {
                 // A name outside the alphabet cannot be a limit key safely, and
                 // /newkey cannot produce one; skip rather than render it.
-                if (!Worker.IsValidName(name) || !InScope(name)) continue;
+                if (!Worker.IsValidName(name)) continue;
                 var r = Policy.Resolve(tiersT.Result.GetValueOrDefault(name),
                                        overridesT.Result.GetValueOrDefault(name) ?? new Dictionary<string, string>());
+                // The engine's policy ignores LIMITER_SCOPE: that scope is a
+                // rollout switch for the gateway limiter only.
+                long.TryParse(r[5].Value, CultureInfo.InvariantCulture, out var ctx);
+                var effort = r[6].Value ?? "auto";
+                if (ctx > 0 || effort != "auto") engine[name] = (ctx, effort);
+                if (!InScope(name)) continue;
                 if (long.TryParse(r[2].Value, CultureInfo.InvariantCulture, out var d) && d > 0) daily[name] = d;
                 if (long.TryParse(r[3].Value, CultureInfo.InvariantCulture, out var m) && m > 0) minute[name] = m;
             }
+
+            // Before the gateway calls, so an apiserver outage cannot hold back a
+            // context or effort change: the engines read this file directly.
+            EnginePolicy.Write(engine, log);
 
             var client = http.CreateClient("apiserver");
 
@@ -5842,7 +6033,7 @@ sealed record BotConfig(
     string AdminCredential, string GatewayUrl, string ApiServerUrl, string KubeConfigPath,
     string RedisHost, int RedisPort,
     string PrometheusUrl, string PublicBaseUrl, string ConsumersPath, string AuditPath,
-    string ModelId, int ContextLimit, int OutputLimit, int BodyLimit,
+    string ModelId, int ContextLimit, int ContextMax, string EnginePolicyPath, int OutputLimit, int BodyLimit,
     string AlertSecret, string AdminApiSecret, string RecordsUrl, string RecordsSecret,
     string AlertmanagerUrl, string DirectHost, HashSet<long> AlertChatIds);
 

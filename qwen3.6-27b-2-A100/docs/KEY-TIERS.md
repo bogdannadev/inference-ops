@@ -1,9 +1,10 @@
 # Key tiers
 
 **Status: ENFORCED as of 2026-09-13**, except per-key `max_tokens`.
+`context` and `effort` added 2026-10-14, enforced by the engine (patch 5).
 
 A tier is a set of DEFAULTS for every setting — quota, refill, daily limit,
-tokens/min, max_tokens — and any one of them can be set on a single consumer
+tokens/min, max_tokens, context, effort — and any one of them can be set on a single consumer
 (`/set`, or the Settings buttons; stored in `chat_policy:<name>`). `/policy`
 shows each value, whether it follows the tier, the consumer's live limiter
 counters and its next refill. The table lives in `quota-bot/bot.cs`
@@ -16,6 +17,8 @@ counters and its next refill. The table lives in `quota-bot/bot.cs`
 | `refill` | quota-bot's refill job | balance SET to `quota` at 00:00 UTC daily / Monday / 1st; switching it on arms the next boundary, never resets at once |
 | `quota` | `/newkey` seed and each refill | changing it never moves a live balance by itself |
 | `max_tokens` | **nothing, per key** | a WasmPlugin matchRule cannot select by consumer (v2.2.4 proto); one global 70000 ceiling |
+| `context` | the engine, `deploy/enginepatch/keypolicy.py`, from the file quota-bot's `EnginePolicy` writes | window in tokens, prompt + output; `0` = standard (169,000), `full` = 262,144, floor 32,768; over it = the usual 400 context-length error. Live within ~1 s of a change, no restart. Every tier defaults to standard: the full window is granted per key |
+| `effort` | the engine, same file | default `reasoning_effort` when a request names none: `auto` (the request's, else the server's `xhigh`), `none`, `low`, `medium`, `xhigh`. A request that names one always keeps it |
 
 Rollout: proved on `testafter` 2026-09-13 — per-minute 429 at the expected
 request, daily 429 with `Retry-After: 86295`, and requests allowed while the
@@ -111,6 +114,8 @@ reason per-person keys behind the gateway matter.
 | Tokens per 24h window / per minute | per consumer | `ai-token-ratelimit` 2.0.1 | **live 2026-09-13** |
 | Balance refill | per consumer | quota-bot refill job | **live 2026-09-13** |
 | `max_tokens` ceiling | per route | `request-validation` | live, global (70000); cannot vary per key |
+| Context window | per consumer | engine patch 5 (exact token count, after tokenisation) | **2026-10-14**; the gateway cannot count tokens, and Higress's `ai-context-limit` (v2.2.3+) estimates with tiktoken, skips any request carrying an image and selects by route, not consumer |
+| Default reasoning effort | per consumer | engine patch 5 | **2026-10-14** |
 | Concurrency + queue | node-wide | sgl-router | live as of 2026-09-04 |
 
 Neither per-consumer control can weight input against output: ai-quota is
