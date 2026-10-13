@@ -1,0 +1,38 @@
+# aml-mcp alert rules for the inference node's Prometheus (inference-ops, qwen3.6-27b-2-A100/prometheus/).
+# Copied there as aml-mcp-alerts.yml and listed under rule_files; docs/DEPLOY.md step 7.
+# Tests: promtool test rules aml-mcp-alerts_test.yml
+#
+# Lists are fetched every 30 minutes; a source is stale (and screening without a hit returns `incomplete`) when it has
+# not been confirmed for its SLA, 24 hours by default. aml_list_last_confirmed_timestamp_seconds moves on every
+# successful run (activated, unchanged, not_modified). The target itself is covered by the node's PrometheusTargetDown.
+groups:
+  - name: aml-mcp
+    rules:
+      - alert: AmlListStale
+        expr: time() - aml_list_last_confirmed_timestamp_seconds > 24 * 3600
+        for: 5m
+        labels:
+          severity: critical
+          node: a100
+        annotations:
+          summary: "Sanctions list {{ $labels.source }} is stale"
+          description: "{{ $labels.source }} was last confirmed {{ $value | humanizeDuration }} ago (SLA 24 h). Screening returns incomplete instead of no_match until it is current."
+
+      - alert: AmlListNotConfirmed
+        expr: time() - aml_list_last_confirmed_timestamp_seconds > 3 * 3600
+        for: 10m
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "Sanctions list {{ $labels.source }} not confirmed for over 3 hours"
+          description: "Six or more 30-minute runs of {{ $labels.source }} failed in a row; it turns stale at 24 hours. Check lists_status for the last outcome and reason."
+
+      - alert: AmlListRejected
+        expr: increase(aml_list_fetch_runs_total{outcome="rejected"}[1h]) > 0
+        labels:
+          severity: warning
+          node: a100
+        annotations:
+          summary: "A download of {{ $labels.source }} was rejected"
+          description: "The downloaded file failed validation (format, completeness or size); the previous version stays active. The reason is in lists_status and the raw file under rejected/."
