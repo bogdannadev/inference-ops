@@ -41,7 +41,7 @@ metadata:
   namespace: higress-system
   resourceVersion: "1"
 spec:
-  url: ${WASM_PLUGIN_BASE}/plugins/ai-token-ratelimit/2.0.1/plugin.wasm
+  url: ${WASM_PLUGIN_BASE}/plugins/ai-token-ratelimit/2.0.3/plugin.wasm
 
   # A limiter that fails to load must not stop traffic: limits protect the
   # node, they do not bill anyone. ai-quota is the fail-closed one.
