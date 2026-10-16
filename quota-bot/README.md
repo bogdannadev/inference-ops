@@ -71,7 +71,7 @@ from it. This block is a copy and can go stale — the bot cannot.
 /topup <name> <tokens>      add to a balance
 
 /amlops                     operators: quota, limits, usage, remove, add
-/amlnew <name>              aml-mcp token and gateway key: OpenCode setup or keys
+/amlnew <name>              aml-mcp token and gateway key: one-command setup or keys
 /amlrevoke <name>           disable the token and delete the key (asks first)
 
 /setquota <name> <tokens>   replaces a balance
@@ -124,26 +124,30 @@ the plan and its use, the OSINT searches and the gateway key, with **Plan**,
 key's settings screen) and **Remove operator**. `/amlnew` and `/amlrevoke`
 without a name ask for one or offer the operators as buttons.
 
-**Handover: OpenCode setup or keys only.** The aml-mcp token exists only in
-the message that hands it over (aml-mcp keeps its hash), so the handover is
+**Handover: one-command setup or keys only.** The aml-mcp token exists only
+in the message that hands it over (aml-mcp keeps its hash), so the handover is
 picked on the create prompt, before the tap, with its two buttons:
 
-- **OpenCode setup** (the default) sends `aml-copilot-<name>.zip` and a setup
-  prompt, as `/opencode` does for a key. The zip is AML Copilot's `opencode`
-  folder, read from aml-mcp's checkout (`/opt/aml-mcp/opencode`, mounted
-  read-only at `AML_COPILOT_DIR`), so it always matches the server, plus
-  `credentials.env` with the four values its launchers read. The operator
-  pastes the prompt into a fresh OpenCode on any free model: it unpacks the
-  folder, moves `credentials.env` to `~/.aml-copilot/`, never opens it, and
-  checks that aml-mcp connects. The credentials are not shown in the chat.
+- **One-command setup** (the default) asks aml-mcp's access API for an install
+  code (`POST /operators/install`, for the token just issued) and sends a setup
+  message to forward to the operator: one line for PowerShell
+  (`irm …/install/windows -Method Post -Body <code> | iex`) and one for a
+  terminal (`curl -fsSL --data <code> …/install/unix | sh`). The installer
+  comes from aml-mcp, which seals the credentials under the code, and puts in
+  AML Copilot, its own pinned opencode (an opencode already on the machine is
+  left alone) and `credentials.env`, checks that aml-mcp connects and starts
+  it: no model, zip or Node.js. The chat holds the code, never a credential;
+  it works 24 hours, until AML Copilot has connected once. See aml-mcp's
+  `opencode/README.md`.
 - **Keys only** shows the two URLs and both credentials, tap to copy, for an
   operator who already has AML Copilot.
 
-If the folder is not mounted or the zip cannot be sent, the bot falls back to
-keys only rather than lose the token. **Connect** on the card shows the URLs
-and the gateway key again. The aml-mcp token cannot be shown again, so **New
-aml-mcp token** replaces it after a confirm tap that picks the handover the
-same way: the old one stops at once; the operator, plan and audit history stay.
+If aml-mcp makes no install code, the bot falls back to keys only rather than
+lose the token. **Connect** on the card shows the URLs and the gateway key
+again. The aml-mcp token cannot be shown again, so **New aml-mcp token**
+replaces it after a confirm tap that picks the handover the same way: the old
+one stops at once, and so does any setup message sent for it; the operator,
+plan and audit history stay.
 
 **OSINT searches** (the demo's open-source research, one external web search
 a tap) are set per operator on their own screen: 0, 1, 5, 20, 50, 100, *10

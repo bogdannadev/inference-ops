@@ -50,7 +50,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -172,9 +171,6 @@ var cfg = new BotConfig(
     // Required once the API is connected, for the same reason as
     // PUBLIC_BASE_URL: no deployment's hostname is compiled in.
     AmlMcpUrl:       Opt("AML_MCP_URL", "").TrimEnd('/'),
-    // AML Copilot's opencode folder (/opt/aml-mcp/opencode, mounted read-only):
-    // what the OpenCode setup zip is made of, so it always matches the server.
-    AmlCopilotDir:   Opt("AML_COPILOT_DIR", "/opt/aml-copilot").TrimEnd('/'),
     AmlAllowedIds:   amlAllowedIds);
 
 if (cfg.ContextLimit < Policy.ContextFloor || cfg.ContextLimit > cfg.ContextMax)
@@ -1130,7 +1126,7 @@ sealed class Worker(
         // goes through the token path below like every destructive action.
         // aq:<plan code>:<limit>:<name> sets a plan and re-renders the plan screen;
         // aw:<searches>:<name> sets the OSINT allowance and re-renders its screen;
-        // ad:<o|k>:<name> switches /amlnew's handover between the OpenCode setup
+        // ad:<o|k>:<name> switches /amlnew's handover between the one-command setup
         // and keys only, re-rendering the create prompt with fresh buttons.
         if (data.StartsWith("aw:", StringComparison.Ordinal))
         {
@@ -1297,7 +1293,7 @@ sealed class Worker(
     //
     // An operator of AML Copilot needs two credentials: an aml-mcp token (who
     // they are in its audit log) and a gateway key (the model). /amlnew makes
-    // both under ONE name and hands them over (OpenCode setup or keys), /amlrevoke
+    // both under ONE name and hands them over (one-command setup or keys), /amlrevoke
     // removes both. The aml-mcp side goes through its access API, which can
     // only issue and disable role operator — admins stay CLI-only on the server.
     // The token, like a key, exists only in the message that hands it over.
@@ -1524,7 +1520,7 @@ sealed class Worker(
         }
         var free = Tokenize(userId, TimeSpan.FromMinutes(10), c => AmlNewAsync(userId, chatId, name, null, null, opencode, c));
         rows.Add([new InlineKeyboardButton("Create · no plan", "ok:" + free), new InlineKeyboardButton("Cancel", "no:" + free)]);
-        rows.Insert(0, [new InlineKeyboardButton("\U0001f9e9 OpenCode setup" + (opencode ? " ✓" : ""), $"ad:o:{name}"),
+        rows.Insert(0, [new InlineKeyboardButton("\U0001f9e9 One-command setup" + (opencode ? " ✓" : ""), $"ad:o:{name}"),
                         new InlineKeyboardButton("\U0001f511 Keys only" + (opencode ? "" : " ✓"), $"ad:k:{name}")]);
         return new Reply(
             $"\U0001f6e1️ <b>Add AML Copilot operator {Esc(name)}?</b>\n\n"
@@ -1575,7 +1571,7 @@ sealed class Worker(
         }
         await AuditAsync($"amlnew name={name} operator={issued.Id} tier=aml plan={planKind ?? "none"}:{planLimit?.ToString(CultureInfo.InvariantCulture) ?? "-"}", ct);
 
-        var handover = await AmlHandoverAsync(chatId, name, issued.Token, credential["Bearer ".Length..], opencode, ct);
+        var handover = await AmlHandoverAsync(chatId, name, issued.Token, credential["Bearer ".Length..], opencode, requestedBy, ct);
 
         return new Reply(
             $"Created AML Copilot operator <b>{Esc(name)}</b>: aml-mcp token and a gateway key on <b>aml</b>.\n"
@@ -1594,19 +1590,23 @@ sealed class Worker(
       + (gatewayKey is null ? "" : $"<b>Gateway key</b> <i>(QWEN_GW_KEY)</i>\n<code>{Esc(gatewayKey)}</code>");
 
     private static string AmlHandoverLabel(bool opencode) => opencode
-        ? "\U0001f9e9 <b>OpenCode setup</b>: a zip with AML Copilot and its credentials, and a prompt that installs it."
+        ? "\U0001f9e9 <b>one-command setup</b>: a message for the operator with one line to paste into PowerShell or a terminal; it installs AML Copilot, connects it and starts it."
         : "\U0001f511 <b>keys only</b>: the URLs and both credentials, tap to copy, for an operator who already has AML Copilot.";
 
     // Hands an operator's credentials over, the one time the aml-mcp token
-    // exists, and returns the text for the reply. The OpenCode setup is a zip
-    // (AML Copilot's opencode folder plus credentials.env, which its launchers
-    // read) and the prompt that installs it. Keys only, or a zip that could not
-    // be built or sent, shows the four values instead: the token must never be
-    // lost on the way.
-    private async Task<string> AmlHandoverAsync(long chatId, string name, string amlToken, string gatewayKey, bool opencode, CancellationToken ct)
+    // exists, and returns the text for the reply. The one-command setup is a
+    // message to forward to the operator: one line for PowerShell, one for a
+    // terminal, each posting an install code to aml-mcp, which answers with an
+    // installer holding the credentials (aml-mcp Features/Install). The code,
+    // not a credential, is what the chat holds: it works 24 hours, until the
+    // installer has connected once, and only for the token issued now. Keys
+    // only, or a code aml-mcp would not make, shows the four values instead:
+    // the token must never be lost on the way.
+    private async Task<string> AmlHandoverAsync(long chatId, string name, string amlToken, string gatewayKey, bool opencode,
+        string requestedBy, CancellationToken ct)
     {
         var keysOnly =
-            "⚠️ <b>Shown once.</b> Tap a value to copy it. The launchers read them from "
+            "\u26a0\ufe0f <b>Shown once.</b> Tap a value to copy it. The launchers read them from "
           + "<code>~/.aml-copilot/credentials.env</code> (<code>KEY=value</code> lines) or from environment variables.\n\n"
           + $"<b>aml-mcp URL</b> <i>(AML_MCP_URL)</i>\n<code>{Esc(cfg.AmlMcpUrl)}</code>\n\n"
           + AmlCredentials(amlToken, null)
@@ -1614,109 +1614,35 @@ sealed class Worker(
           + AmlCredentials(null, gatewayKey);
         if (!opencode) return keysOnly;
 
-        var (zip, problem) = AmlCopilotZip(name, amlToken, gatewayKey);
-        if (zip is null)
+        var (install, problem) = await aml.InstallAsync(name, amlToken, gatewayKey, $"{cfg.PublicBaseUrl}/v1", cfg.AmlMcpUrl, requestedBy, ct);
+        if (install is null)
         {
-            log.LogWarning("AML Copilot zip for {Name}: {Problem}", name, problem);
-            return $"⚠️ No OpenCode setup: {Esc(problem!)}. The keys instead:\n\n" + keysOnly;
+            log.LogWarning("AML Copilot install code for {Name}: {Problem}", name, problem);
+            return $"\u26a0\ufe0f No one-command setup: {Esc(problem ?? "no answer")}. The keys instead:\n\n" + keysOnly;
         }
-        if (!await SendDocumentAsync(chatId, $"aml-copilot-{name}.zip", zip, "application/zip",
-                $"\U0001f9e9 <b>{Esc(name)}</b> — AML Copilot for OpenCode.\n"
-              + "Download it, then paste the setup prompt below into OpenCode.\n"
-              + "⚠️ Holds a live aml-mcp token and gateway key: forward only to the operator.", ct))
-            return "⚠️ The OpenCode setup could not be sent. The keys instead:\n\n" + keysOnly;
-        await SendAsync(chatId, new Reply(
-            "\U0001f4cb <b>Setup prompt</b> — paste into OpenCode, running on whatever free model it starts with, "
-          + "once the zip above is downloaded. It installs AML Copilot and checks that aml-mcp connects.\n\n"
-          + $"<pre>{Esc(AmlSetupPrompt(name))}</pre>"), ct);
-        return "\U0001f9e9 <b>Sent:</b> <code>aml-copilot-" + Esc(name) + ".zip</code> and its setup prompt, above. "
-             + "Forward both to the operator. The credentials are in the zip only: they are not shown again.";
+        await SendAsync(chatId, new Reply(AmlInstallMessage(name, install)), ct);
+        return "\U0001f9e9 <b>Sent:</b> the setup message above. Forward it to the operator. "
+             + "It holds an install code, not the credentials, and works until AML Copilot has connected once "
+             + $"(at most until {install.ExpiresAt:yyyy-MM-dd HH:mm} UTC). A lost or expired one: Operator card \u2192 Connect \u2192 New aml-mcp token.";
     }
 
-    private const int UnixRegularFile = 0x8000;   // S_IFREG: unzip applies the mode bits only to a typed entry
-
-    // AML Copilot's opencode folder, as mounted, plus credentials.env. Entries
-    // sit at the zip's root, so unpacking into one folder gives the layout the
-    // launchers expect. Values are [A-Za-z0-9_-] or validated URLs.
-    private (byte[]? Zip, string? Problem) AmlCopilotZip(string name, string amlToken, string gatewayKey)
+    // The message the operator gets. Lines stay copyable as one tap each
+    // (<code>), and short of words: the operator may read it on a phone and
+    // paste on a computer. The installers say the rest as they run.
+    private string AmlInstallMessage(string name, AmlInstall install)
     {
-        var root = cfg.AmlCopilotDir;
-        if (!File.Exists(Path.Combine(root, "aml-copilot.ps1")) || !Directory.Exists(Path.Combine(root, "config")))
-            return (null, $"AML Copilot's folder is not mounted at {root}");
-        try
-        {
-            using var buffer = new MemoryStream();
-            using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
-            {
-                foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
-                {
-                    var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
-                    if (relative.Split('/').Any(part => part.StartsWith('.'))) continue;
-                    var entry = zip.CreateEntryFromFile(path, relative, CompressionLevel.Optimal);
-                    // rwxr-xr-x for the shell launcher, rw-r--r-- for the rest.
-                    entry.ExternalAttributes = (UnixRegularFile | (relative.EndsWith(".sh", StringComparison.Ordinal) ? 0b111_101_101 : 0b110_100_100)) << 16;
-                }
-                var credentials = zip.CreateEntry("credentials.env", CompressionLevel.Optimal);
-                credentials.ExternalAttributes = (UnixRegularFile | 0b110_000_000) << 16;
-                using var writer = new StreamWriter(credentials.Open(), new UTF8Encoding(false)) { NewLine = "\n" };
-                writer.WriteLine($"# AML Copilot credentials for {name}. Live: keep this file private.");
-                writer.WriteLine($"AML_MCP_URL={cfg.AmlMcpUrl}");
-                writer.WriteLine($"AML_MCP_TOKEN={amlToken}");
-                writer.WriteLine($"QWEN_GW_BASE_URL={cfg.PublicBaseUrl}/v1");
-                writer.WriteLine($"QWEN_GW_KEY={gatewayKey}");
-            }
-            return buffer.Length > 5_000_000 ? (null, "the folder is over 5 MB") : (buffer.ToArray(), null);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return (null, $"AML Copilot's folder could not be read ({ex.GetType().Name})");
-        }
+        var origin = new Uri(cfg.AmlMcpUrl).GetLeftPart(UriPartial.Authority);
+        return $"\U0001f9e9 <b>AML Copilot setup \u00b7 {Esc(name)}</b>\n\n"
+             + "Open a terminal, paste one line, press Enter. It installs AML Copilot, connects it and starts it.\n\n"
+             + "<b>Windows</b> \u00b7 PowerShell (Start \u2192 type <i>PowerShell</i>)\n"
+             + $"<code>irm {Esc(origin)}/install/windows -Method Post -Body {install.Code} | iex</code>\n\n"
+             + "<b>macOS or Linux</b> \u00b7 Terminal\n"
+             + $"<code>curl -fsSL --data {install.Code} {Esc(origin)}/install/unix | sh</code>\n\n"
+             + "Already have opencode? It stays as it is: AML Copilot gets its own copy and settings. "
+             + "Run the line again later to update AML Copilot."
+             + Fmt.Note($"Works until AML Copilot has connected once, at most until {install.ExpiresAt:yyyy-MM-dd HH:mm} UTC. "
+                      + "\u26a0\ufe0f It sets AML Copilot up with your personal credentials: do not share it.");
     }
-
-    // The AML Copilot counterpart of OpenCodeSetupPrompt, for a fresh OpenCode
-    // on a free model. Lines stay under ~60 characters for a phone's <pre>.
-    // The agent installs and checks; it never opens credentials.env, so the
-    // credentials never reach the free model's provider.
-    private static string AmlSetupPrompt(string name) =>
-        """
-        Set up AML Copilot on this computer. Do the work
-        yourself, then tell me how to start it.
-
-        I downloaded aml-copilot-NAME.zip from the people
-        who run AML Copilot.
-
-        1. Find it: look in ~/Downloads, ~/Desktop and the
-           current directory. If it is not there, stop and
-           ask me where it is.
-        2. It holds credentials.env with live credentials.
-           Do not open, print or show that file, do not
-           copy it anywhere tracked by git, and do not put
-           any of its values on a command line.
-        3. Check Node.js 20 or later: node --version. If
-           opencode is not on PATH (opencode --version):
-           npm install -g opencode-ai
-        4. Unpack the zip into ~/AML-Copilot (on Windows
-           %USERPROFILE%\AML-Copilot), replacing an older
-           copy. Change no file in it.
-        5. Move ~/AML-Copilot/credentials.env to
-           ~/.aml-copilot/credentials.env: create the
-           folder, replace an older file. On Linux or
-           macOS: chmod 600 that file.
-        6. Check that the aml-mcp server connects:
-           - Windows: powershell -ExecutionPolicy Bypass
-             -File ~/AML-Copilot/aml-copilot.ps1 mcp list
-           - Linux or macOS:
-             bash ~/AML-Copilot/aml-copilot.sh mcp list
-           It must show "aml" as connected. The first run
-           downloads a helper from npm (about 20 seconds).
-        7. Delete the zip from where you found it.
-        8. Tell me to close you and start AML Copilot with
-           the command from step 6, without "mcp list". On
-           Windows, offer to make a desktop shortcut to it.
-
-        If a step fails, stop and show me the exact error
-        instead of working around it.
-        """.Replace("NAME", name, StringComparison.Ordinal);
 
     // Everything to connect, tap to copy, as /connect shows a key. The
     // aml-mcp token cannot be shown again (only its hash is stored): this
@@ -1735,7 +1661,7 @@ sealed class Worker(
           + $"<b>Gateway URL</b> <i>(QWEN_GW_BASE_URL)</i>\n<code>{Esc(cfg.PublicBaseUrl)}/v1</code>\n\n"
           + (key is null ? "⚠️ No gateway key under this name.\n\n" : AmlCredentials(null, key) + "\n\n")
           + "<b>aml-mcp token</b> <i>(AML_MCP_TOKEN)</i>\nShown only when issued: aml-mcp keeps a hash, never the token. "
-          + "Lost or leaked, or the operator needs the OpenCode setup? Issue a new one below; the old one stops at once."
+          + "Lost or leaked, or the operator needs a new setup command? Issue a new one below; the old one stops at once."
           + Fmt.Note("⚠️ This message holds a live gateway key: forward it only to the operator, and delete it when done."),
             new InlineKeyboardMarkup([
                 [new InlineKeyboardButton("\U0001f504 New aml-mcp token", $"ay:{name}")],
@@ -1804,7 +1730,7 @@ sealed class Worker(
           + "The operator, their plan and their audit history stay. The gateway key does not change.\n\n"
           + "<b>Tap the handover:</b>\n" + AmlHandoverLabel(true) + "\n" + AmlHandoverLabel(false),
             new InlineKeyboardMarkup([
-                [new InlineKeyboardButton("\U0001f9e9 Issue · OpenCode setup", "ok:" + withSetup)],
+                [new InlineKeyboardButton("\U0001f9e9 Issue · one-command setup", "ok:" + withSetup)],
                 [new InlineKeyboardButton("\U0001f511 Issue · keys only", "ok:" + keysOnly),
                  new InlineKeyboardButton("Cancel", "no:" + withSetup)]]));
     }
@@ -1819,8 +1745,8 @@ sealed class Worker(
         string? key = consumers.TryGetValue(name, out var credential) && credential.StartsWith("Bearer ", StringComparison.Ordinal)
             ? credential["Bearer ".Length..] : null;
         var handover = key is not null
-            ? await AmlHandoverAsync(chatId, name, issued.Token, key, opencode, ct)
-            : "⚠️ No gateway key under this name, so no OpenCode setup. <b>Shown once</b>, tap to copy:\n\n"
+            ? await AmlHandoverAsync(chatId, name, issued.Token, key, opencode, $"telegram:{userId}", ct)
+            : "⚠️ No gateway key under this name, so no one-command setup. <b>Shown once</b>, tap to copy:\n\n"
               + AmlCredentials(issued.Token, null);
         return new Reply(
             $"\U0001f504 New aml-mcp token for <b>{Esc(name)}</b>. The previous one no longer works.\n\n" + handover,
@@ -1943,7 +1869,7 @@ sealed class Worker(
             "operators: quota, limits, usage, remove, add",
             "AML Copilot operators"),
         new("amlnew", "AML Copilot", "&lt;name&gt;",
-            "aml-mcp token and gateway key: OpenCode setup or keys only",
+            "aml-mcp token and gateway key: one-command setup or keys only",
             "Add an AML Copilot operator"),
         new("amlrevoke", "AML Copilot", "&lt;name&gt;",
             "disable the token and delete the key (asks first)",
@@ -5229,6 +5155,8 @@ static class Policy
 // text for the operator: the API's own message where it gave one.
 sealed record AmlOperator(Guid Id, string Name, string Role, DateTime CreatedAt, DateTime? DisabledAt);
 sealed record AmlIssued(Guid Id, string Token);
+// An install code for AML Copilot's one-command setup: shown once, in the setup message.
+sealed record AmlInstall(string Code, DateTime ExpiresAt);
 sealed record AmlDisabled(Guid Id);
 // Quota and Used are sessions, or minutes for the hour plans.
 sealed record AmlUsage(Guid Id, string Name, string Role, string? Kind, int? Quota, int? Used, bool Exhausted,
@@ -5258,6 +5186,21 @@ sealed class AmlAccess(IHttpClientFactory http, ILogger<AmlAccess> log)
             new JsonObject { ["display_name"] = name, ["requested_by"] = requestedBy }, ct);
         return node?["token"] is { } token && node["id"] is { } id
             ? (new AmlIssued(Guid.Parse((string)id!), (string)token!), null)
+            : (null, error ?? "unexpected answer");
+    }
+
+    // An install code for the operator's current token (aml-mcp refuses any
+    // other): the one-command setup posts it to aml-mcp for the installer.
+    public async Task<(AmlInstall? Install, string? Error)> InstallAsync(string name, string amlToken, string gatewayKey,
+        string gatewayUrl, string mcpUrl, string requestedBy, CancellationToken ct)
+    {
+        var (node, error) = await SendAsync(HttpMethod.Post, "operators/install", new JsonObject
+        {
+            ["id_or_name"] = name, ["aml_token"] = amlToken, ["gateway_key"] = gatewayKey,
+            ["gateway_url"] = gatewayUrl, ["mcp_url"] = mcpUrl, ["requested_by"] = requestedBy,
+        }, ct);
+        return node?["code"] is { } code && node["expires_at"] is { } expires
+            ? (new AmlInstall((string)code!, DateTime.Parse((string)expires!, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)), null)
             : (null, error ?? "unexpected answer");
     }
 
@@ -6914,7 +6857,7 @@ sealed record BotConfig(
     string ModelId, int ContextLimit, int ContextMax, string EnginePolicyPath, int OutputLimit, int BodyLimit,
     string AlertSecret, string AdminApiSecret, string RecordsUrl, string RecordsSecret,
     string AlertmanagerUrl, string DirectHost, HashSet<long> AlertChatIds,
-    string AmlAccessUrl, string AmlAccessSecret, string AmlMcpUrl, string AmlCopilotDir, HashSet<long> AmlAllowedIds);
+    string AmlAccessUrl, string AmlAccessSecret, string AmlMcpUrl, HashSet<long> AmlAllowedIds);
 
 enum PendingKind { SetQuota, Revoke }
 sealed record Pending(long UserId, DateTimeOffset Expires, Func<CancellationToken, Task<Reply>> Run);

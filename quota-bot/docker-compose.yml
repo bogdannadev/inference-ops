@@ -106,10 +106,6 @@ services:
       # place to rotate, not two. World-readable by design in that tree; the key
       # material never leaves the host.
       - ../higress-standalone/compose/volumes/kube/config:/etc/kube/config:ro
-      # AML Copilot's opencode folder from aml-mcp's checkout, read-only: /amlnew
-      # zips it with an operator's credentials (AML_COPILOT_DIR). Missing: the
-      # bot hands over keys only.
-      - /opt/aml-mcp/opencode:/opt/aml-copilot:ro
 
     healthcheck:
       test: ["CMD", "/app/bot", "--healthcheck"]
