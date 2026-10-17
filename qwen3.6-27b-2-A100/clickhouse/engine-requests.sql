@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS engine.requests
     cached_device     Nullable(UInt32),   -- prefix still in GPU memory
     cached_host       Nullable(UInt32),   -- HiCache: reloaded from host RAM
     cached_storage    Nullable(UInt32),   -- L3, not enabled here
+    -- Engine patch 6 (deploy/enginepatch/cache_diag.py), NULL without it.
+    diag_kv           Nullable(UInt32),   -- F: where the KV match ended
+    diag_hit          Nullable(UInt32),   -- B: where the GDN-backed hit ended
+    diag_branch       Nullable(UInt32),   -- branch state recorded for the next request
+    diag_msgs         Nullable(UInt32),   -- im_start tokens in the prompt
+    diag_bnd          Nullable(UInt32),   -- last message start at or before F
+    diag_after        Nullable(UInt32),   -- message starts after F
 
     queue_s           Nullable(Float32),  -- waiting before the first forward
     ttft_s            Nullable(Float32),  -- received -> prefill finished (first token)

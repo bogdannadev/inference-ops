@@ -27,6 +27,9 @@ for 1 and 2; patch 3 is documented on _patch_budget below.
 5. Per-key context window and reasoning effort, and the client's effort
    actually reaching the template (keypolicy.py).
 
+6. Cache diagnostics: export where the KV match ended, where the GDN hit
+   ended, and which message diverged (cache_diag.py). Observes only.
+
 Why here (1 and 2) and not at the gateway: a Higress wasm body rewrite dies at the 32 KB
 connection buffer limit and the poisoned bodies are 400-545 KB. The engine holds
 the whole request, so this is the first layer that can actually do it.
@@ -49,12 +52,21 @@ except Exception as _exc:  # patch 5 is skipped, the others still apply
     keypolicy = None
     print(f"[sitecustomize] keypolicy import failed: {_exc!r}", file=sys.stderr, flush=True)
 
+# Patch 6's module is stdlib-only at import too (numpy is imported on first use).
+try:
+    import cache_diag
+except Exception as _exc:  # patch 6 is skipped, the others still apply
+    cache_diag = None
+    print(f"[sitecustomize] cache_diag import failed: {_exc!r}", file=sys.stderr, flush=True)
+
 TARGET_PROTO = "sglang.srt.entrypoints.openai.protocol"
 TARGET_MM = "sglang.srt.multimodal.processors.base_processor"
 TARGET_BUDGET = "sglang.srt.mem_cache.prefill_budget"
 TARGET_FP8 = "sglang.srt.layers.quantization.fp8"
 TARGET_CHAT = "sglang.srt.entrypoints.openai.serving_chat"
 TARGET_TM = "sglang.srt.managers.tokenizer_manager"
+TARGET_URC = "sglang.srt.mem_cache.unified_radix_cache"
+TARGET_OUT = "sglang.srt.managers.scheduler_components.output_streamer"
 
 _done = set()
 _importing = set()
@@ -313,6 +325,71 @@ def _patch_tm(module):
     return True
 
 
+def _patch_urc(module):
+    """Cache diag, 1: stash each match's F, hit and branch on the request."""
+    cls = getattr(module, "UnifiedRadixCache", None)
+    if cls is None or not hasattr(cls, "match_prefix"):
+        return False
+    if getattr(cls, "_cache_diag", False) or cache_diag is None:
+        return True
+    if not cache_diag.ENABLED:
+        print("[sitecustomize] cache diag disabled (SGLANG_PATCH_CACHE_DIAG=0)",
+              file=sys.stderr, flush=True)
+        cls._cache_diag = True
+        return True
+    cd = cache_diag
+    original = cls.match_prefix
+
+    def match_prefix(self, params):
+        result = original(self, params)
+        cd.note_match(params, result)
+        return result
+
+    cls.match_prefix = match_prefix
+    cls._cache_diag = True
+    print("[sitecustomize] cache diag: prefix matches recorded on the request",
+          file=sys.stderr, flush=True)
+    return True
+
+
+def _patch_out(module):
+    """Cache diag, 2: add the "diag" object to a finished request's details."""
+    cls = getattr(module, "SchedulerOutputStreamer", None)
+    if cls is None or not hasattr(cls, "get_cached_tokens_details"):
+        return False
+    if getattr(cls, "_cache_diag", False) or cache_diag is None \
+            or not cache_diag.ENABLED:
+        return True
+    cd = cache_diag
+    original = cls.get_cached_tokens_details
+    stats = {"logged_at": 0.0}
+
+    def get_cached_tokens_details(self, req):
+        details = original(self, req)
+        if not req.finished():
+            return details
+        try:
+            diag = cd.describe(req)
+        except Exception as exc:  # never fail an output over a diagnostic
+            now = time.monotonic()
+            if now - stats["logged_at"] >= 60.0:
+                stats["logged_at"] = now
+                print(f"[sitecustomize] cache diag skipped: {exc!r}",
+                      file=sys.stderr, flush=True)
+            return details
+        if diag is None:
+            return details
+        details = dict(details) if details else {"device": 0, "host": 0}
+        details["diag"] = diag
+        return details
+
+    cls.get_cached_tokens_details = get_cached_tokens_details
+    cls._cache_diag = True
+    print(f"[sitecustomize] cache diag: exported in cached_tokens_details "
+          f"(im_start={cd.IM_START})", file=sys.stderr, flush=True)
+    return True
+
+
 _PATCHES = (
     ("proto", TARGET_PROTO, _patch_proto),
     ("mm", TARGET_MM, _patch_mm),
@@ -320,6 +397,8 @@ _PATCHES = (
     ("fp8", TARGET_FP8, _patch_fp8),
     ("chat", TARGET_CHAT, _patch_chat),
     ("tm", TARGET_TM, _patch_tm),
+    ("urc", TARGET_URC, _patch_urc),
+    ("out", TARGET_OUT, _patch_out),
 )
 
 
