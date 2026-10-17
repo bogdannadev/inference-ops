@@ -44,7 +44,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 ROUTER="qwen36-27b-router"
-DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-120}     # seconds to wait for in-flight requests to finish
+# Seconds to wait for the replica's in-flight requests to finish. Agent turns
+# decode for many minutes; on timeout the roll ABORTS with the replica still
+# drained (restore it with ./deploy/drain-replica.sh <replica> restore).
+DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-1800}
 # Seconds to wait for the replica to come back healthy. 900 fits a warm boot
 # (~181 s). Override it when the boot also has to FETCH WEIGHTS — a new
 # --model-path downloads ~52 GiB into the HF cache before the engine starts,
@@ -95,6 +98,18 @@ for w in d.get('workers',[]):
 print('')" "$1" "$2"
 }
 
+# The worker's own count of running + queued requests. The router's view ends
+# at DELETE; requests it already forwarded keep running on the worker until
+# they finish, so this, not the worker list, says when it is safe to recreate.
+worker_busy() {
+  docker run --rm --network qwen36-27b-backend --cpuset-cpus 48-55 python:3.12-slim \
+    python3 -c "
+import re,urllib.request
+t=urllib.request.urlopen('$URL/metrics',timeout=10).read().decode()
+n=sum(float(m.group(1)) for m in re.finditer(r'^sglang:num_(?:running|queue)_reqs\{[^}]*\} (\S+)', t, re.M))
+print(int(n))"
+}
+
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 # --- safety: never drain the last healthy worker ---------------------------
@@ -121,15 +136,26 @@ WID=$(worker_field "$REPLICA" id || true)
 if [ -n "$WID" ]; then
   code=$(rcurl -o /dev/null -w '%{http_code}' -X DELETE "http://localhost:8000/workers/$WID")
   echo "DELETE /workers/$WID -> $code"
-  # let in-flight requests finish; new ones now go to the peer only
-  for _ in $(seq 1 $((DRAIN_TIMEOUT/5))); do
-    still=$(worker_field "$REPLICA" id || true)
-    [ -z "$still" ] && break
-    sleep 5
-  done
 else
-  echo "not registered in the router; nothing to drain"
+  echo "not registered in the router (already drained)"
 fi
+# New requests now go to the peer only (they queue there when it is full).
+# Wait for every request this replica already holds to finish: recreating
+# earlier cuts those streams mid-answer.
+t0=$(date +%s)
+while :; do
+  busy=$(worker_busy || echo "?")
+  el=$(( $(date +%s) - t0 ))
+  [ "$busy" = "0" ] && { echo "$SVC idle after ${el}s"; break; }
+  if [ "$el" -gt "$DRAIN_TIMEOUT" ]; then
+    echo "ERROR: $SVC still has $busy running/queued after ${DRAIN_TIMEOUT}s." >&2
+    echo "       Not recreating. It stays drained; traffic stays on $PEER." >&2
+    echo "       Retry later, or: ./deploy/drain-replica.sh $REPLICA restore" >&2
+    exit 1
+  fi
+  printf '  t=%ss %s running/queued\r' "$el" "$busy"
+  sleep 10
+done
 
 # --- 2. archive the logs --------------------------------------------------
 # --force-recreate destroys the old container and its stderr with it, and that
