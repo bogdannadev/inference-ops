@@ -61,4 +61,7 @@ idle in time. Test on one replica before the other, never both.
 - Patch 6 (cache diagnostics): written and verified (`deploy/enginepatch-next/`),
   ClickHouse `diag_*` columns applied, Vector mapping applied 2026-10-17 17:47
   UTC; engine roll pending.
+- Key rotation rides on the patch 6 roll (Danila, 2026-10-17): patch R
+  (`SGLANG_API_KEY_ALT`, verified 13/13) goes in with patch 6; runbook in
+  `deploy/enginepatch-next/README.md`, "Key rotation", step 1 before the roll.
 - P1: not started.

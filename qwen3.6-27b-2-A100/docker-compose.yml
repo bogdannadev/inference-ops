@@ -393,6 +393,9 @@ x-replica-common: &replica-common
     # SGLang OpenAI-compatible API auth (internal key; Caddy swaps the
     # edge key for this one — clients never see it)
     - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
+    # Key rotation (engine patch R): a second key the engines also accept while
+    # the senders switch. Empty = off. Runbook: deploy/enginepatch/README.md.
+    - SGLANG_API_KEY_ALT=${SGLANG_API_KEY_ALT:-}
 
     # Tracing REMOVED 2026-09-14 with Langfuse: no --enable-trace, no OTLP
     # exporter, no SGLANG_TRACE_LEVEL. Per-request facts now come from

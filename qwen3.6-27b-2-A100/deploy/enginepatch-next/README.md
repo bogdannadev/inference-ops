@@ -61,6 +61,13 @@ forking SGLang. 1 and 2 are for the image-token poisoning incident (read
    a finished request's details, which the request export already carries.
    `SGLANG_PATCH_CACHE_DIAG=0` turns it off.
 
+R. **Key rotation, temporary** (`_patch_auth`). SGLang takes one `--api-key`,
+   and Caddy and Higress inject it on the way in, so a plain rotation leaves a
+   401 window. With `SGLANG_API_KEY_ALT` set, a request `--api-key` rejects is
+   decided again with that key: same rules and endpoint levels (admin
+   endpoints never take it when an admin key is set). Empty = no-op.
+   `verify_keyrotation.py` (13 checks, CPU). Runbook below, "Key rotation".
+
 ## Why a `sitecustomize.py` and not a plugin or a patched image
 
 SGLang discovers plugins through setuptools `entry_points`, so a `HookRegistry`
@@ -187,6 +194,27 @@ FROM engine.requests FINAL
 WHERE diag_kv IS NOT NULL AND prompt_tokens > 20000
 GROUP BY consumer ORDER BY engine_loss DESC
 ```
+
+## Key rotation
+
+Engines first, senders second, old key retired last; every step keeps a key
+that every sender uses accepted by every replica.
+
+1. Generate the new key; in `.env` add `SGLANG_API_KEY_ALT=<new>` and keep
+   `SGLANG_API_KEY=<old>`. `secrets/seal.sh` (iict-inference).
+2. Roll r1, then r0, the usual way (drain, finish in-flight, recreate). Each
+   logs `key rotation: a second engine key is also accepted`; a request with
+   the new key straight to the rolled replica answers 200.
+3. Switch the senders: `.env` `SGLANG_API_KEY=<new>`, `SGLANG_API_KEY_ALT=<old>`,
+   seal. Higress: `higress-standalone/apply.sh` (hot, no restart). Caddy reads
+   the key from its environment, so it needs `docker compose up -d --no-deps`
+   on its service, which cuts edge streams: do it while the engines are idle.
+   Benchmarks read `.env` at run time.
+4. Once Caddy and Higress send the new key: remove `SGLANG_API_KEY_ALT`, seal;
+   each replica stops accepting the old key at its next roll.
+
+The old key stays in the engines' startup logs and `logs-archive/` (the
+server_args line prints it); it is worthless after step 4.
 
 ### Patch 4
 
