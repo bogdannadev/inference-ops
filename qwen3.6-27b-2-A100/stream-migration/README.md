@@ -1,3 +1,12 @@
+> **Superseded 2026-10-18:** the design moved to its own repository,
+> **dvina** (`danila-permogorskii/dvina`, `~/dvina` on the host): a standalone
+> durable answer broker in front of the router, the router-initiated cut
+> instead of an engine `migrate` ending, resumed tokens as output. What stays
+> here is this stack's side: engine patch 9 (the SGLang resume adapter, in
+> `deploy/enginepatch-next/`), the ledger join of `X-m<n>` to `X`, and
+> `roll-replica.sh` calling dvina after the L3 flush. The text below is the
+> 2026-10-17 version, kept for history.
+
 # Stream migration: a turn continues on the other replica
 
 A streaming chat turn running on one replica moves to the other without the
