@@ -29,6 +29,7 @@ image (SGLang v0.5.21).
 | 4 | FP8 prefill on dequant + cuBLAS | speed | 2026-10-12 | `_patch_fp8` |
 | 5 | per-key context window + effort | policy | 2026-10-14 | `_patch_chat`, `_patch_tm` |
 | 6 | cache diagnostics | observe only | not yet | `_patch_urc`, `_patch_out` |
+| R | key rotation: accept `SGLANG_API_KEY_ALT` too | temporary | not yet | `_patch_auth` |
 
 ---
 

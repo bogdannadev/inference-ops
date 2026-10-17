@@ -30,6 +30,10 @@ for 1 and 2; patch 3 is documented on _patch_budget below.
 6. Cache diagnostics: export where the KV match ended, where the GDN hit
    ended, and which message diverged (cache_diag.py). Observes only.
 
+R. Key rotation, temporary: SGLANG_API_KEY_ALT is accepted alongside
+   --api-key, so the engines and the gateways can switch keys in any order
+   without a 401 window.
+
 Why here (1 and 2) and not at the gateway: a Higress wasm body rewrite dies at the 32 KB
 connection buffer limit and the poisoned bodies are 400-545 KB. The engine holds
 the whole request, so this is the first layer that can actually do it.
@@ -40,6 +44,7 @@ the targets here, so nothing heavy (torch) is pulled in early. The wrapper
 removes itself once every patch is in.
 """
 
+import os
 import sys
 import time
 
@@ -67,6 +72,7 @@ TARGET_CHAT = "sglang.srt.entrypoints.openai.serving_chat"
 TARGET_TM = "sglang.srt.managers.tokenizer_manager"
 TARGET_URC = "sglang.srt.mem_cache.unified_radix_cache"
 TARGET_OUT = "sglang.srt.managers.scheduler_components.output_streamer"
+TARGET_AUTH = "sglang.srt.utils.auth"
 
 _done = set()
 _importing = set()
@@ -390,6 +396,41 @@ def _patch_out(module):
     return True
 
 
+def _patch_auth(module):
+    """Key rotation: accept a second engine key alongside --api-key.
+
+    SGLang takes one --api-key, and Caddy and Higress inject it on the way in,
+    so a plain rotation leaves seconds where gateways and a replica disagree.
+    With SGLANG_API_KEY_ALT set, a request the --api-key rejects is decided
+    again with the alternate key in its place: same rules, same
+    endpoint levels (admin endpoints never take it when an admin key is set).
+    The middleware looks decide_request_auth up by name on every request, so
+    replacing the module attribute is enough. Unset or empty: no-op.
+    Runbook: README.md, "Key rotation".
+    """
+    original = getattr(module, "decide_request_auth", None)
+    if original is None:
+        return False
+    if getattr(module, "_key_rotation", False):
+        return True
+    module._key_rotation = True
+    alternate = os.environ.get("SGLANG_API_KEY_ALT", "")
+    if not alternate:
+        return True
+
+    def decide_request_auth(*, api_key=None, **kwargs):
+        decision = original(api_key=api_key, **kwargs)
+        if decision.allowed or not api_key:
+            return decision
+        return original(api_key=alternate, **kwargs)
+
+    decide_request_auth.__wrapped__ = original
+    module.decide_request_auth = decide_request_auth
+    print("[sitecustomize] key rotation: a second engine key is also accepted",
+          file=sys.stderr, flush=True)
+    return True
+
+
 _PATCHES = (
     ("proto", TARGET_PROTO, _patch_proto),
     ("mm", TARGET_MM, _patch_mm),
@@ -399,6 +440,7 @@ _PATCHES = (
     ("tm", TARGET_TM, _patch_tm),
     ("urc", TARGET_URC, _patch_urc),
     ("out", TARGET_OUT, _patch_out),
+    ("auth", TARGET_AUTH, _patch_auth),
 )
 
 
