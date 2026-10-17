@@ -44,6 +44,12 @@ route:
   repeat_interval: 4h
 
   routes:
+    # Stranded queue: FIRING only. It is an hourly sum that resolves when the
+    # strand ages out of the hour, which is news to nobody; /errors has it.
+    - matchers:
+        - alertname = "EngineQueueStrandedOnOneReplica"
+      receiver: quota-bot-firing-only
+
     # Informational SLO rules (radix hit rate, spec accept rate) are worth
     # knowing and not worth repeating. They still page once.
     - matchers:
@@ -74,6 +80,16 @@ receivers:
             # Regenerate it from .env with:
             #   grep '^ALERT_WEBHOOK_SECRET=' .env | cut -d= -f2- \
             #     > alertmanager/webhook_secret
+            credentials_file: /etc/alertmanager/webhook_secret
+
+  - name: quota-bot-firing-only
+    webhook_configs:
+      - url: http://quota-bot:8080/alert
+        send_resolved: false
+        max_alerts: 0
+        http_config:
+          authorization:
+            type: Bearer
             credentials_file: /etc/alertmanager/webhook_secret
 
 inhibit_rules:
