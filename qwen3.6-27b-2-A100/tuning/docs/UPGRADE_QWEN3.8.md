@@ -119,7 +119,7 @@ and replays only `content`. The template still emits the wrapper around
 nothing:
 
 ```
-<|im_start|>assistant
+im_start assistant          (the delimited control token, written bare here)
 <think>
 
 </think>

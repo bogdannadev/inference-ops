@@ -82,19 +82,25 @@ def diff(ref, x):
 CLEAR_L3 = False
 
 
+# Built from parts: written out whole, these tokenize to the real control
+# tokens in any file a model later reads.
+IM_START = "<" + "|im_start|" + ">"
+IM_END = "<" + "|im_end|" + ">"
+
+
 def trial(w, i, topic, o_len, q_new):
     nonce = f"[probe {int(time.time())}-{i}]"
     p = tokenize(w, messages=[{"role": "user", "content":
                  f"{nonce} Write a numbered list of 30 specific facts about {topic}."}],
                  chat_template_kwargs={"reasoning_effort": "low"})
-    im_end = tokenize(w, prompt="<|im_end|>")
+    im_end = tokenize(w, prompt=IM_END)
     if not w.flush(l3=CLEAR_L3):
         raise RuntimeError("flush_cache never answered 'Cache flushed.'")
     t1 = generate(w, p, o_len)
     o = t1["output_ids"]
-    q_text = ("\n" if o[-len(im_end):] == im_end else "<|im_end|>\n") + (
-        "<|im_start|>user\nQuote fact number 7 from your list exactly, "
-        "then fact number 3.<|im_end|>\n<|im_start|>assistant\n")
+    q_text = ("\n" if o[-len(im_end):] == im_end else IM_END + "\n") + (
+        IM_START + "user\nQuote fact number 7 from your list exactly, "
+        "then fact number 3." + IM_END + "\n" + IM_START + "assistant\n")
     q = tokenize(w, prompt=q_text)
     ids, start = p + o + q, len(p) + len(o)
 
