@@ -236,6 +236,22 @@ transforms:
         host = if det.host != null { to_int(det.host) ?? 0 } else { 0 }
         storage = if det.storage != null { to_int(det.storage) ?? 0 } else { 0 }
       }
+      # Engine patch 6 (deploy/enginepatch/cache_diag.py): where the KV match
+      # ended (F), where the GDN-backed hit ended (B), the branch point and the
+      # message that diverged. Absent without the patch: every column NULL.
+      dg = object(det.diag) ?? {}
+      diag_kv = null
+      diag_hit = null
+      diag_branch = null
+      diag_msgs = null
+      diag_bnd = null
+      diag_after = null
+      if dg.kv != null { diag_kv = to_int(dg.kv) ?? null }
+      if dg.hit != null { diag_hit = to_int(dg.hit) ?? null }
+      if dg.branch != null { diag_branch = to_int(dg.branch) ?? null }
+      if dg.msgs != null { diag_msgs = to_int(dg.msgs) ?? null }
+      if dg.bnd != null { diag_bnd = to_int(dg.bnd) ?? null }
+      if dg.after != null { diag_after = to_int(dg.after) ?? null }
       reasoning = if r.reasoning_tokens != null { to_int(r.reasoning_tokens) ?? null } else { null }
       queue = if r.queue_time != null { to_float(r.queue_time) ?? null } else { null }
       e2e = if r.e2e_latency != null { to_float(r.e2e_latency) ?? null } else { null }
@@ -281,6 +297,12 @@ transforms:
         "cached_device":     device,
         "cached_host":       host,
         "cached_storage":    storage,
+        "diag_kv":           diag_kv,
+        "diag_hit":          diag_hit,
+        "diag_branch":       diag_branch,
+        "diag_msgs":         diag_msgs,
+        "diag_bnd":          diag_bnd,
+        "diag_after":        diag_after,
         "queue_s":           queue,
         "ttft_s":            ttft,
         "prefill_s":         prefill,
