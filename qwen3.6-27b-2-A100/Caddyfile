@@ -497,6 +497,13 @@ aml-mcp.duckdns.org {
 			flush_interval -1
 		}
 	}
+	@install {
+		method POST
+		path /install/windows /install/unix /install/done
+	}
+	handle @install {
+		reverse_proxy aml-mcp:8080
+	}
 	respond "Not found" 404
 }
 

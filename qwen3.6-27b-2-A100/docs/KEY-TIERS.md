@@ -135,7 +135,13 @@ and this deployment has already been bitten once by a stray `key-auth.internal`.
 | **team** | internal humans via OpenCode | 100 M | monthly | 20 M | 600 K | 32,768 |
 | **service** | production integrations | 300 M | monthly | 30 M | 1 M | 16,384 |
 | **batch** | offline/bulk, latency-tolerant | 500 M | monthly | 50 M | 300 K | 70,000 |
+| **aml** | AML Copilot operators, made by quota-bot `/amlnew`: counted, not limited | 10 B | monthly | none | 600 K | 32,768 |
 | **admin** | `quota-admin` | — | manual | none | none | gateway |
+
+`aml` (2026-10-07) is metered, not limited: what an AML operator may do is aml-mcp's plan (sessions a day, hours a
+day, or hours in total), enforced there before every tool call. The 10 B balance is never reached, so tokens are
+statistics. The per-minute limit stays at `team`'s 600 K as a guard: one looping agent must not take the node's 8
+decoding slots. An operator turn is 10–20 K input tokens, 81% from the prefix cache (aml-mcp end-to-end run).
 
 ### Why these numbers (2026-09-13, from gateway.requests)
 
