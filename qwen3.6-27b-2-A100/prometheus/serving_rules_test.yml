@@ -53,28 +53,56 @@ tests:
             value: 0
 
     alert_rule_test:
-      # Not yet: `for: 2m` has not elapsed.
-      - eval_time: 1m
+      # A 5-minute strand is the normal cost of cache_aware routing: quiet.
+      - eval_time: 6m
         alertname: EngineQueueStrandedOnOneReplica
         exp_alerts: []
-      - eval_time: 3m
+      - eval_time: 14m
+        alertname: EngineQueueStrandedOnOneReplica
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------------
+  - interval: 15s
+    name: stranded 20 of 60 minutes fires once, with the numbers
+
+    input_series:
+      # 0-3m: r0 queued (peak 2), r1 idle -> stranded on r0
+      # 3-25m: r1 queued (peak 3), r0 idle -> stranded on r1
+      # 25-70m: nothing queued
+      - series: 'sglang:num_queue_reqs{job="sglang-workers",instance="qwen36-27b-r0:8001"}'
+        values: '1x5 2x5 0x269'
+      - series: 'sglang:num_running_reqs{job="sglang-workers",instance="qwen36-27b-r0:8001"}'
+        values: '1x11 0x269'
+      - series: 'sglang:num_queue_reqs{job="sglang-workers",instance="qwen36-27b-r1:8002"}'
+        values: '0x11 2x40 3x47 0x181'
+      - series: 'sglang:num_running_reqs{job="sglang-workers",instance="qwen36-27b-r1:8002"}'
+        values: '0x11 1x88 0x181'
+
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: EngineQueueStrandedOnOneReplica
+        exp_alerts: []
+      - eval_time: 30m
         alertname: EngineQueueStrandedOnOneReplica
         exp_alerts:
           - exp_labels:
               severity: warning
               node: a100
             exp_annotations:
-              summary: "Requests queued on one replica while the other has room"
+              summary: >-
+                Stranded 25 of the last 60 min (a queue on one replica, the
+                other free): r1 queued 22 min, peak 3 waiting; r0 queued 3 min,
+                peak 2 waiting; /errors has the history.
               description: >-
-                For 2 minutes one replica has had a queue while the other had no
-                queue and a free slot. This is cache_aware routing keeping a session
-                on the replica that holds its prefix: the router balances only on
-                its own in-flight request counts, not on KV use or queue length.
-                Queued clients may give up (see GatewayClientsLeavingBeforeReply).
-                The bot's /errors shows the minutes; tuning/docs/ROUTING.md has the
-                options.
-      # Both replicas busy is load, not routing.
-      - eval_time: 8m
+                One replica had a queue while the other had no queue and a free
+                slot for 20 of the last 60 minutes. This is cache_aware routing
+                keeping a session on the replica that holds its prefix: the
+                router balances only on its own in-flight request counts, not on
+                KV use or queue length. Queued clients may give up (see
+                GatewayClientsLeavingBeforeReply). The bot's /errors shows the
+                minutes; tuning/docs/ROUTING.md has the options.
+      # Below 20 of 60 from ~65m (the 3-25m strand ages out), then kept 20m.
+      - eval_time: 90m
         alertname: EngineQueueStrandedOnOneReplica
         exp_alerts: []
 

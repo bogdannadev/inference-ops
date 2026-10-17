@@ -382,7 +382,7 @@ the `for:` clauses are exercised).
 | rule | fires when | 2026-09-16 case |
 |---|---|---|
 | `node:engine_queue_stranded:bool` (recording) | 1 while a replica has a queue and another has no queue and fewer than 4 running | 14:20-14:28, r1 queued behind a 32K-token answer, r0 idle |
-| `EngineQueueStrandedOnOneReplica` | the above for 2 min | same |
+| `EngineQueueStrandedOnOneReplica` | the above for 20 of the last 60 min (was 2 min until 2026-10-17: 29 FIRING/RESOLVED pairs that day); the message names each replica's queued minutes and peak; FIRING only, no RESOLVED | same |
 | `EngineQueueNotDraining` | a replica's queue has not been empty in any 1 min slice for 10 min | 11:11-11:58 orphan stall |
 | `GatewayClientsLeavingBeforeReply` | 8 or more `left_before_reply` for one key in the last hour | 69 at 11:00, 8 at 12:00 |
 | `GatewayTimeouts` | any `timeout` in the last hour | 12 at 11:00 |
