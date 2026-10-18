@@ -382,7 +382,7 @@ x-replica-common: &replica-common
 
     # Patch 5 (keypolicy.py): per-key context and reasoning effort. The file is
     # written by quota-bot; a consumer with no entry, a request with no consumer
-    # label (the direct hostname) and a missing file all get the default.
+    # label and a missing file all get the default.
     - KEYPOLICY_PATH=/opt/keypolicy/policy.json
     - KEYPOLICY_DEFAULT_CONTEXT=169000
 
@@ -390,8 +390,8 @@ x-replica-common: &replica-common
     - HF_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
     - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:?set HF_TOKEN in .env}
 
-    # SGLang OpenAI-compatible API auth (internal key; Caddy swaps the
-    # edge key for this one — clients never see it)
+    # SGLang OpenAI-compatible API auth (internal key; only the gateway and
+    # internal callers present it — clients never see it)
     - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
     # Key rotation (engine patch R): a second key the engines also accept while
     # the senders switch. Empty = off. Runbook: deploy/enginepatch/README.md.
@@ -1385,29 +1385,19 @@ services:
     stop_grace_period: 30s
 
     environment:
+      # Embedder only; the direct model hostname was removed 2026-10-18.
       - EDGE_API_KEY=${EDGE_API_KEY:?set EDGE_API_KEY in .env}
-      - SGLANG_API_KEY=${SGLANG_API_KEY:?set SGLANG_API_KEY in .env}
-      # Webhook path for the quota-bot site. Kept out of git — see Caddyfile.
-      - QUOTA_BOT_WEBHOOK_PATH=${QUOTA_BOT_WEBHOOK_PATH:?set QUOTA_BOT_WEBHOOK_PATH in .env}
-      # Retired path, honoured only while the relay is being switched over.
-      - QUOTA_BOT_WEBHOOK_PATH_OLD=${QUOTA_BOT_WEBHOOK_PATH_OLD:-}
-      # Site addresses and ACME contact. Out of the committed Caddyfile since
-      # 2026-09-18 (public repo): the config describes the edge's shape, .env
-      # says which names it answers to. `:?` so a missing value stops compose
-      # here rather than letting Caddy come up with an empty site address.
-      - EDGE_HOST_MODEL=${EDGE_HOST_MODEL:?set EDGE_HOST_MODEL in .env}
+      # Site addresses and ACME contact come from .env: the config describes
+      # the edge's shape, .env says which names it answers to. `:?` so a
+      # missing value stops compose here rather than letting Caddy come up
+      # with an empty site address. See Caddyfile.example.
       - EDGE_HOST_EMBED=${EDGE_HOST_EMBED:?set EDGE_HOST_EMBED in .env}
-      - EDGE_HOST_BOT=${EDGE_HOST_BOT:?set EDGE_HOST_BOT in .env}
       - EDGE_HOST_GATEWAY=${EDGE_HOST_GATEWAY:?set EDGE_HOST_GATEWAY in .env}
-      - EDGE_HOST_GRAFANA=${EDGE_HOST_GRAFANA:?set EDGE_HOST_GRAFANA in .env}
-      - EDGE_HOST_MCP=${EDGE_HOST_MCP:?set EDGE_HOST_MCP in .env}
       - ACME_CONTACT=${ACME_CONTACT:?set ACME_CONTACT in .env}
 
     volumes:
+      # Your copy of Caddyfile.example.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Gitignored allowlists the Caddyfile imports (caddy/allowlists.caddy.example).
-      # A directory, so editing the file reaches the container.
-      - ./caddy/private:/etc/caddy/private:ro
       - caddy_data:/data
       - caddy_config:/config
 

@@ -47,8 +47,10 @@ docker network create edge     # once, before first up
 internet
    |
    v
-Caddy  (80/443, TLS, edge-auth key, no body cap — see Caddyfile)
-   |  edge key swapped for internal SGLANG_API_KEY
+Caddy  (80/443, TLS, 16 MB body cap — see Caddyfile)
+   v
+Higress gateway  (per-consumer key-auth, token quota and rate limits)
+   |  consumer key swapped for internal SGLANG_API_KEY
    v
 qwen36-27b-router:8000   (OpenAI API, cache_aware)
    |            \
@@ -134,7 +136,7 @@ Everything is read from `.env` (gitignored). Required by the inference tier:
 
 ```bash
 SGLANG_API_KEY=...      # internal worker/API key
-EDGE_API_KEY=...        # public edge key (clients present this)
+EDGE_API_KEY=...        # shared edge key, embedder hostname only
 HF_TOKEN=...            # Hugging Face token
 GRAFANA_ADMIN_USER=...  # metrics overlay
 GRAFANA_ADMIN_PASSWORD=...

@@ -37,12 +37,12 @@ Verified live by stopping `higress-redis`:
 |---|---|
 | redis-exporter | stayed up, `redis_up 0` |
 | paid gateway path | **403** — ai-quota has no fail-open |
-| direct router hostname | **200** — the escape hatch works |
 | after restart | balances and tiers intact |
 
 That 403 is the documented design: losing the ledger takes the billable routes
-down rather than serving unmetered. The direct hostname exists precisely so
-there is still a way in.
+down rather than serving unmetered. Since 2026-10-18 there is no way around it:
+the shared-key direct hostname that served as the escape hatch was removed, so
+a Redis outage is a full inference outage until Redis is back.
 
 ## What must exist on disk
 

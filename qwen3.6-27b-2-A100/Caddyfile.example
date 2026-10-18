@@ -1,0 +1,148 @@
+# =============================================================================
+# Edge gateway — EXAMPLE
+#
+# A manual, not the deployment. The production Caddyfile (real sites, access
+# rules, keys) is kept private. Copy this to ./Caddyfile, which compose mounts
+# at /etc/caddy/Caddyfile, and adapt it.
+#
+# Site addresses come from the environment (EDGE_HOST_*, ACME_CONTACT in .env),
+# so the config describes the edge's shape without naming a deployment. An
+# unset variable leaves a site address empty and Caddy refuses to start.
+#
+# Two gotchas worth knowing before editing:
+#   - compose bind-mounts the single FILE. An editor that saves by rename gives
+#     it a new inode, the container keeps the old one, and `caddy reload`
+#     reports success on stale config. Write in place, or restart Caddy, and
+#     check the running config via the admin API (127.0.0.1:2019/config/).
+#   - A reload cannot pick up a changed hostname: the environment is fixed
+#     when the container starts. Recreate the container for that.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global options
+#
+# `metrics` turns on per-request Prometheus instrumentation (status codes,
+# latency histograms). `per_host` adds a host label; Caddy only records
+# configured hosts and buckets everything else under `_other`, so the label
+# set stays bounded.
+#
+# The admin API stays at its default, localhost:2019 inside the container. It
+# can rewrite the whole config, so it must never be reachable from a network.
+# -----------------------------------------------------------------------------
+{
+	metrics {
+		per_host
+	}
+}
+
+# Access log without credentials. Caddy redacts Authorization and Cookie by
+# default, but not X-Api-Key, which Anthropic clients use for the key.
+(access_log) {
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Api-Key delete
+			}
+		}
+	}
+}
+
+# Response headers that describe the edge stack rather than the answer.
+# `header` sorts before `reverse_proxy`, so the deletions also apply to
+# upstream responses. Keep X-Request-Id: clients quote it in support requests.
+(hide_edge) {
+	header {
+		-Server
+		-Via
+		-X-Envoy-Upstream-Service-Time
+		-X-Envoy-Decorator-Operation
+		-X-Powered-By
+	}
+}
+
+# Shared-key guard clause. Caddy runs `respond` AFTER `reverse_proxy` in its
+# directive order, so a bare matched respond would never fire; wrapping it in
+# `route` pins evaluation where it is written.
+(edge_auth) {
+	tls {$ACME_CONTACT}
+
+	@bad_key not header Authorization "Bearer {$EDGE_API_KEY}"
+	route @bad_key {
+		respond "Unauthorized" 401
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Example: an OpenAI-compatible API in front of an LLM gateway (per-consumer
+# keys are checked by the gateway, not here).
+# -----------------------------------------------------------------------------
+{$EDGE_HOST_GATEWAY} {
+	tls {$ACME_CONTACT}
+	import hide_edge
+	import access_log
+
+	# A byte cap is the only lever before tokenisation. Base64 images make
+	# bodies large; size this against your longest context plus images.
+	request_body {
+		max_size 16MB
+	}
+
+	# Anthropic clients send the key as `x-api-key`; move it to Authorization
+	# when no Authorization was sent, and drop x-api-key either way.
+	@x_api_key {
+		header X-Api-Key *
+		not header Authorization *
+	}
+	request_header @x_api_key Authorization "Bearer {http.request.header.X-Api-Key}"
+	request_header -X-Api-Key
+
+	handle /v1/* {
+		reverse_proxy gateway:80 {
+			# SSE: no response buffering. Usage metering reads the final
+			# stream frame, so buffering breaks metering as well as streaming.
+			flush_interval -1
+
+			# Give plain-text gateway denials an OpenAI-shaped body, so SDKs
+			# show the message instead of a JSON parse error. Status codes pass
+			# through unchanged so client retry logic still behaves.
+			@badkey status 401
+			handle_response @badkey {
+				header Content-Type "application/json; charset=utf-8"
+				respond `{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}` 401
+			}
+		}
+	}
+
+	# Default deny: nothing else behind this name is advertised.
+	handle {
+		respond "Not Found" 404
+	}
+
+	# request_body aborts before proxying, so its 413 never reaches
+	# handle_response above. Shape it here instead.
+	handle_errors {
+		header Content-Type "application/json; charset=utf-8"
+		respond `{"error":{"message":"Request rejected by the gateway.","type":"invalid_request_error","param":null,"code":"request_rejected"}}` {err.status_code}
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Example: a shared-key site straight to an upstream (e.g. an embedder).
+# -----------------------------------------------------------------------------
+{$EDGE_HOST_EMBED} {
+	import edge_auth
+	import hide_edge
+	import access_log
+
+	reverse_proxy embedder:80
+}
+
+# -----------------------------------------------------------------------------
+# Metrics exposition, internal only. A port-only address is plain HTTP with no
+# hostname matching; leave 2020 out of the compose `ports:` list so it exists
+# only on the docker network Prometheus scrapes.
+# -----------------------------------------------------------------------------
+:2020 {
+	metrics
+}

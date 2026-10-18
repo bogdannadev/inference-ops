@@ -41,9 +41,11 @@ timescales and feeds back into the settings the other two obey.
 ┌─ LAYER 1 ─ EDGE & ROUTING ───────────────────── one pass per request ──────┐
 │                                                                            │
 │   client                                                                   │
-│     │  HTTPS + edge key                                                    │
+│     │  HTTPS + per-consumer key                                            │
 │     ▼                                                                      │
-│   caddy :443            TLS · 401 guard · key swap · no body cap           │
+│   caddy :443            TLS · 16 MB body cap                               │
+│     ▼                                                                      │
+│   higress gateway       key-auth · token quota · rate limit  │             │
 │     │                   ── rejects here never reach SGLang ──┐             │
 │     ▼                                                        │             │
 │   sgl-router            cache_aware · injects `traceparent`  │             │
@@ -126,8 +128,9 @@ campaign under `tuning/` is that loop run deliberately.
 Each layer has exactly one blind spot the layer below cannot see, which is why
 all three are instrumented separately:
 
-- **Caddy** sees requests that never reach SGLang — TLS failures, 401s from a
-  wrong edge key. On the engine dashboards those look like *silence*.
+- **Caddy and the gateway** see requests that never reach SGLang — TLS
+  failures, 401s from a wrong key, quota refusals. On the engine dashboards
+  those look like *silence*.
 - **The engine** sees queueing, prefill, decode and cache behaviour per
   request, which no edge metric can decompose.
 - **The per-request records** — one row per request from the engine and one
@@ -166,11 +169,6 @@ The in-repo `docs/` directory is the operational manual for this node:
   rolling a replica, logs, rollback, troubleshooting
 - **[docs/METRICS-ECOSYSTEM.md](docs/METRICS-ECOSYSTEM.md)** — which store
   answers which question: ledger, per-request records, exact usage gauges
-- **[docs/OPENCODE_SETUP_PROMPT.md](docs/OPENCODE_SETUP_PROMPT.md)** and
-  **[docs/HERMES_SETUP_PROMPT.md](docs/HERMES_SETUP_PROMPT.md)** — what a
-  customer pastes into a fresh client so it configures itself against this
-  node's real limits. quota-bot `/opencode <name>` sends the OpenCode one with
-  the generated `opencode.json`
 - **[docs/opencode-skills/](docs/opencode-skills/README.md)** — OpenCode skills
   a customer installs alongside that config; `image-batches` reads large image
   sets in subagent batches within the 4 MB body / 16-image / 2 MP limits
@@ -195,7 +193,7 @@ results and decision records under `tuning/docs/` and `tuning/results/`.
 ├── docker-compose.metrics.yml    # Prometheus + Grafana + exporters
 ├── docker-compose.clickhouse.yml # ClickHouse: per-request records, exact usage
 ├── docker-compose.embedder.yml   # TEI CPU embedding (separate project)
-├── Caddyfile                     # edge gateway: TLS, auth, no body cap
+├── Caddyfile.example             # edge gateway manual (production file is private)
 ├── deploy/
 │   ├── roll-replica.sh           # zero-downtime single-replica roll
 │   ├── apply-engine-schema.sh    # engine.requests table
@@ -255,21 +253,14 @@ clickhouse retention        3d diagnostics / 7d audit, logs capped at ~130 MB
 
 ## External access
 
-Caddy publishes 80/443 and is the only service with host ports. It answers on
-six hostnames: the direct model edge and the embedder (both shared-key), the
-paid gateway, Grafana, the quota-bot webhook and admin-mcp.
+Caddy publishes 80/443 and is the only service with host ports. Inference is
+served only through an LLM gateway with per-consumer keys.
 
-**The names are not in this repo.** Every site address in the `Caddyfile`
-reads an `EDGE_HOST_*` variable, and the values live in the gitignored `.env`
-(`EDGE_HOST_MODEL`, `EDGE_HOST_EMBED`, `EDGE_HOST_BOT`, `EDGE_HOST_GATEWAY`,
-`EDGE_HOST_GRAFANA`, `EDGE_HOST_MCP`, plus `ACME_CONTACT` for certificate
-issuance). The committed config still shows what each site does; it just does
-not say which deployment it is. An unset variable leaves the site address
-empty and Caddy refuses to start, so a missing value fails at boot.
-
-The edge also strips the response headers that described it — `Server`, `Via`
-and the Envoy/Higress timing headers — see the `hide_edge` snippet in the
-`Caddyfile`.
+**The production edge is not in this repo**: sites, access rules, keys and the
+key-management services are kept private. `Caddyfile.example` is a manual of
+the mechanics (env-driven site addresses, credential-free access log, edge
+header stripping, OpenAI-shaped error bodies, SSE passthrough); copy it to
+`Caddyfile` and adapt it.
 
 Everything else binds to `127.0.0.1` on the host and is reached over an SSH
 tunnel (see [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)).

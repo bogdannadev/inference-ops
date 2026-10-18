@@ -32,9 +32,10 @@ docker run --rm --network qwen36-27b-backend curlimages/curl:latest \
   curl -sS http://qwen36-27b-router:8000/health
 ```
 
-Over the public edge (from outside): `curl -H "Authorization: Bearer
-$EDGE_API_KEY" https://$EDGE_HOST_MODEL/v1/models` — the hostname comes from
-`.env`, not from this repo.
+Over the public edge (from outside), with a consumer key: `curl -H
+"Authorization: Bearer <consumer key>" https://$EDGE_HOST_GATEWAY/v1/models` —
+the hostname comes from `.env`, not from this repo. The shared-key direct
+hostname was removed 2026-10-18.
 
 ## Boot checks after every replica start
 

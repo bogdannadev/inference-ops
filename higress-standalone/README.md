@@ -194,3 +194,7 @@ All-in-One 模式通过环境变量控制各组件的行为，可在 `docker run
 
 - [方案整体设计](./docs/design.md)
 - [Nacos 配置模型设计](./docs/nacos.md)
+
+> **Public copy:** the gateway's routes, plugin configuration (key-auth,
+> quotas, rate limits) and consumer definitions are kept private. The scripts
+> and operating notes here describe the mechanics only.
