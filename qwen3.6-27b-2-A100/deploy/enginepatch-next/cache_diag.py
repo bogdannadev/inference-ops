@@ -60,6 +60,12 @@ _ATTR = "_cache_diag"       # (F, device, host, branch) from the last match
 _ATTR_OUT = "_cache_diag_out"  # the computed object, once finished
 
 
+def _device_len(result):
+    """v0.5.22 reports the device prefix as a length; v0.5.21 as the indices."""
+    n = getattr(result, "device_prefix_len", None)
+    return int(n) if n is not None else len(result.device_indices)
+
+
 def note_match(params, result):
     """Called after every match_prefix; must never raise."""
     req = getattr(params, "req", None)
@@ -68,7 +74,7 @@ def note_match(params, result):
     try:
         setattr(req, _ATTR, (
             int(result.full_kv_hit_length),
-            len(result.device_indices),
+            _device_len(result),
             int(result.host_hit_length),
             result.mamba_branching_seqlen,
         ))

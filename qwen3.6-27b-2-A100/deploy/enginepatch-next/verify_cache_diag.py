@@ -45,9 +45,10 @@ def check(label, ok, detail=""):
 check("match hook installed", getattr(urc.UnifiedRadixCache, "_cache_diag", False))
 check("export hook installed", getattr(osm.SchedulerOutputStreamer, "_cache_diag", False))
 fields = MatchResult._fields
-for f in ("full_kv_hit_length", "device_indices", "host_hit_length",
-          "mamba_branching_seqlen"):
+for f in ("full_kv_hit_length", "host_hit_length", "mamba_branching_seqlen"):
     check(f"MatchResult has {f}", f in fields)
+DEVICE_FIELD = "device_prefix_len" if "device_prefix_len" in fields else "device_indices"
+check("MatchResult has a device prefix field", DEVICE_FIELD in fields, DEVICE_FIELD)
 check("MatchPrefixParams carries req", "req" in MatchPrefixParams.__dataclass_fields__)
 
 # --- 2. im_start id ---------------------------------------------------------
@@ -86,7 +87,9 @@ class StandInCache:  # not a subclass: the real class already carries the flag
 
 
 def match(kv, dev, host, branch):
-    return MatchResult(device_indices=torch.zeros(dev, dtype=torch.int64),
+    device = (dev if DEVICE_FIELD == "device_prefix_len"
+              else torch.zeros(dev, dtype=torch.int64))
+    return MatchResult(**{DEVICE_FIELD: device},
                        last_device_node=None, last_host_node=None,
                        best_match_node=None, host_hit_length=host,
                        mamba_branching_seqlen=branch, full_kv_hit_length=kv)

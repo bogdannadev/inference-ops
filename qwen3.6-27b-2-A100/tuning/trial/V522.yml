@@ -1,0 +1,7 @@
+# v0.5.22 trial arm (tuning/docs/UPGRADE_v0.5.22.md). Empty on purpose: the
+# trial config is r1's own block in docker-compose.yml (image override,
+# enginepatch-next mount, v0522 L3 dir), so run the gates with
+#   SKIP_ROLL=1 EVAL_CORPUS=~/eval-corpus/sglang-v0521 ./tuning/trial/run_arm.sh V522
+# Later kvq runs on this corpus pair with the V522 results (ids_sha per doc).
+# P4_dequant_preserve read a different tree: its ΔNLL does not pair.
+services: {}

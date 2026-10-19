@@ -1,10 +1,13 @@
 # Engine patch: `sitecustomize.py`
 
-> Live copy, mounted read-only by both replicas. Develop in `../enginepatch-next/`
-> and copy here only right before a roll (any restart imports this directory).
-> Patch 5 live since 2026-10-14.
+> **This is `enginepatch-next/`, the development copy.** It is NOT mounted by any
+> replica. Patches 1-5 are identical to the live `../enginepatch/` (patch 5 live
+> 2026-10-14). Patch 6 (cache diagnostics) exists only here, not live yet.
+> Apply = copy into `../enginepatch/` right before a roll.
 
-Five fixes applied to the running engine without rebuilding the image or
+`PATCHES.md` draws each patch as a before/after flow.
+
+Six patches applied to the running engine without rebuilding the image or
 forking SGLang. 1 and 2 are for the image-token poisoning incident (read
 `../../docs/INCIDENT-2026-09-20-IMAGE-TOKEN-CASCADE.md` §3a first); 3 is for the
 2026-10-09 r0 crash (`../../tuning/docs/TRIAL_2026-10-09_PATCH3_KVRANGE.md`).
@@ -44,6 +47,26 @@ forking SGLang. 1 and 2 are for the image-token poisoning incident (read
    effort, else the key's default, is now pinned into `chat_template_kwargs`
    before the merge. `high`/`max` map to `xhigh` and `minimal` to `low`, because
    the Qwen3.8 template accepts only `xhigh`, `medium` and `low`.
+
+6. **Cache diagnostics** (`cache_diag.py`, observes only). On this hybrid
+   model a hit has to end where the KV matches *and* a GDN state exists; the
+   match computes both and keeps only the second. Per request it now exports
+   `kv` (F, KV match end), `hit` (B, the GDN-backed hit), `branch` (where
+   upstream records a branch state for the next request), and from the token
+   stream `msgs`, `bnd` (last `im_start` at or before F) and `after`
+   (message starts after F). F - B is the engine's loss, prompt - F the
+   client's. Two hooks: `UnifiedRadixCache.match_prefix` stashes four ints on
+   the request (the last match is the one that admitted it), and
+   `SchedulerOutputStreamer.get_cached_tokens_details` adds a `diag` object to
+   a finished request's details, which the request export already carries.
+   `SGLANG_PATCH_CACHE_DIAG=0` turns it off.
+
+R. **Key rotation, temporary** (`_patch_auth`). SGLang takes one `--api-key`,
+   and Caddy and Higress inject it on the way in, so a plain rotation leaves a
+   401 window. With `SGLANG_API_KEY_ALT` set, a request `--api-key` rejects is
+   decided again with that key: same rules and endpoint levels (admin
+   endpoints never take it when an admin key is set). Empty = no-op.
+   `verify_keyrotation.py` (13 checks, CPU). Runbook below, "Key rotation".
 
 ## Why a `sitecustomize.py` and not a plugin or a patched image
 
@@ -126,6 +149,72 @@ and renders the real chat template to show which effort the model sees
 (prompt of "hi": xhigh 53 tokens, low 41, medium 11, thinking off 13). On a
 live replica the same token counts are the check: a `max_tokens: 1` request
 with `reasoning_effort: low` must report `prompt_tokens` 41, not 53.
+
+### Patch 6
+
+CPU, no GPU (`verify_cache_diag.py`, command in its docstring): hooks on the
+real classes, the `MatchResult` fields still there, `im_start` id against
+the tokenizer, the real patched `get_cached_tokens_details` on finished,
+unfinished, cold, aborted and never-matched requests, pickling, and the scan
+cost (0.25 ms at 262K tokens).
+
+**Roll order** (the Vector sink runs `skip_unknown_fields: false`):
+
+1. `cache_diag.sql` on ClickHouse (nullable columns, nothing else changes).
+2. Vector: in the `engine_rows` transform, after `storage` is set, add
+
+   ```
+   dg = object(det.diag) ?? {}
+   diag_kv = null; diag_hit = null; diag_branch = null
+   diag_msgs = null; diag_bnd = null; diag_after = null
+   if dg.kv != null { diag_kv = to_int(dg.kv) ?? null }
+   if dg.hit != null { diag_hit = to_int(dg.hit) ?? null }
+   if dg.branch != null { diag_branch = to_int(dg.branch) ?? null }
+   if dg.msgs != null { diag_msgs = to_int(dg.msgs) ?? null }
+   if dg.bnd != null { diag_bnd = to_int(dg.bnd) ?? null }
+   if dg.after != null { diag_after = to_int(dg.after) ?? null }
+   ```
+
+   and the six `"diag_*": diag_*` fields to the output object (explicit null
+   tests: VRL's `to_int(null)` is 0). Restart Vector; rows stay NULL until a
+   replica runs the patch.
+3. Copy this directory into `../enginepatch/`, roll **r1 drained first**, check
+   `docker logs qwen36-27b-r1 2>&1 | grep "cache diag"` (two lines) and a
+   non-NULL `diag_kv` on r1 rows, then r0.
+
+Reading it:
+
+```sql
+SELECT consumer, count() n,
+       sum(diag_kv - diag_hit)                     AS engine_loss,   -- F - B
+       sum(prompt_tokens - diag_kv)                AS client_loss,   -- prompt - F
+       sumIf(diag_bnd - diag_hit, diag_bnd > diag_hit) AS boundary_ckpt_saves, -- option (a)
+       countIf(diag_bnd = diag_kv)                 AS diverged_at_message_start
+FROM engine.requests FINAL
+WHERE diag_kv IS NOT NULL AND prompt_tokens > 20000
+GROUP BY consumer ORDER BY engine_loss DESC
+```
+
+## Key rotation
+
+Engines first, senders second, old key retired last; every step keeps a key
+that every sender uses accepted by every replica.
+
+1. Generate the new key; in `.env` add `SGLANG_API_KEY_ALT=<new>` and keep
+   `SGLANG_API_KEY=<old>`. `secrets/seal.sh` (iict-inference).
+2. Roll r1, then r0, the usual way (drain, finish in-flight, recreate). Each
+   logs `key rotation: a second engine key is also accepted`; a request with
+   the new key straight to the rolled replica answers 200.
+3. Switch the senders: `.env` `SGLANG_API_KEY=<new>`, `SGLANG_API_KEY_ALT=<old>`,
+   seal. Higress: `higress-standalone/apply.sh` (hot, no restart). Caddy reads
+   the key from its environment, so it needs `docker compose up -d --no-deps`
+   on its service, which cuts edge streams: do it while the engines are idle.
+   Benchmarks read `.env` at run time.
+4. Once Caddy and Higress send the new key: remove `SGLANG_API_KEY_ALT`, seal;
+   each replica stops accepting the old key at its next roll.
+
+The old key stays in the engines' startup logs and `logs-archive/` (the
+server_args line prints it); it is worthless after step 4.
 
 ### Patch 4
 

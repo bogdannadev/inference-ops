@@ -338,7 +338,12 @@
 # workload it only re-scans the queue every step, and it honours a
 # client-supplied `priority`, which would let any API client preempt other
 # tenants.
-x-sglang-image: &sglang-image lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+# v0.5.22 (2026-10-19). Plan and gates: tuning/docs/UPGRADE_v0.5.22.md
+#   PLATFORM MOVES: torch 2.14.1, FlashInfer 0.7.1, transformers 5.19, Triton
+#   3.8, sglang-kernel 0.4.9, Python in a uv venv at /opt/sglang. Patch 6 reads
+#   MatchResult.device_prefix_len (0.5.22 dropped device_indices). The router
+#   is pinned to the v0.5.21 image below: sglang-router is 0.3.2 in both.
+x-sglang-image: &sglang-image lmsysorg/sglang@sha256:e3a4f06001a29542fc4a8638536d9ffc5eb9c9942b08603c09b19a56eae4a1ae
 
 x-replica-common: &replica-common
   image: *sglang-image
@@ -660,7 +665,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       # HiCache L3, shared with r1 — see the r1 volumes block for why the
       # directory is per KV dtype.
-      - /dev/shm/qwen36-hicache-l3-v0521-fp8w/bf16:/tmp/hicache
+      - /dev/shm/qwen36-hicache-l3-v0522-fp8w/bf16:/tmp/hicache
 
     deploy:
       resources:
@@ -1036,9 +1041,11 @@ services:
       # -fp8w/bf16, never into the old bf16-weights fp8_e4m3 directory.
       # The directory is also per SGLang generation: v0.5.21 changed the
       # HiCache/mamba sidecar code, so its pages live in a fresh -v0521 dir and
-      # the v0.5.20 one was deleted. Never POST /hicache/storage-backend/clear
+      # the v0.5.20 one was deleted. v0.5.22 moved the HiCache/mamba host pool
+      # code again (#43596): -v0522 since 2026-10-19, the -v0521 dir deleted.
+      # Never POST /hicache/storage-backend/clear
       # here: it deletes every file in the directory, i.e. both replicas' L3.
-      - /dev/shm/qwen36-hicache-l3-v0521-fp8w/bf16:/tmp/hicache
+      - /dev/shm/qwen36-hicache-l3-v0522-fp8w/bf16:/tmp/hicache
 
     deploy:
       resources:
@@ -1182,7 +1189,10 @@ services:
   # Re-test only after workers register a real model_id; until then this is
   # upstream's problem, not a tuning knob. See tuning/docs/UPGRADE_v0.5.17.md.
   qwen36-27b-router:
-    image: *sglang-image
+    # The v0.5.21 image, on purpose: sglang-router is 0.3.2 in v0.5.21 and
+    # v0.5.22 alike, and recreating the router drops in-flight requests on
+    # BOTH replicas. Move it to *sglang-image on the next router change.
+    image: lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
     container_name: qwen36-27b-router
 
     # Pinned to the edge partition like everything else that is not a replica.

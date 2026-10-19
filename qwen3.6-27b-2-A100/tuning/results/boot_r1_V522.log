@@ -1,0 +1,27 @@
+[sitecustomize] fp8 Marlin layers use dequant+cuBLAS for M >= 2049
+[sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
+[sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+[sitecustomize] cache diag: prefix matches recorded on the request
+[sitecustomize] cache diag: exported in cached_tokens_details (im_start=248045)
+[sitecustomize] per-key context from /opt/keypolicy/policy.json, default 169000
+[sitecustomize] reasoning effort: request, then key default, then server default
+[sitecustomize] fp8 Marlin layers use dequant+cuBLAS for M >= 2049
+[sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
+[sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+[sitecustomize] cache diag: prefix matches recorded on the request
+[sitecustomize] cache diag: exported in cached_tokens_details (im_start=248045)
+[sitecustomize] fp8 Marlin layers use dequant+cuBLAS for M >= 2049
+[sitecustomize] forced skip_special_tokens=True on ChatCompletionRequest
+[sitecustomize] placeholder/payload mismatch now raises ValueError (400)
+Multi-thread loading shards:   0% Completed | 0/66 [00:00<?, ?it/s]Multi-thread loading shards:   2% Completed | 1/66 [00:00<00:06,  9.31it/s][sitecustomize] per-key context from /opt/keypolicy/policy.json, default 169000
+[2026-10-19 16:24:53] Your GPU does not have native support for FP8 computation but FP8 quantization is being used. Weight-only FP8 compression will be used leveraging the Marlin kernel. This may degrade performance for compute-heavy workloads.
+[2026-10-19 16:25:05] Load weight end. elapsed=18.96 s, type=Qwen3_5ForConditionalGeneration, quant=fp8, fmt=e4m3, avail mem=49.42 GB, mem usage=29.34 GB.
+[2026-10-19 16:25:08] Load weight end. elapsed=1.01 s, type=DFlash2DraftModel, avail mem=45.79 GB, mem usage=3.57 GB.
+[2026-10-19 16:25:09] Mamba Cache is allocated. max_mamba_cache_size: 128, conv_state size: 0.35GB, ssm_state size: 9.07GB intermediate_ssm_state_cache size: 2.81GB intermediate_conv_window_cache size: 0.05GB 
+[2026-10-19 16:25:12] KV Cache is allocated. dtype: torch.bfloat16, #tokens: 381504, K size: 11.64 GB, V size: 11.64 GB
+[2026-10-19 16:25:12] KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 381504, K size: 1.82 GB, V size: 1.82 GB
+[2026-10-19 16:31:12] max_total_num_tokens=381504, chunked_prefill_size=4096, max_prefill_tokens=4096, max_running_requests=4, context_len=262144, available_gpu_mem=4.42 GB
+[2026-10-19 16:31:12] Allocating kv hierarchical KV host pool: 1795008 tokens, 117.64 GB host memory.
+[2026-10-19 16:33:08] Allocating 62.44 GB host memory for hierarchical Mamba cache (layout=page_first).
+[2026-10-19 16:33:56] Allocating draft hierarchical KV host pool: 1795072 tokens, 18.38 GB host memory.
+[sitecustomize] continuing prefill chunks clamped to physical KV

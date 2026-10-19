@@ -62,6 +62,7 @@ tm.num_reserved_tokens = 0
 tm.allow_auto_truncate = False
 tm.validate_total_tokens = True
 tm.is_generation = True
+tm.model_config = SimpleNamespace(joint_head_config=None)  # v0.5.22: Qwen has no joint head
 
 
 def req(consumer, n_input, max_new=None):

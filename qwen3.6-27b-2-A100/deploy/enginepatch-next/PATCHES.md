@@ -3,7 +3,7 @@
 One page per patch, each as before/after flow through the engine. `README.md`
 has the install, verify and roll procedure; this file is the picture. Upstream
 paths are relative to `/sgl-workspace/sglang/python/sglang/srt/` in the pinned
-image (SGLang v0.5.21).
+image (SGLang v0.5.22 since 2026-10-19; v0.5.21 before).
 
 ```
  client ─► Caddy ─► Higress ─► smg router ─► ENGINE (r0 / r1)
@@ -28,8 +28,8 @@ image (SGLang v0.5.21).
 | 3 | clamp continuing chunk to physical KV | crash fix | 2026-10-11 | `_patch_budget` |
 | 4 | FP8 prefill on dequant + cuBLAS | speed | 2026-10-12 | `_patch_fp8` |
 | 5 | per-key context window + effort | policy | 2026-10-14 | `_patch_chat`, `_patch_tm` |
-| 6 | cache diagnostics | observe only | not yet | `_patch_urc`, `_patch_out` |
-| R | key rotation: accept `SGLANG_API_KEY_ALT` too | temporary | not yet | `_patch_auth` |
+| 6 | cache diagnostics | observe only | 2026-10-19 | `_patch_urc`, `_patch_out` |
+| R | key rotation: accept `SGLANG_API_KEY_ALT` too | temporary | 2026-10-19 | `_patch_auth` |
 
 ---
 
@@ -233,7 +233,7 @@ before the patch every request rendered 53.
 
 ---
 
-## 6. Cache diagnostics (observe only, not live yet)
+## 6. Cache diagnostics (observe only)
 
 Wraps `UnifiedRadixCache.match_prefix` (`mem_cache/unified_radix_cache.py`) and
 `SchedulerOutputStreamer.get_cached_tokens_details`
@@ -305,5 +305,7 @@ Unchanged: scheduling, cache contents, eviction, outputs, Prometheus counters.
 **Roll status:**
 
 1. ClickHouse `diag_*` columns: applied 2026-10-17.
-2. Vector mapping: pending.
-3. Engine roll (r1 drained first): pending.
+2. Vector mapping: applied 2026-10-17.
+3. Engine roll: r1 2026-10-19 11:23Z, r0 12:28Z, with the v0.5.22 upgrade.
+   v0.5.22 reports the device prefix as `MatchResult.device_prefix_len`
+   (`device_indices` is gone); `cache_diag.py` reads either.
